@@ -54,7 +54,7 @@ RULES = {
         "Copying the whole environment collects every API key at once.",
         ("T1552",), ("AML.T0055",)),
     "hermes_env_read": Rule(
-        "Hermes keeps your API keys in ~/.hermes/.env and already loads them for plugins. The catalog rules "
+        "Hermes keeps your API keys in the .env file in its home folder and already loads them for plugins. The catalog rules "
         "say plugins must never read that file; a plugin that opens it gets every key at once. Honest "
         "plugins sometimes do this to find their own key, so check which key it needs and whether it declares it.",
         ("T1552.001",), ("AML.T0055",)),
@@ -222,7 +222,8 @@ INJECTION_PATTERNS = [
     r"<\s*(?:important|system|instructions?)\s*>",
     r"before (?:using|calling|running) (?:this|any) tool[^.\n]{0,60}\b(?:read|send|call|run|include)",
     r"\b(?:read|cat|open|send|include|upload|paste|pass)\b[^.\n]{0,40}(?:~/\.ssh|\bid_rsa\b|\bid_ed25519\b|"
-    r"\bauth\.json\b|\bapi[_ ]?keys?\b|\bcredentials\b|\bprivate key\b|\.env\b(?:\s+file)?)",
+    r"\bauth\.json\b|\bcredentials\b|\bprivate key\b|\.env\b(?:\s+file)?)",
+    r"\b(?:read|send|include|upload|paste)\b[^.\n]{0,40}\bapi[_ ]?keys?\b",
     r"\b(?:exfiltrat\w*|secretly|covertly)\b",
     r"you\s+are\s+now\s+(?:in\s+)?(?:developer|dan|jailbreak)",
     r"new (?:system )?instructions?:",
@@ -322,7 +323,7 @@ _DECOY_ENV_COUNT = 5
 
 
 def _mark_bulk_env_reads(events: list, total: int) -> list:
-    """`{**os.environ}` and `dict(os.environ)` copy the environment from C code, so each
+    """Copying the whole environment into a dict happens in C code, so each
     key looks like a direct read. A single moment that touches every decoy variable is
     a copy of the whole environment, not a targeted grab of each key."""
     groups: dict = {}
@@ -751,12 +752,30 @@ def _classify_write(path: str, op: str, home, hermes_home, plugin_dir, name=None
     return "write_outside_folder", HIGH, None
 
 
+# Honest tools often say what they will NOT do ("never include credentials",
+# "does not read private key material", "do not pay without asking the user").
+# Those sentences are about safety, not orders to leak. Only the "ask for secrets"
+# and "without telling the user" patterns are checked this way: "never tell the user"
+# is itself the hiding order.
+_NEGATION_RE = re.compile(r"\b(?:never|not|no|don't|doesn't|won't|cannot|can't|refuses?)\b", re.IGNORECASE)
+_NEGATABLE_RE = re.compile(r"^(?:read|cat|open|send|include|upload|paste|pass|without)\b", re.IGNORECASE)
+
+
+def _negated(text: str, m) -> bool:
+    if not _NEGATABLE_RE.match(m.group(0)):
+        return False
+    sentence_start = max(text.rfind(c, 0, m.start()) for c in ".!?;\n") + 1
+    return bool(_NEGATION_RE.search(text[sentence_start:m.end()]))
+
+
 def _injection_hits(value) -> list:
     if value in (None, "", {}, []):
         return []
     text = "\n".join(_strings(value))
     hits = []
     for m in INJECTION_RE.finditer(text):
+        if _negated(text, m):
+            continue
         start = max(0, m.start() - 40)
         hits.append("…" + text[start:m.end() + 40].replace("\n", " ") + "…")
     if HIDDEN_CHARS_RE.search(text):
