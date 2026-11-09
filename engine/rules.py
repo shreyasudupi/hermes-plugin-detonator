@@ -53,6 +53,15 @@ RULES = {
     "env_enumerated": Rule(
         "Copying the whole environment collects every API key at once.",
         ("T1552",), ("AML.T0055",)),
+    "hermes_env_read": Rule(
+        "Hermes keeps your API keys in ~/.hermes/.env and already loads them for plugins. The catalog rules "
+        "say plugins must never read that file; a plugin that opens it gets every key at once. Honest "
+        "plugins sometimes do this to find their own key, so check which key it needs and whether it declares it.",
+        ("T1552.001",), ("AML.T0055",)),
+    "undeclared_env_read": Rule(
+        "Plugins must list every API key they use in requires_env. Reading one it never declared is often a "
+        "fallback to a common key (such as OPENAI_API_KEY), but it is also how stealers collect keys quietly.",
+        ("T1552",), ("AML.T0055",)),
     "declared_env_read": Rule("Reading a key the plugin says it needs is normal; listed for completeness."),
     "decoy_dir_listed": Rule(
         "Listing your home folder or the folders that hold keys and memory is how stealers find what to take.",
@@ -309,6 +318,22 @@ def evaluate(result: dict) -> dict:
     return full
 
 
+_DECOY_ENV_COUNT = 5
+
+
+def _mark_bulk_env_reads(events: list, total: int) -> list:
+    """`{**os.environ}` and `dict(os.environ)` copy the environment from C code, so each
+    key looks like a direct read. A single moment that touches every decoy variable is
+    a copy of the whole environment, not a targeted grab of each key."""
+    groups: dict = {}
+    for e in events:
+        if e.get("how", "direct") == "direct":
+            groups.setdefault((e.get("phase"), e.get("t"), e.get("clock_days")), set()).add(e.get("name"))
+    bulk = {k for k, names in groups.items() if total and len(names) >= total}
+    return [{**e, "how": "enumerated"} if e.get("how", "direct") == "direct" and
+            (e.get("phase"), e.get("t"), e.get("clock_days")) in bulk else e for e in events]
+
+
 def _evaluate(result: dict) -> dict:
     findings: list[Finding] = []
 
@@ -346,8 +371,14 @@ def _evaluate(result: dict) -> dict:
     secret_reads = [p for p in reads if cat(p) == "secret"]
     loot_reads = [p for p in reads if cat(p) in ("browser", "wallet")]
     private_reads = [p for p in reads if cat(p) in ("memory", "history")]
+    hermes_env = os.path.join(hermes_home, ".env") if hermes_home else None
+    env_file_reads = [p for p in secret_reads if p == hermes_env]
+    secret_reads = [p for p in secret_reads if p != hermes_env]
     if secret_reads:
         add(Finding("decoy_accessed", CRITICAL, "Read decoy secret files (keys, tokens, .env)", secret_reads))
+    if env_file_reads:
+        add(Finding("hermes_env_read", HIGH, "Read Hermes's .env file, where your API keys are kept",
+                    env_file_reads))
     if loot_reads:
         add(Finding("browser_or_wallet_read", CRITICAL, "Read decoy browser passwords, cookies or crypto wallets",
                     loot_reads))
@@ -355,15 +386,13 @@ def _evaluate(result: dict) -> dict:
         add(Finding("memory_read", MEDIUM, "Read the agent's memory or chat history", private_reads))
 
     env_events = of("env_read")
+    env_events = _mark_bulk_env_reads(env_events, len(result.get("decoy_env") or ()) or _DECOY_ENV_COUNT)
     env_reads = sorted({e["name"] for e in env_events if e.get("how", "direct") == "direct"})
     declared_env = set(_as_list(manifest.get("requires_env")))
     undeclared_env = [n for n in env_reads if n not in declared_env]
     if undeclared_env:
-        add(Finding("decoy_accessed", CRITICAL,
-                    "Read credential environment variables it does not declare in requires_env",
-                    undeclared_env, attack=["T1552"],
-                    why="Plugins must list every API key they use in requires_env. Quietly reading keys "
-                        "they never declared is how stealers collect them without the user noticing."))
+        add(Finding("undeclared_env_read", HIGH,
+                    "Read API key variables it does not declare in requires_env", undeclared_env))
     declared_env_reads = [n for n in env_reads if n in declared_env]
     if declared_env_reads:
         add(Finding("declared_env_read", INFO, "Read environment variables it declares in requires_env",
@@ -515,7 +544,7 @@ def _evaluate(result: dict) -> dict:
         if _under(path, allowed_writes) or path in decoy_paths:
             continue  # decoy changes are judged below
         label = path if op == "write" else f"{op} {path}"
-        rule, sev, tech = _classify_write(path, op, home, hermes_home, plugin_dir)
+        rule, sev, tech = _classify_write(path, op, home, hermes_home, plugin_dir, manifest.get("name"))
         b = buckets.setdefault((rule, sev), {"evidence": set(), "attack": set()})
         b["evidence"].add(label)
         if tech:
@@ -625,6 +654,16 @@ def _evaluate(result: dict) -> dict:
             else:
                 add(Finding("load_error", MEDIUM, f"Plugin failed during {phase}", [str(info.get("error"))]))
 
+    # Reading keys is SUSPICIOUS on its own (honest plugins sometimes look up their
+    # own key). Together with a reach for the network or another theft it is the
+    # stealer pattern, so it goes back to critical.
+    seen = {f.rule for f in findings}
+    if seen & {"undeclared_network", "secret_in_output", "decoy_accessed", "browser_or_wallet_read"}:
+        for f in findings:
+            if f.rule in ("hermes_env_read", "undeclared_env_read"):
+                f.severity = CRITICAL
+                f.title += ", and also reached for the network or other secrets"
+
     return {
         "verdict": _verdict(findings),
         "findings": [f.to_dict() for f in sorted(findings, key=lambda f: SEVERITY_ORDER.index(f.severity))],
@@ -652,7 +691,7 @@ def _dormant(static, findings, events, stubbed) -> list:
         "network": "network" in kinds,
         "dynamic_code": "hidden_code" in kinds or any(
             e.get("kind") == "dynamic_code" and e.get("by") == "plugin" for e in events),
-        "secret_paths": bool(rules_seen & {"decoy_accessed", "browser_or_wallet_read", "decoy_dir_listed"}),
+        "secret_paths": bool(rules_seen & {"decoy_accessed", "hermes_env_read", "undeclared_env_read", "browser_or_wallet_read", "decoy_dir_listed"}),
         "persistence": "persistence" in rules_seen,
     }
     stubbed_top = {str(m).split(".")[0] for m in stubbed}
@@ -678,7 +717,7 @@ def _dormant(static, findings, events, stubbed) -> list:
     return out
 
 
-def _classify_write(path: str, op: str, home, hermes_home, plugin_dir):
+def _classify_write(path: str, op: str, home, hermes_home, plugin_dir, name=None):
     """(rule, severity, extra ATT&CK id) for a write/modify outside the allowed folders."""
     norm = os.path.normpath(path)
     base = os.path.basename(norm)
@@ -695,6 +734,10 @@ def _classify_write(path: str, op: str, home, hermes_home, plugin_dir):
     if home and _under(norm, [home]):
         rel = os.path.relpath(norm, home).split(os.sep)
         if hermes_home and rel[0] == ".hermes":
+            own = isinstance(name, str) and len(name) >= 3 and \
+                rel[-1].lstrip(".").lower().startswith(name.lower())
+            if len(rel) == 2 and own and rel[1] not in HERMES_SENSITIVE:
+                return "write_own_state", MEDIUM, None      # ~/.hermes/<name>-state.json, named after itself
             if len(rel) <= 2 or rel[1] in HERMES_SENSITIVE:
                 return "agent_config_modified", HIGH, None  # config.yaml, .env, SOUL.md, plugins, skills...
             if rel[1] in ("memories", "sessions"):

@@ -871,10 +871,15 @@ def main():
         pass
     _ACTIVE = False
 
-    # 6. clock jumps: same hooks and tools again with the plugin's clock moved forward
-    mid = {p: _digest(p) for p in ALL_DECOY_PATHS}
+    # 6. clock jumps: same hooks and tools again with the plugin's clock moved forward.
+    # The first pass (0 days) repeats the run at the real time, so a plugin that only
+    # acts on its second call (it saved something the first time) is not mistaken
+    # for one that waited for a date.
+    mid = None
     clock_runs = []
-    for days in CLOCK_JUMPS:
+    for days in (0,) + CLOCK_JUMPS:
+        if days and mid is None:
+            mid = {p: _digest(p) for p in ALL_DECOY_PATHS}
         set_clock(days)
         for hook, callbacks in sorted(ctx.hooks.items()):
             for idx, cb in enumerate(callbacks):
