@@ -69,7 +69,7 @@ def run_detonation(repo: str, sha: str, subdir: str | None):
         raw = runner.detonate(target)
     evaluation = rules.evaluate(raw)
     markdown = report.render(target.label, evaluation, raw)
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{repo}@{sha[:12]}")
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{repo}@{sha[:12]}" + (f"-{subdir}" if subdir else ""))
     path = reports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-{safe}.md"
     path.write_text(markdown)
     return evaluation, markdown, path
