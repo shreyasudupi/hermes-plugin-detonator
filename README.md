@@ -4,15 +4,15 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-Detonator is a dynamic sandbox for [Hermes Agent](https://hermes-agent.nousresearch.com/)
+Detonator is a security sandbox for [Hermes Agent](https://hermes-agent.nousresearch.com/)
 plugins. You point it at a plugin at an exact commit and approve the run. It then
 loads that plugin inside a disposable Docker container with a fake Hermes home full
 of decoys, fires synthetic hooks and tool calls at it, and reports what the plugin
 actually did compared with what it declares. Each finding says, in plain words, why it
 matters and which MITRE ATT&CK / ATLAS technique it matches.
 
-Tested on Linux (x86_64, GitHub Codespaces and Actions) and macOS on Apple Silicon
-(Docker Desktop).
+Tested on Linux (x86_64) and macOS on Apple Silicon (Docker Desktop). Every change runs
+the full test suite and Hermes's own `hermes plugins validate` in CI.
 
 ## Try it in 60 seconds
 
@@ -83,8 +83,8 @@ before `hermes plugins update`, or when reviewing a catalog SHA bump.
 |---|---|
 | critical → DANGEROUS | Reads decoy keys, `.env`, browser passwords or wallets; leaks a decoy secret; plants autostart, cron, LaunchAgent, `.bashrc` or `.pth` persistence |
 | high → SUSPICIOUS | Network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools |
-| medium → REVIEW | A declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; own state outside `plugin-data/`; exec of strings; sandbox checks; native code |
-| low / info | Coverage notes (stand-in modules), temp files, background threads, library behaviour |
+| medium → REVIEW | Secret-file paths or start-up locations in code that never ran (possible time bomb); a declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; own state outside `plugin-data/`; exec of strings; sandbox checks; native code |
+| low / info | Shell, string-built code or network calls in code that never ran; coverage notes (stand-in modules), temp files, background threads, library behaviour |
 
 **Every finding says why it matters and maps to [MITRE ATT&CK](https://attack.mitre.org/) and
 [MITRE ATLAS](https://atlas.mitre.org/) techniques.** The full list, with each rule's reasoning and
@@ -94,9 +94,20 @@ documenting it there.
 Verdicts: `DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS`, `ERROR`. The verdict comes
 from deterministic rules only. No model decides anything.
 
-**The report is advisory evidence, not proof.** Time bombs, sandbox-aware code and
-code paths the synthetic inputs don't reach can evade it, and the Python audit hooks
-run in the same process as the plugin. A clean report does not mean a plugin is safe.
+### Code that stayed quiet
+
+A short test only sees what a plugin does right away. To show what it might do later,
+Detonator also reads the source of every file the plugin loads (parsed with `ast` on
+your machine, never executed) and compares it with what actually ran. Abilities that
+exist in the code but stayed quiet are reported as `dormant_code`: secret-file paths or
+start-up locations at **REVIEW**, with a note when the code also checks the date; shell,
+string-built code and network calls as low/info notes, because honest tools often have
+those on paths a synthetic test does not reach. On 36 real catalog plugins this check
+changed no verdicts.
+
+**The report is advisory evidence, not proof.** Sandbox-aware code and code paths the
+synthetic inputs don't reach can still evade it, and the Python audit hooks run in the
+same process as the plugin. A clean report does not mean a plugin is safe.
 
 The sandbox image has no Hermes and no third-party packages. When a plugin imports one
 (`tools.registry`, `httpx`, ...), Detonator gives it an inert stand-in so the rest of the

@@ -165,6 +165,11 @@ RULES = {
     "load_error": Rule("The plugin crashed while loading, so less of it was observed."),
     "coverage_incomplete": Rule(
         "The plugin stopped on a stand-in module, so code after that point was not observed."),
+    "dormant_code": Rule(
+        "The code can do this, but it never did during the test. Code that stays quiet in a sandbox may be "
+        "waiting for a date, a keyword or a real key (a time bomb or trigger). Often it is just a path the "
+        "test did not reach, so read that code before installing.",
+        ("T1480", "T1497.003"), ()),
     "coverage_stubbed_imports": Rule(
         "The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, "
         "and anything done through them (e.g. an HTTP call via httpx) was not observed."),
@@ -562,6 +567,8 @@ def evaluate(result: dict) -> dict:
                     "Ran with stand-ins for modules the sandbox does not have; "
                     "activity through them was not observed", stubbed[:30]))
 
+    findings.extend(_dormant(result.get("static"), findings, events, stubbed))
+
     for phase in ("import", "register"):
         info = result.get(phase) or {}
         if not info.get("ok", False):
@@ -579,6 +586,52 @@ def evaluate(result: dict) -> dict:
         "findings": [f.to_dict() for f in sorted(findings, key=lambda f: SEVERITY_ORDER.index(f.severity))],
         "registered": registered,
     }
+
+
+DORMANT_TITLE = {
+    "shell": "Has shell commands that never ran in the sandbox",
+    "dynamic_code": "Has code built from strings or hidden bytecode that never ran in the sandbox",
+    "secret_paths": "Mentions secret files (keys, tokens, wallets) it never opened in the sandbox",
+    "persistence": "Mentions start-up locations (login items, cron, shell start-up files) it never wrote to",
+    "network": "Has network calls that never ran in the sandbox",
+}
+
+
+def _dormant(static, findings, events, stubbed) -> list:
+    """Risky abilities present in the source that never ran in the sandbox."""
+    if not static or not static.get("hits"):
+        return []
+    rules_seen = {f.rule for f in findings}
+    kinds = {e.get("kind") for e in events}
+    ran = {
+        "shell": "process" in kinds,
+        "network": "network" in kinds,
+        "dynamic_code": "hidden_code" in kinds or any(
+            e.get("kind") == "dynamic_code" and e.get("by") == "plugin" for e in events),
+        "secret_paths": bool(rules_seen & {"decoy_accessed", "browser_or_wallet_read", "decoy_dir_listed"}),
+        "persistence": "persistence" in rules_seen,
+    }
+    stubbed_top = {str(m).split(".")[0] for m in stubbed}
+    time_note = []
+    if static.get("time_checks"):
+        time_note = [f"also reads the date or time: {static['time_checks'][0]}"]
+    out = []
+    for cat, hits in static["hits"].items():
+        if ran.get(cat) or not hits:
+            continue
+        used = set((static.get("modules") or {}).get(cat) or [])
+        if used and used <= stubbed_top:
+            continue  # only reachable through a stand-in; already reported as a coverage gap
+        # Secret stores and start-up locations are rarely legitimate in a plugin and are
+        # the payload of a time bomb; shell, string code and network are common in honest
+        # tools that the synthetic test simply did not drive far enough.
+        severity = MEDIUM if cat in ("secret_paths", "persistence") else (INFO if cat == "network" else LOW)
+        # A date check next to them is worth pointing at, but many honest plugins read the
+        # clock for timestamps, so it adds evidence rather than raising the severity
+        # (tested on 36 catalog plugins: raising it produced a false SUSPICIOUS).
+        out.append(Finding("dormant_code", severity, DORMANT_TITLE[cat],
+                           hits[:5] + (time_note if severity == MEDIUM else [])))
+    return out
 
 
 def _classify_write(path: str, op: str, home, hermes_home, plugin_dir):
