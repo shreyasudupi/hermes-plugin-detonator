@@ -10,7 +10,7 @@
     "cpus": 4,
     "memory": "8gb"
   },
-  "postCreateCommand": "python -m pip install --upgrade pip pytest",
+  "postCreateCommand": "python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt",
   "customizations": {
     "vscode": {
       "extensions": [

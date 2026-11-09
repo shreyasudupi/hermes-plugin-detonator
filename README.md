@@ -51,6 +51,7 @@ Detonator does things a reviewer should know about:
 ## Developer usage
 
 ```bash
+pip install -r requirements-dev.txt      # pytest + PyYAML
 python -m pytest -q                      # unit + Docker integration tests
 python -m engine path/to/plugin          # detonate a local plugin directory
 python -m engine --repo owner/name --sha <40-char sha> [--subdir path]
