@@ -8,8 +8,28 @@ loads that plugin inside a disposable Docker container with a fake Hermes home f
 of decoys, fires synthetic hooks and tool calls at it, and reports what the plugin
 actually did compared with what it declares.
 
-> Status: hackathon build in progress. The sandbox engine works end to end; the
-> in-Hermes entry point with an approval step is next.
+> Status: hackathon build in progress.
+
+## Using it in Hermes
+
+```
+hermes plugins install shreyasudupi/hermes-plugin-detonator
+hermes plugins enable detonator
+```
+
+Then, in a Hermes session:
+
+```
+/detonate <owner/repo> <40-char-sha> [subdir]
+```
+
+or from a terminal: `hermes detonate <owner/repo> <40-char-sha> [--subdir path]`.
+
+Detonator always asks you before it runs anything. If no one can answer (a cron
+job, a hook, a non-interactive or unattended run), it refuses instead of running.
+There is no flag that skips the question. The `detonate_plugin` tool lets the
+agent suggest a run, but it only returns the `/detonate` command for you to run.
+Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
 
 ## What it checks
 
@@ -39,7 +59,8 @@ Detonator does things a reviewer should know about:
 - **Clones code.** For a GitHub target it runs `git init` / `git fetch` / `git checkout`
   of the exact 40-character SHA you give it, with git hooks disabled and no submodules.
   No code from the target runs on your machine outside the container.
-- **Shell commands.** Only `git` and `docker`, as above. No background processes.
+- **Shell commands.** Only `git` and `docker`, as above, and only after you approve
+  the run. No background processes.
 - **Network.** Only for `git fetch` and the one-time image build. The sandbox
   container runs with `--network none`.
 - **Credentials.** Detonator never reads your real Hermes home, `.env`, `auth.json`
@@ -63,7 +84,8 @@ Harmless "malicious" test fixtures live in a separate repository,
 
 ## Layout
 
-- `plugin.yaml`, `__init__.py`, `schemas.py`, `tools.py`: the Hermes plugin
+- `plugin.yaml`, `__init__.py`, `schemas.py`, `tools.py`, `commands.py`: the Hermes
+  plugin (tool, `/detonate` slash command, `hermes detonate` CLI)
 - `engine/`: host side (fetch, run Docker, rules, report)
 - `sandbox/`: the container image and the in-container harness
 - `tests/`: rule tests, plus an integration test on a harmless fixture
