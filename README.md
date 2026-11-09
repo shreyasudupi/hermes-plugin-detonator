@@ -1,23 +1,48 @@
 # Plugin Detonator
 
+![Plugin Detonator: a no-network Docker sandbox for Hermes plugins](docs/banner.png)
+
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
 Detonator is a dynamic sandbox for [Hermes Agent](https://hermes-agent.nousresearch.com/)
 plugins. You point it at a plugin at an exact commit and approve the run. It then
 loads that plugin inside a disposable Docker container with a fake Hermes home full
 of decoys, fires synthetic hooks and tool calls at it, and reports what the plugin
-actually did compared with what it declares.
+actually did compared with what it declares. Each finding says, in plain words, why it
+matters and which MITRE ATT&CK / ATLAS technique it matches.
 
-> Status: hackathon build in progress.
+Tested on Linux (x86_64, GitHub Codespaces and Actions) and macOS on Apple Silicon
+(Docker Desktop).
 
-## Using it in Hermes
+## Try it in 60 seconds
 
-```
+You need [Docker](https://docs.docker.com/get-docker/) running and Hermes installed.
+
+```bash
 hermes plugins install shreyasudupi/hermes-plugin-detonator
 hermes plugins enable detonator
+hermes gateway stop   # restart the plugin host so it loads Detonator
+hermes
 ```
 
-Then, in a Hermes session:
+In the Hermes chat:
+
+```
+/detonate <owner/repo> <40-char-sha> [subdir]
+```
+
+Detonator asks before it does anything. Pick **Run in sandbox**. The first run builds the
+sandbox image (a minute or two); after that a run takes seconds:
+
+```
+🔴 DANGEROUS: the plugin did something stealers and malware do (took or leaked decoy secrets, ...).
+- [critical] Read decoy secret files (keys, tokens, .env) (T1552.001, T1552.004, AML.T0055, AML.T0083)
+  Why: Plugins have no reason to open your key files or ask for API keys they did not declare. ...
+- [high] Reached for the network while loading or from a background hook (the sandbox has no network; nothing left the box) (T1071.001, T1041, AML.T0025)
+Full report: ~/.hermes/plugin-data/detonator/reports/....md
+```
+
+## Using it in Hermes
 
 ```
 /detonate <owner/repo> <40-char-sha> [subdir]
