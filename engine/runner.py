@@ -110,11 +110,21 @@ def local_target(path: str) -> Target:
     return Target(path=p, label=str(p))
 
 
-def load_manifest(plugin_dir: Path) -> dict:
-    import yaml  # Hermes itself depends on PyYAML
-
+def _yaml_safe_load(text: str):
+    """Parse YAML with PyYAML if present, else ruamel.yaml (which Hermes ships)."""
     try:
-        data = yaml.safe_load((plugin_dir / "plugin.yaml").read_text()) or {}
+        import yaml  # PyYAML (dev environments)
+
+        return yaml.safe_load(text)
+    except ImportError:
+        from ruamel.yaml import YAML  # Hermes's own YAML dependency
+
+        return YAML(typ="safe", pure=True).load(text)
+
+
+def load_manifest(plugin_dir: Path) -> dict:
+    try:
+        data = _yaml_safe_load((plugin_dir / "plugin.yaml").read_text()) or {}
     except Exception as exc:
         raise DetonatorError(f"cannot parse plugin.yaml: {exc}")
     if not isinstance(data, dict):
