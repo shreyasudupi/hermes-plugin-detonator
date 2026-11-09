@@ -84,7 +84,10 @@ def summary(evaluation: dict, path: Path) -> str:
         if f["severity"] in ("critical", "high", "medium") and f.get("why"):
             lines.append(f"  Why: {f['why']}")
     lines.append(f"Full report: {path}")
-    lines.append("Advisory only: a clean run is evidence, not proof.")
+    if verdict == "NO_FINDINGS":
+        lines.append("Advisory only: a clean run is evidence, not proof.")
+    else:
+        lines.append("Advisory only: this shows what the plugin did in the sandbox; you decide whether to install it.")
     return "\n".join(lines)
 
 

@@ -312,7 +312,9 @@ def evaluate(result: dict) -> dict:
     if undeclared_env:
         add(Finding("decoy_accessed", CRITICAL,
                     "Read credential environment variables it does not declare in requires_env",
-                    undeclared_env, attack=["T1552"]))
+                    undeclared_env, attack=["T1552"],
+                    why="Plugins must list every API key they use in requires_env. Quietly reading keys "
+                        "they never declared is how stealers collect them without the user noticing."))
     declared_env_reads = [n for n in env_reads if n in declared_env]
     if declared_env_reads:
         add(Finding("declared_env_read", INFO, "Read environment variables it declares in requires_env",
