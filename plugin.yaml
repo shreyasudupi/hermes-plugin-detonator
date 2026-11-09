@@ -7,6 +7,7 @@ description: >
   Advisory only. Requires Docker; runs git and docker commands (see README).
 author: shreyasudupi
 license: MIT
+requires_hermes: ">=0.23.0"
 provides_tools:
   - detonate_plugin
 provides_hooks: []
