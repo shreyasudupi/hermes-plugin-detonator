@@ -450,7 +450,9 @@ def evaluate(result: dict) -> dict:
         cron = sorted({str(e.get("detail")) for e in procs if re.search(r"\bcrontab\b|\bsystemctl\b|\blaunchctl\b",
                                                                           str(e.get("detail")))})
         if cron:
-            add(Finding("persistence", CRITICAL, "Ran a command that schedules code to start automatically", cron,
+            # Listing jobs is not installing one, so the command alone is high; a
+            # write to a start-up location (below) is what makes it critical.
+            add(Finding("persistence", HIGH, "Ran a scheduler command (crontab, systemctl or launchctl)", cron,
                         attack=["T1053.003", "T1543"]))
 
     touched = [(e["path"], "write") for e in of("file_write")]

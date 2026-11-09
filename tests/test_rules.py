@@ -216,7 +216,7 @@ def test_persistence_locations_map_to_attack():
 
 def test_crontab_command_is_persistence():
     out = rules.evaluate(base(events=[ev("process", op="subprocess.Popen", detail="['crontab', '-']")]))
-    assert {"command_run", "persistence"} <= rule_names(out)
+    assert {"command_run", "persistence"} <= rule_names(out) and out["verdict"] == "SUSPICIOUS"
 
 
 def test_self_modify_and_code_download():
