@@ -35,12 +35,14 @@ Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
 
 | Rule | Severity | Example |
 |---|---|---|
-| Decoy accessed | critical | Reads `~/.hermes/.env`, `auth.json`, an SSH key, or an API-key env var it does not declare |
-| Secret leaked into agent content | critical | A tool result or hook return contains a decoy key |
-| Prompt, command, tool result or memory altered | high | `pre_llm_call` injects text, `transform_tool_result` rewrites output, `MEMORY.md` changes |
-| Undeclared connection attempted | high | Any socket connect or DNS lookup (the sandbox has no network, so nothing leaves) |
-| Command run / write outside own folder | high | `subprocess`, `os.system`, writing outside `plugin-data/<name>/` |
+| Decoy secret accessed | critical | Reads `~/.hermes/.env`, `auth.json`, an SSH key, or asks for an API-key env var it does not declare |
+| Secret leaked | critical | A tool result, hook return or network address contains a decoy key |
+| Hidden content change | high | An undeclared `pre_llm_call` injects text, a hook edits its arguments in place, `MEMORY.md` changes |
+| Network while loading or from a background hook | high | Socket connect or DNS lookup during import, `register()` or a hook (the sandbox has no network, so nothing leaves) |
+| Command run / sensitive write | high | `subprocess`, `os.system`; writing `~/.bashrc`, `~/.ssh`, Hermes config, other plugins or skills |
 | Declared vs registered mismatch | high | Registers hooks or tools missing from `plugin.yaml` (catalog rule 6) |
+| Needs a human look | medium | A declared prompt hook's added text, tools calling a host, localhost access, reading memory files, state kept outside `plugin-data/`, walking the whole environment in its own code, native code |
+| Coverage notes | low / info | Modules replaced by stand-ins, a load that stopped on a stand-in, temp files, runtime compile, a library scanning the environment for proxy settings |
 
 Verdicts: `DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS`, `ERROR`. The verdict comes
 from deterministic rules only. No model decides anything.
@@ -48,6 +50,13 @@ from deterministic rules only. No model decides anything.
 **The report is advisory evidence, not proof.** Time bombs, sandbox-aware code and
 code paths the synthetic inputs don't reach can evade it, and the Python audit hooks
 run in the same process as the plugin. A clean report does not mean a plugin is safe.
+
+The sandbox image has no Hermes and no third-party packages. When a plugin imports one
+(`tools.registry`, `httpx`, ...), Detonator gives it an inert stand-in so the rest of the
+plugin still runs, and lists those modules in the report. Anything done *through* a
+stand-in (for example an HTTP call made with `httpx`) is not observed. Standard-library
+modules are never replaced. Portable `plugin.json` packages and desktop-only plugins have
+no Python code to run, and Detonator says so instead of guessing.
 
 ## Disclosures (catalog rule 13)
 

@@ -1,0 +1,5 @@
+name: stub-import-demo
+version: "0.0.1"
+description: Harmless test fixture that imports Hermes-only modules the sandbox does not have.
+provides_tools: [ping]
+provides_hooks: []

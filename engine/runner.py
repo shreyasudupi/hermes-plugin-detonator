@@ -98,15 +98,28 @@ def fetch_github(repo: str, sha: str, workdir: Path, subdir: str | None = None) 
     if head != sha:
         raise DetonatorError(f"checked out {head}, expected {sha}")
     path = dest / subdir if subdir else dest
-    if not (path / "plugin.yaml").is_file():
-        raise DetonatorError("no plugin.yaml at that commit" + (f" in {subdir}" if subdir else ""))
+    check_runnable(path, "that commit" + (f" in {subdir}" if subdir else ""))
     return Target(path=path, label=f"{repo}@{sha[:12]}", repo=repo, sha=sha)
+
+
+def check_runnable(path: Path, where: str) -> None:
+    """Detonator runs Python plugins (plugin.yaml + __init__.py with register(ctx)).
+    Say plainly when a package has no such code, instead of a vague failure."""
+    if not (path / "plugin.yaml").is_file():
+        if (path / "plugin.json").is_file():
+            raise DetonatorError(
+                f"{where} is a portable Agent Plugins package (plugin.json), not a Python plugin. "
+                "It has no register(ctx) code to run; any MCP servers it starts are out of Detonator's scope.")
+        raise DetonatorError(f"no plugin.yaml in {where}")
+    if not (path / "__init__.py").is_file():
+        raise DetonatorError(
+            f"{where} has a plugin.yaml but no __init__.py, so there is no Python plugin code to run "
+            "(it may be a desktop-only, dashboard-only or language-pack plugin). Nothing was detonated.")
 
 
 def local_target(path: str) -> Target:
     p = Path(path).expanduser().resolve()
-    if not (p / "plugin.yaml").is_file():
-        raise DetonatorError(f"no plugin.yaml in {p}")
+    check_runnable(p, str(p))
     return Target(path=p, label=str(p))
 
 

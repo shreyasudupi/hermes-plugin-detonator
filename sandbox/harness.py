@@ -117,6 +117,18 @@ def _is_write(mode, flags):
     return False
 
 
+def _target_path(arg):
+    """Absolute path for a path or an open file descriptor (os.chmod(fd) etc.)."""
+    try:
+        if isinstance(arg, int):
+            return os.readlink(f"/proc/self/fd/{arg}")
+        if isinstance(arg, (str, bytes)):
+            return os.path.realpath(os.fsdecode(arg))
+    except OSError:
+        pass
+    return _short(arg)
+
+
 def _audit(event, args):
     global _IN_HOOK
     if not _ACTIVE or _IN_HOOK:
@@ -134,7 +146,7 @@ def _audit(event, args):
                 return  # normal imports / reading its own files
             _record("file_write" if write else "file_read", path=real)
         elif event in ("os.remove", "os.rename", "os.unlink", "shutil.rmtree", "os.rmdir", "os.truncate", "os.chmod"):
-            _record("file_modify", op=event, path=_short(args[0] if args else None))
+            _record("file_modify", op=event, path=_target_path(args[0] if args else None))
         elif event in ("os.listdir", "os.scandir"):
             path = os.fsdecode(args[0]) if args and isinstance(args[0], (str, bytes)) else "."
             real = os.path.realpath(path)
@@ -155,6 +167,8 @@ def _audit(event, args):
             fname = os.fsdecode(filename) if isinstance(filename, (str, bytes)) else ""
             if not os.path.realpath(fname or "/").startswith(_STD_PREFIXES + (PLUGIN_DIR,)) \
                     or fname in ("<string>", "<unknown>"):
+                if fname.startswith("<frozen"):
+                    return
                 _record("dynamic_code", op=event, detail=_short(source, 120))
         elif event == "exec" and _PHASE != "import":
             code = args[0] if args else None
@@ -174,6 +188,21 @@ def _audit(event, args):
         _IN_HOOK = False
 
 
+def _env_caller():
+    """How the variable was read ("direct" or "enumerated", i.e. while walking the
+    whole environment, as urllib does to find proxy settings) and by whom
+    ("plugin" for code under /plugin, otherwise "library")."""
+    how = "direct"
+    frame = sys._getframe(2)
+    while frame is not None and frame.f_globals.get("__name__") in ("os", "_collections_abc", "collections.abc"):
+        if frame.f_code.co_name in ("__iter__", "items", "values", "copy", "__eq__", "__contains__"):
+            how = "enumerated"
+        frame = frame.f_back
+    name = frame.f_code.co_filename if frame is not None else ""
+    by = "plugin" if name == PLUGIN_DIR or name.startswith(PLUGIN_DIR + "/") else "library"
+    return how, by
+
+
 class _EnvWatch:
     """Logs reads of decoy environment variables."""
 
@@ -183,11 +212,120 @@ class _EnvWatch:
 
         def __getitem__(env_self, key):
             if _ACTIVE and not _IN_HOOK and key in DECOY_ENV:
-                _record("env_read", name=key)
+                how, by = _env_caller()
+                _record("env_read", name=key, how=how, by=by)
             return original(env_self, key)
 
         cls.__getitem__ = __getitem__
 
+
+
+# --------------------------------------------------------------------------
+# Stand-ins for modules the sandbox does not have
+# --------------------------------------------------------------------------
+# The container has no Hermes and no third-party packages. Real plugins import
+# Hermes's public modules (tools.registry, agent.*, ...) and their own deps, so
+# any module that cannot be found is replaced by an inert stand-in that accepts
+# attribute access, calls and subclassing. Every stand-in is recorded: activity
+# that goes through a stand-in (e.g. an HTTP call via a stubbed `requests`) is
+# NOT observed, and the report says so.
+STUBBED_MODULES = []
+
+
+class _StubMeta(type):
+    def __getattr__(cls, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        return _new_stub(name)
+
+    def __iter__(cls):
+        return iter(())
+
+    def __bool__(cls):
+        return False
+
+
+class _Stub(metaclass=_StubMeta):
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        return _new_stub(name)
+
+    def __call__(self, *args, **kwargs):
+        # Behave like a pass-through decorator when given a single callable.
+        if len(args) == 1 and not kwargs and callable(args[0]):
+            return args[0]
+        return _Stub()
+
+    def __iter__(self):
+        return iter(())
+
+    def __bool__(self):
+        return False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _new_stub(name):
+    return _StubMeta(str(name), (_Stub,), {})
+
+
+class _StubModule(type(sys)):
+    def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        value = _new_stub(name)
+        setattr(self, name, value)
+        return value
+
+
+class _StubLoader:
+    def create_module(self, spec):
+        mod = _StubModule(spec.name)
+        mod.__path__ = []  # lets submodules be stubbed too
+        return mod
+
+    def exec_module(self, module):
+        if module.__name__ not in STUBBED_MODULES:
+            STUBBED_MODULES.append(module.__name__)
+
+
+def _imported_by_plugin() -> bool:
+    frame = sys._getframe(1)
+    while frame is not None:
+        name = frame.f_code.co_filename
+        if not name.startswith("<frozen") and name != __file__:
+            return name == PLUGIN_DIR or name.startswith(PLUGIN_DIR + "/")
+        frame = frame.f_back
+    return False
+
+
+class _StubFinder:
+    """Last-resort finder: only used when no real module exists."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        if not _ACTIVE:
+            return None
+        # Never fake a standard-library module: the stdlib probes for platform
+        # modules (subprocess tries msvcrt/_winapi), and a stand-in there would
+        # change how Python itself behaves and could hide what the plugin does.
+        if fullname.split(".")[0] in sys.stdlib_module_names:
+            return None
+        # Only stand in for imports the plugin's own code asks for (or children
+        # of a module we already faked), not optional imports inside libraries.
+        parent = fullname.rpartition(".")[0]
+        if not (parent and isinstance(sys.modules.get(parent), _StubModule)) and not _imported_by_plugin():
+            return None
+        import importlib.machinery
+
+        return importlib.machinery.ModuleSpec(fullname, _StubLoader(), is_package=True)
 
 # --------------------------------------------------------------------------
 # Mock Hermes context
@@ -401,6 +539,7 @@ def main():
     os.makedirs(data_dir, exist_ok=True)
     result["allowed_write_dirs"] = [data_dir]
     result["plugin_dir"] = PLUGIN_DIR
+    result["home"] = HOME
     result["decoy_paths"] = sorted(ALL_DECOY_PATHS)
     result["decoy_dirs"] = DECOY_DIRS
     result["memory_paths"] = sorted(MEMORY_FILES)
@@ -411,6 +550,7 @@ def main():
     before = plant_decoys()
     _EnvWatch().install()
     sys.addaudithook(_audit)
+    sys.meta_path.append(_StubFinder())
     os.chdir(data_dir)
 
     ctx = MockCtx(name)
@@ -489,6 +629,7 @@ def main():
     _PHASE = "done"
 
     after = {p: _digest(p) for p in ALL_DECOY_PATHS}
+    result["stubbed_modules"] = sorted(STUBBED_MODULES)
     result["decoy_changes"] = sorted(p for p in ALL_DECOY_PATHS if before[p] != after[p])
     result["events"] = EVENTS[:5000]
     result["events_truncated"] = len(EVENTS) > 5000
