@@ -7,7 +7,8 @@ import datetime as _dt
 VERDICT_TEXT = {
     "DANGEROUS": "🔴 DANGEROUS: the plugin did something stealers and malware do (took or leaked decoy "
                  "secrets, or set itself up to start automatically).",
-    "SUSPICIOUS": "🟠 SUSPICIOUS: the plugin did something risky that it does not declare.",
+    "SUSPICIOUS": "🟠 SUSPICIOUS: the plugin did something risky (hidden, undeclared or aimed at the "
+                  "model or your system) that needs a close look before you install it.",
     "REVIEW": "🟡 REVIEW: nothing clearly malicious, but some behaviour deserves a look.",
     "NO_FINDINGS": "🟢 NO FINDINGS: nothing risky was observed in this run.",
     "ERROR": "⚪ ERROR: the sandbox could not complete the run.",
