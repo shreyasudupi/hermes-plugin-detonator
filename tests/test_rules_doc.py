@@ -18,3 +18,9 @@ def test_documented_mitre_ids_match_code():
         row = next(line for line in DOC.splitlines() if line.startswith(f"| `{name}` |"))
         for tech in rule.attack + rule.atlas:
             assert f"[{tech}]" in row, (name, tech)
+
+
+def test_documented_reasons_match_code():
+    for name, rule in rules.RULES.items():
+        row = next(line for line in DOC.splitlines() if line.startswith(f"| `{name}` |"))
+        assert rule.why in row, name

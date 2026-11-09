@@ -85,8 +85,9 @@ RULES = {
         "instructions the model follows, which is the main route for prompt injection.",
         (), ("AML.T0051.001", "AML.T0080")),
     "prompt_injection_text": Rule(
-        "Contains wording written to steer the model, e.g. 'ignore previous instructions', 'do not tell "
-        "the user', or invisible characters. Poisoned tools hide orders to the model this way.",
+        "Contains wording written to steer the model, such as telling it to disregard its earlier "
+        "guidance or to keep a step secret from the user, or invisible characters. Poisoned tools hide "
+        "orders to the model this way.",
         (), ("AML.T0051.001", "AML.T0110", "AML.T0011.002")),
     "tool_shadowing": Rule(
         "Registers a tool with the same name as a built-in Hermes tool, so the model may call the "
@@ -203,14 +204,14 @@ INJECTION_PATTERNS = [
     r"<\s*(?:important|system|instructions?)\s*>",
     r"before (?:using|calling|running) (?:this|any) tool[^.\n]{0,60}\b(?:read|send|call|run|include)",
     r"\b(?:read|cat|open|send|include|upload|paste|pass)\b[^.\n]{0,40}(?:~/\.ssh|\bid_rsa\b|\bid_ed25519\b|"
-    r"~/\.hermes/\.env|\.env file|\bauth\.json\b|\bapi[_ ]?keys?\b|\bcredentials\b|\bprivate key\b)",
+    r"\bauth\.json\b|\bapi[_ ]?keys?\b|\bcredentials\b|\bprivate key\b|\.env\b(?:\s+file)?)",
     r"\b(?:exfiltrat\w*|secretly|covertly)\b",
-    r"you are now (?:in )?(?:developer|dan|jailbreak)",
+    r"you\s+are\s+now\s+(?:in\s+)?(?:developer|dan|jailbreak)",
     r"new (?:system )?instructions?:",
     r"\b(?:system|admin|developer) (?:note|message|override|instruction)s?\s*:",
 ]
 INJECTION_RE = re.compile("|".join(f"(?:{p})" for p in INJECTION_PATTERNS), re.IGNORECASE)
-HIDDEN_CHARS_RE = re.compile("[​-‏‪-‮⁠-⁤﻿\U000e0000-\U000e007f]")
+HIDDEN_CHARS_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff\U000e0000-\U000e007f]")
 
 ENV_REDIRECT = {"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "PYTHONPATH",
                 "PYTHONSTARTUP", "PYTHONHOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
@@ -595,7 +596,7 @@ def _classify_write(path: str, op: str, home, hermes_home, plugin_dir):
                 return "content_altered", HIGH, "T1565.001"
             return "write_own_state", MEDIUM, None          # its own subfolder, e.g. ~/.hermes/<name>/
         if len(rel) == 1 or rel[0] in SENSITIVE_HOME:
-            return "write_outside_folder", HIGH, None        # ~/.bashrc-like dotfiles, ~/.ssh/..., ~/.config/...
+            return "write_outside_folder", HIGH, None        # dotfiles in home, key and config folders
         return "write_own_state", MEDIUM, None               # its own folder, e.g. ~/.<name>/
     if _under(norm, ["/tmp"]):
         return "write_tmp", LOW, None

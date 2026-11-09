@@ -123,7 +123,8 @@ DECOY_DIRS = sorted({os.path.dirname(p) for p in ALL_DECOY_PATHS} | {HOME})
 SANDBOX_PROBES = ("/.dockerenv", "/run/.containerenv", "/proc/1/cgroup", "/proc/self/cgroup",
                   "/proc/self/mountinfo", "/proc/1/sched", "/proc/self/status", "/sys/class/dmi/id",
                   "/proc/cpuinfo", "/sys/hypervisor")
-RECON_FILES = ("/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/hosts", "/etc/os-release")
+# Account and host files under /etc (matched by name inside /etc).
+RECON_NAMES = {"passwd", "shadow", "group", "gshadow", "sudoers", "hosts", "os-release", "machine-id"}
 
 # --------------------------------------------------------------------------
 # Observation log
@@ -164,7 +165,7 @@ def _target_path(arg):
     """Absolute path for a path or an open file descriptor (os.chmod(fd) etc.)."""
     try:
         if isinstance(arg, int):
-            return os.readlink(f"/proc/self/fd/{arg}")
+            return os.readlink(f"/dev/fd/{arg}")
         if isinstance(arg, (str, bytes)):
             return os.path.realpath(os.fsdecode(arg))
     except OSError:
@@ -190,7 +191,7 @@ def _audit(event, args):
             if not write and (real.startswith(SANDBOX_PROBES) or path.startswith(SANDBOX_PROBES)):
                 _record("sandbox_probe", path=path, by=_caller())
                 return
-            if not write and real in RECON_FILES:
+            if not write and os.path.dirname(real) == "/etc" and os.path.basename(real) in RECON_NAMES:
                 _record("recon_read", path=real, by=_caller())
                 return
             _record("file_write" if write else "file_read", path=real)
@@ -231,7 +232,7 @@ def _audit(event, args):
             source, filename = (list(args) + [None, None])[:2]
             fname = os.fsdecode(filename) if isinstance(filename, (str, bytes)) else ""
             by = _caller()
-            # exec("...") / compile("...", "<x>") use a pseudo file name; real
+            # Code compiled from a string gets a pseudo file name like <string>; real
             # module files (stdlib imported without .pyc caches) do not count.
             if by == "plugin" and isinstance(source, (str, bytes)) and fname.startswith("<") \
                     and not fname.startswith("<frozen"):
