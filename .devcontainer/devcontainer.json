@@ -16,6 +16,15 @@
       "extensions": [
         "ms-python.python"
       ]
+    },
+    "codespaces": {
+      "repositories": {
+        "shreyasudupi/detonator-test-fixtures": {
+          "permissions": {
+            "contents": "read"
+          }
+        }
+      }
     }
   },
   "remoteUser": "vscode"
