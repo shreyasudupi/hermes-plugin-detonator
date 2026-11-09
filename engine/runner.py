@@ -38,12 +38,40 @@ class Target:
     sha: str | None = None
 
 
+# Where Docker Desktop / Homebrew / Colima put the CLI. Apps started from the
+# Dock (e.g. the Hermes Desktop app) do not read shell profiles, so `docker`
+# is often missing from PATH there even though it is installed.
+DOCKER_DIRS = (
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/Applications/Docker.app/Contents/Resources/bin",
+    os.path.expanduser("~/.docker/bin"),
+    os.path.expanduser("~/.rd/bin"),          # Rancher Desktop
+    os.path.expanduser("~/.orbstack/bin"),    # OrbStack
+)
+
+
+def _env() -> dict:
+    env = dict(os.environ)
+    extra = [d for d in DOCKER_DIRS if os.path.isdir(d)]
+    env["PATH"] = os.pathsep.join([env.get("PATH", "")] + extra)
+    env["GIT_TERMINAL_PROMPT"] = "0"  # never hang waiting for a password prompt
+    return env
+
+
+def docker_bin() -> str | None:
+    return shutil.which("docker", path=_env()["PATH"])
+
+
 def _run(cmd, timeout=600, **kwargs):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kwargs)
+    env = _env()
+    if cmd and cmd[0] == "docker":
+        cmd = [docker_bin() or "docker", *cmd[1:]]
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, **kwargs)
 
 
 def docker_available() -> bool:
-    if not shutil.which("docker"):
+    if not docker_bin():
         return False
     try:
         return _run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=20).returncode == 0
