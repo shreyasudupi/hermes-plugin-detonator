@@ -165,6 +165,10 @@ RULES = {
     "load_error": Rule("The plugin crashed while loading, so less of it was observed."),
     "coverage_incomplete": Rule(
         "The plugin stopped on a stand-in module, so code after that point was not observed."),
+    "time_triggered": Rule(
+        "Did something only after its clock was moved forward. Malware waits for a date, or for days to pass "
+        "after install, so it passes short tests and reviews (a time bomb).",
+        ("T1480", "T1497.003"), ()),
     "dormant_code": Rule(
         "The code can do this, but it never did during the test. Code that stays quiet in a sandbox may be "
         "waiting for a date, a keyword or a real key (a time bomb or trigger). Often it is just a path the "
@@ -266,6 +270,46 @@ def _as_list(value):
 
 
 def evaluate(result: dict) -> dict:
+    """Judge one detonation. When the harness also ran the plugin with its clock moved
+    forward, anything that only showed up then is marked as time-triggered."""
+    full = _evaluate(result)
+    jumps = sorted({e["clock_days"] for e in result.get("events") or [] if e.get("clock_days")} |
+                   {h["clock_days"] for h in result.get("hook_runs") or [] if h.get("clock_days")})
+    if full["verdict"] == VERDICT_ERROR or not jumps:
+        return full
+
+    def upto(days):
+        return dict(result,
+                    events=[e for e in result.get("events") or [] if (e.get("clock_days") or 0) <= days],
+                    hook_runs=[h for h in result.get("hook_runs") or [] if (h.get("clock_days") or 0) <= days],
+                    decoy_changes=(result.get("decoy_changes") if days else
+                                   result.get("decoy_changes_before_clock", result.get("decoy_changes"))),
+                    static=None)
+
+    seen = {(f["rule"], f["title"]) for f in _evaluate(upto(0))["findings"]}
+    first_day = {}
+    for days in jumps:
+        for f in _evaluate(upto(days))["findings"]:
+            first_day.setdefault((f["rule"], f["title"]), days)
+    late = []
+    for f in full["findings"]:
+        key = (f["rule"], f["title"])
+        if key in seen or key not in first_day or f["rule"] == "dormant_code":
+            continue
+        if f["severity"] in (CRITICAL, HIGH, MEDIUM):
+            late.append(f"+{first_day[key]} days: {f['title']}")
+        f["title"] += f" (only after the clock moved {first_day[key]} days forward)"
+    if late:
+        bomb = Finding("time_triggered", HIGH, "Did new things only after its clock was moved forward (time bomb)",
+                       late[:8]).to_dict()
+        full["findings"] = sorted(full["findings"] + [bomb],
+                                  key=lambda f: SEVERITY_ORDER.index(f["severity"]))
+        full["verdict"] = _verdict([Finding(**f) for f in full["findings"]])
+    full["clock_jumps"] = jumps
+    return full
+
+
+def _evaluate(result: dict) -> dict:
     findings: list[Finding] = []
 
     if not result or result.get("fatal"):

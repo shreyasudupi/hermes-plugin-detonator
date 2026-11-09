@@ -31,6 +31,7 @@ HERMES_HOME = os.path.join(HOME, ".hermes")
 CALL_TIMEOUT_S = 5
 HOOK_REPEATS = 3
 SETTLE_S = 2.0
+CLOCK_SETTLE_S = 0.5
 
 CANARY = "DETONATOR-CANARY"
 
@@ -132,6 +133,7 @@ RECON_NAMES = {"passwd", "shadow", "group", "gshadow", "sudoers", "hosts", "os-r
 EVENTS = []
 _ACTIVE = False
 _PHASE = "setup"
+_CLOCK_DAYS = 0
 _IN_HOOK = False
 
 _STD_PREFIXES = tuple(
@@ -142,7 +144,10 @@ _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 
 
 def _record(kind, **data):
-    EVENTS.append({"t": round(time.monotonic(), 4), "phase": _PHASE, "kind": kind, **data})
+    event = {"t": round(time.monotonic(), 4), "phase": _PHASE, "kind": kind, **data}
+    if _CLOCK_DAYS:
+        event["clock_days"] = _CLOCK_DAYS
+    EVENTS.append(event)
 
 
 def _short(value, limit=300):
@@ -491,6 +496,76 @@ def install_thread_watch():
 
 
 # --------------------------------------------------------------------------
+# Clock jump: after the normal pass, move the plugin's clock forward and fire
+# its hooks and tools again, so code that waits for a date, or for time to pass
+# after it was installed, shows itself. time.sleep follows the moved clock, so a
+# background loop that sleeps for hours wakes up when the clock jumps.
+# --------------------------------------------------------------------------
+CLOCK_JUMPS = (30, 400, 1900)   # days: a month, a year and a bit, about five years
+SLEEP_CAP_S = 0.05
+_CLOCK_OFFSET = 0.0
+_real_time = time.time
+_real_time_ns = time.time_ns
+_real_sleep = time.sleep
+
+
+def install_clock():
+    import datetime as _dt
+
+    real_localtime, real_gmtime, real_ctime, real_strftime = time.localtime, time.gmtime, time.ctime, time.strftime
+
+    def now():
+        return _real_time() + _CLOCK_OFFSET
+
+    time.time = now
+    time.time_ns = lambda: _real_time_ns() + int(_CLOCK_OFFSET * 1e9)
+    time.localtime = lambda secs=None: real_localtime(now() if secs is None else secs)
+    time.gmtime = lambda secs=None: real_gmtime(now() if secs is None else secs)
+    time.ctime = lambda secs=None: real_ctime(now() if secs is None else secs)
+    time.strftime = lambda fmt, t=None: real_strftime(fmt, time.localtime() if t is None else t)
+
+    def sleep(seconds):
+        # Sleep on the plugin's clock: a jump forward wakes sleepers whose time has come,
+        # so a background loop waiting hours or days runs on during the jumped passes.
+        if seconds <= SLEEP_CAP_S:
+            return _real_sleep(max(seconds, 0))
+        wake = now() + seconds
+        while now() < wake:
+            _real_sleep(SLEEP_CAP_S)
+
+    time.sleep = sleep
+
+    class _Date(_dt.date):
+        @classmethod
+        def today(cls):
+            return cls.fromtimestamp(now())
+
+    class _DateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromtimestamp(now(), tz)
+
+        @classmethod
+        def today(cls):
+            return cls.fromtimestamp(now())
+
+        @classmethod
+        def utcnow(cls):
+            return cls.fromtimestamp(now(), _dt.timezone.utc).replace(tzinfo=None)
+
+    _Date.__name__ = _Date.__qualname__ = "date"
+    _DateTime.__name__ = _DateTime.__qualname__ = "datetime"
+    _dt.date = _Date
+    _dt.datetime = _DateTime
+
+
+def set_clock(days):
+    global _CLOCK_OFFSET, _CLOCK_DAYS
+    _CLOCK_DAYS = days
+    _CLOCK_OFFSET = days * 86400.0
+
+
+# --------------------------------------------------------------------------
 # Mock Hermes context
 # --------------------------------------------------------------------------
 class MockCtx:
@@ -713,6 +788,7 @@ def main():
     result["secret_markers"] = SECRET_MARKERS
 
     before = plant_decoys()
+    install_clock()
     _EnvWatch().install()
     install_thread_watch()
     sys.addaudithook(_audit)
@@ -790,13 +866,51 @@ def main():
     _PHASE = "settle"
     _ACTIVE = True
     try:
-        time.sleep(SETTLE_S)
+        _real_sleep(SETTLE_S)
     except BaseException:
         pass
     _ACTIVE = False
+
+    # 6. clock jumps: same hooks and tools again with the plugin's clock moved forward
+    mid = {p: _digest(p) for p in ALL_DECOY_PATHS}
+    clock_runs = []
+    for days in CLOCK_JUMPS:
+        set_clock(days)
+        for hook, callbacks in sorted(ctx.hooks.items()):
+            for idx, cb in enumerate(callbacks):
+                _PHASE = f"hook:{hook}"
+                kwargs = hook_kwargs(hook)
+                pristine = copy.deepcopy(kwargs)
+                r = call_plugin(cb, **kwargs)
+                mutated = sorted(k for k in pristine if kwargs.get(k) != pristine[k])
+                hook_runs.append({
+                    "hook": hook, "callback": idx, "attempt": 0, "clock_days": days,
+                    "ok": r["ok"], "error": r.get("error"),
+                    "returned": _jsonable(r.get("value")) if r["ok"] else None,
+                    "honoured_return": hook in MODIFYING_HOOKS,
+                    "mutated_args": mutated,
+                    "inputs": {k: _jsonable(pristine[k]) for k in mutated},
+                    "after": {k: _jsonable(kwargs.get(k)) for k in mutated},
+                })
+        for tool, info in sorted((k, v) for k, v in ctx.tools.items() if k):
+            handler = info.get("handler")
+            if callable(handler):
+                _PHASE = f"tool:{tool}"
+                r = call_plugin(handler, sample_args(info.get("schema")), task_id="det-task")
+                clock_runs.append({"tool": tool, "clock_days": days, "ok": r["ok"]})
+        _PHASE = "settle"
+        _ACTIVE = True
+        try:
+            _real_sleep(CLOCK_SETTLE_S)
+        except BaseException:
+            pass
+        _ACTIVE = False
+    result["clock_jumps"] = list(CLOCK_JUMPS)
+    result["clock_runs"] = clock_runs
     _PHASE = "done"
 
     after = {p: _digest(p) for p in ALL_DECOY_PATHS}
+    result["decoy_changes_before_clock"] = sorted(p for p in ALL_DECOY_PATHS if before[p] != mid[p])
     result["patched_functions"] = changed_patch_targets(patch_snapshot)
     result["stubbed_modules"] = sorted(STUBBED_MODULES)
     result["decoy_changes"] = sorted(p for p in ALL_DECOY_PATHS if before[p] != after[p])

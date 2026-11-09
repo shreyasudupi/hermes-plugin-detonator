@@ -82,7 +82,7 @@ before `hermes plugins update`, or when reviewing a catalog SHA bump.
 | Severity → verdict | Examples |
 |---|---|
 | critical → DANGEROUS | Reads decoy keys, `.env`, browser passwords or wallets; leaks a decoy secret; plants autostart, cron, LaunchAgent, `.bashrc` or `.pth` persistence |
-| high → SUSPICIOUS | Network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools |
+| high → SUSPICIOUS | Did something only after the clock was moved forward (time bomb); network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools |
 | medium → REVIEW | Secret-file paths or start-up locations in code that never ran (possible time bomb); a declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; own state outside `plugin-data/`; exec of strings; sandbox checks; native code |
 | low / info | Shell, string-built code or network calls in code that never ran; coverage notes (stand-in modules), temp files, background threads, library behaviour |
 
@@ -94,9 +94,15 @@ documenting it there.
 Verdicts: `DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS`, `ERROR`. The verdict comes
 from deterministic rules only. No model decides anything.
 
-### Code that stayed quiet
+### Clock jump and code that stayed quiet
 
-A short test only sees what a plugin does right away. To show what it might do later,
+A short test only sees what a plugin does right away. Malware often waits: for a date,
+or for days to pass after it was installed. So after the normal pass Detonator moves the
+plugin's clock forward (30 days, 400 days, about 5 years) and fires its hooks and tools
+again. `time.sleep` follows the moved clock, so a background thread that sleeps for hours
+wakes up too. Anything that only happens after a jump is flagged as `time_triggered`
+(high) and the finding says how many days it took.
+
 Detonator also reads the source of every file the plugin loads (parsed with `ast` on
 your machine, never executed) and compares it with what actually ran. Abilities that
 exist in the code but stayed quiet are reported as `dormant_code`: secret-file paths or
@@ -105,8 +111,8 @@ string-built code and network calls as low/info notes, because honest tools ofte
 those on paths a synthetic test does not reach. On 36 real catalog plugins this check
 changed no verdicts.
 
-**The report is advisory evidence, not proof.** Sandbox-aware code and code paths the
-synthetic inputs don't reach can still evade it, and the Python audit hooks run in the
+**The report is advisory evidence, not proof.** Sandbox-aware code, triggers other than
+time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still evade it, and the Python audit hooks run in the
 same process as the plugin. A clean report does not mean a plugin is safe.
 
 The sandbox image has no Hermes and no third-party packages. When a plugin imports one

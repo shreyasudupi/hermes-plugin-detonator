@@ -94,3 +94,37 @@ def test_abilities_only_reachable_through_a_stand_in_are_not_dormant():
 
 def test_no_static_data_changes_nothing():
     assert rules.evaluate(_result(None))["verdict"] == "NO_FINDINGS"
+
+
+# ---- clock jump -------------------------------------------------------------
+
+def _clock_result(events, hook_runs=()):
+    return {"manifest": {}, "events": events, "registered": {}, "stubbed_modules": [],
+            "import": {"ok": True}, "register": {"ok": True}, "hook_runs": list(hook_runs),
+            "decoy_paths": ["/tmp/home/.aws/credentials"], "decoy_categories": {}, "home": "/tmp/home",
+            "decoy_changes": [], "decoy_changes_before_clock": []}
+
+
+def test_behaviour_seen_only_after_the_clock_jump_is_a_time_bomb():
+    read = {"kind": "file_read", "path": "/tmp/home/.aws/credentials", "phase": "settle"}
+    ev = rules.evaluate(_clock_result([{**read, "clock_days": 30}]))
+    assert ev["verdict"] == "DANGEROUS"
+    bomb = next(f for f in ev["findings"] if f["rule"] == "time_triggered")
+    assert bomb["severity"] == "high" and bomb["evidence"][0].startswith("+30 days: Read decoy secret files")
+    stolen = next(f for f in ev["findings"] if f["rule"] == "decoy_accessed")
+    assert stolen["title"].endswith("(only after the clock moved 30 days forward)")
+
+
+def test_behaviour_already_seen_before_the_jump_is_not_a_time_bomb():
+    read = {"kind": "file_read", "path": "/tmp/home/.aws/credentials", "phase": "settle"}
+    ev = rules.evaluate(_clock_result([read, {**read, "clock_days": 400}]))
+    assert ev["verdict"] == "DANGEROUS"
+    assert not [f for f in ev["findings"] if f["rule"] == "time_triggered"]
+    assert all("clock moved" not in f["title"] for f in ev["findings"])
+
+
+def test_earliest_jump_is_reported():
+    read = {"kind": "file_read", "path": "/tmp/home/.aws/credentials", "phase": "settle"}
+    ev = rules.evaluate(_clock_result([{**read, "clock_days": 400}, {**read, "clock_days": 1900}]))
+    bomb = next(f for f in ev["findings"] if f["rule"] == "time_triggered")
+    assert bomb["evidence"][0].startswith("+400 days")

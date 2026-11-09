@@ -66,6 +66,7 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 | `sandbox_check` | medium | Checked whether it runs in a container or under a debugger. Malware does this to behave nicely while it is being tested. | [T1497.001](https://attack.mitre.org/techniques/T1497/001/) |
 | `monitor_tamper` | high | Tried to add its own audit hook or inspect the interpreter's live objects, which can be used to hide from or disable monitoring. | [T1685](https://attack.mitre.org/techniques/T1685/) |
 | `background_thread` | info | Started background threads. Fine for batching or polling, but catalog rule 13 asks for background work to be disclosed. | – |
+| `time_triggered` | high | Did something only after its clock was moved forward. Malware waits for a date, or for days to pass after install, so it passes short tests and reviews (a time bomb). | [T1480](https://attack.mitre.org/techniques/T1480/) [T1497.003](https://attack.mitre.org/techniques/T1497/003/) |
 | `dormant_code` | medium | The code can do this, but it never did during the test. Code that stays quiet in a sandbox may be waiting for a date, a keyword or a real key (a time bomb or trigger). Often it is just a path the test did not reach, so read that code before installing. | [T1480](https://attack.mitre.org/techniques/T1480/) [T1497.003](https://attack.mitre.org/techniques/T1497/003/) |
 
 ## Declarations and coverage
