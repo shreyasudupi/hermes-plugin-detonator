@@ -19,28 +19,45 @@ import time
 from pathlib import Path
 
 if __package__:
-    from .engine import report, rules, runner
+    from .engine import diff, report, rules, runner
 
-USAGE = "Usage: /detonate <owner/repo> <40-char-sha> [subdir]"
+USAGE = ("Usage: /detonate <owner/repo> <40-char-sha> [subdir]\n"
+         "   or: /detonate <owner/repo> <old-sha> <new-sha> [subdir]   (compare two versions)")
 APPROVE, CANCEL = "run", "cancel"
 
 
 def parse_target(raw: str):
+    """(repo, sha, subdir) for one run, or (repo, (old_sha, new_sha), subdir) to compare."""
     parts = shlex.split(raw or "")
-    if len(parts) not in (2, 3):
+    if len(parts) < 2:
         raise ValueError(USAGE)
     repo, sha = parts[0], parts[1].lower()
-    subdir = parts[2] if len(parts) == 3 else None
+    rest = parts[2:]
+    new_sha = None
+    if rest and runner.SHA_RE.match(rest[0].lower()):
+        new_sha = rest.pop(0).lower()
+    if len(rest) > 1:
+        raise ValueError(USAGE)
+    subdir = rest[0] if rest else None
     if not runner.REPO_RE.match(repo):
         raise ValueError("The repo must look like owner/name.")
     if not runner.SHA_RE.match(sha):
         raise ValueError("Give the full 40-character commit SHA (branches and short SHAs are not accepted).")
+    if new_sha == sha:
+        raise ValueError("The two commits are the same; give an older and a newer SHA to compare.")
     if subdir and (subdir.startswith("/") or ".." in Path(subdir).parts):
         raise ValueError("subdir must be a relative path inside the repo.")
-    return repo, sha, subdir
+    return repo, ((sha, new_sha) if new_sha else sha), subdir
 
 
-def approval_question(repo: str, sha: str, subdir: str | None) -> str:
+def approval_question(repo: str, sha, subdir: str | None) -> str:
+    if isinstance(sha, tuple):
+        where = f"{repo}@{sha[0][:12]} and @{sha[1][:12]}" + (f" ({subdir})" if subdir else "")
+        return (
+            f"Detonate and compare {where}? Detonator will git-fetch both exact commits and run each "
+            "plugin version inside its own disposable Docker container with no network and fake secrets. "
+            "Your real Hermes home and keys are never mounted."
+        )
     where = f"{repo}@{sha[:12]}" + (f" ({subdir})" if subdir else "")
     return (
         f"Detonate {where}? Detonator will git-fetch that exact commit and run the plugin's code "
@@ -62,17 +79,32 @@ def reports_dir() -> Path:
     return path
 
 
-def run_detonation(repo: str, sha: str, subdir: str | None):
-    """Fetch, detonate, judge. Returns (evaluation, markdown, report_path)."""
+def _report_path(repo: str, tag: str, subdir: str | None) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{repo}@{tag}" + (f"-{subdir}" if subdir else ""))
+    return reports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-{safe}.md"
+
+
+def run_detonation(repo: str, sha: str, subdir: str | None, with_raw: bool = False):
+    """Fetch, detonate, judge. Returns (evaluation, markdown, report_path[, raw])."""
     with tempfile.TemporaryDirectory(prefix="detonator-src-") as work:
         target = runner.fetch_github(repo, sha, Path(work), subdir)
         raw = runner.detonate(target)
     evaluation = rules.evaluate(raw)
     markdown = report.render(target.label, evaluation, raw)
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{repo}@{sha[:12]}" + (f"-{subdir}" if subdir else ""))
-    path = reports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-{safe}.md"
+    path = _report_path(repo, sha[:12], subdir)
     path.write_text(markdown)
-    return evaluation, markdown, path
+    return (evaluation, markdown, path, raw) if with_raw else (evaluation, markdown, path)
+
+
+def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None) -> str:
+    """Detonate both commits, then report what the newer one does that the older did not."""
+    old_eval, _, old_path, old_raw = run_detonation(repo, old_sha, subdir, with_raw=True)
+    new_eval, _, new_path, new_raw = run_detonation(repo, new_sha, subdir, with_raw=True)
+    changes = diff.compare(old_eval, new_eval, old_raw, new_raw)
+    label = repo + (f" ({subdir})" if subdir else "")
+    path = _report_path(repo, f"{old_sha[:8]}-vs-{new_sha[:8]}", subdir)
+    path.write_text(diff.render(label, old_sha, new_sha, changes))
+    return diff.summary(changes, old_sha, new_sha, paths=[path, old_path, new_path])
 
 
 def summary(evaluation: dict, path: Path) -> str:
@@ -108,6 +140,8 @@ def make_slash_handler(ctx):
             return ("Not run: Detonator needs your explicit approval, and none was given "
                     "(cancelled, timed out, or no one could be asked).")
         try:
+            if isinstance(sha, tuple):
+                return run_comparison(repo, sha[0], sha[1], subdir)
             evaluation, _md, path = run_detonation(repo, sha, subdir)
         except runner.DetonatorError as exc:
             return f"Detonator could not run: {exc}"
@@ -122,10 +156,13 @@ def setup_cli(subparser):
     subparser.add_argument("repo", help="GitHub owner/name of the plugin to test")
     subparser.add_argument("sha", help="full 40-character commit SHA")
     subparser.add_argument("--subdir", help="plugin folder inside the repo")
+    subparser.add_argument("--compare-to", dest="compare_to", metavar="NEW_SHA",
+                           help="also run this newer commit and report what changed")
 
 
 def cli_handler(args) -> int:
-    raw = " ".join(shlex.quote(x) for x in [args.repo, args.sha] + ([args.subdir] if args.subdir else []))
+    parts = [args.repo, args.sha] + ([args.compare_to] if getattr(args, "compare_to", None) else [])
+    raw = " ".join(shlex.quote(x) for x in parts + ([args.subdir] if args.subdir else []))
     try:
         repo, sha, subdir = parse_target(raw)
     except ValueError as exc:
@@ -144,6 +181,9 @@ def cli_handler(args) -> int:
         print("Cancelled.")
         return 1
     try:
+        if isinstance(sha, tuple):
+            print(run_comparison(repo, sha[0], sha[1], subdir))
+            return 0
         evaluation, markdown, path = run_detonation(repo, sha, subdir)
     except runner.DetonatorError as exc:
         print(f"Detonator could not run: {exc}", file=sys.stderr)

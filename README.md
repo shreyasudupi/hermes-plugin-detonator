@@ -23,13 +23,34 @@ Then, in a Hermes session:
 /detonate <owner/repo> <40-char-sha> [subdir]
 ```
 
-or from a terminal: `hermes detonate <owner/repo> <40-char-sha> [--subdir path]`.
+or from a terminal: `hermes detonate <owner/repo> <40-char-sha> [--subdir path] [--compare-to new-sha]`.
 
 Detonator always asks you before it runs anything. If no one can answer (a cron
 job, a hook, a non-interactive or unattended run), it refuses instead of running.
 There is no flag that skips the question. The `detonate_plugin` tool lets the
 agent suggest a run, but it only returns the `/detonate` command for you to run.
 Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
+
+## Compare two versions (rug-pull check)
+
+A plugin can be clean when you install it and turn bad in an update. Give two commits
+and Detonator runs both, then shows what the newer one does that the older one did not:
+
+```
+/detonate <owner/repo> <old-sha> <new-sha> [subdir]
+```
+
+```
+⚠️ NEW VERSION IS RISKIER: it does things the old version did not.
+Verdict: NO_FINDINGS (eea9e9b8) → DANGEROUS (dafae722)
+New in this version:
++ [critical] Read decoy secret files (keys, tokens, .env) (T1552.001, T1552.004, AML.T0055, AML.T0083)
++ [high] Reached for the network while loading or from a background hook (...)
+```
+
+It also lists behaviour that went away and changes to what the plugin declares
+(tools, hooks, env vars), and saves a diff report next to the two full reports. Useful
+before `hermes plugins update`, or when reviewing a catalog SHA bump.
 
 ## What it checks
 

@@ -19,6 +19,11 @@ DETONATE_PLUGIN = {
                 "type": "string",
                 "description": "Full 40-character commit SHA to test.",
             },
+            "new_sha": {
+                "type": "string",
+                "description": "Optional newer 40-character commit SHA. When given, Detonator runs both "
+                               "commits and reports what the newer version does that the older did not.",
+            },
             "subdir": {
                 "type": "string",
                 "description": "Optional plugin folder inside the repository.",

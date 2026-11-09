@@ -23,7 +23,10 @@ def detonate_plugin(args: dict, **kwargs) -> str:
             return json.dumps({"error": "repo must look like owner/name"})
         if not _SHA_RE.match(sha):
             return json.dumps({"error": "sha must be a full 40-character commit SHA"})
-        command = f"/detonate {repo} {sha}" + (f" {subdir}" if subdir else "")
+        new_sha = str(args.get("new_sha") or "").strip().lower()
+        if new_sha and not _SHA_RE.match(new_sha):
+            return json.dumps({"error": "new_sha must be a full 40-character commit SHA"})
+        command = f"/detonate {repo} {sha}" + (f" {new_sha}" if new_sha else "") + (f" {subdir}" if subdir else "")
         return json.dumps({
             "status": "needs_user_approval",
             "message": "Detonator only runs after the user approves it. Ask the user to run this "

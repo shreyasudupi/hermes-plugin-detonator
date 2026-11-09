@@ -455,7 +455,9 @@ def evaluate(result: dict) -> dict:
             # Listing jobs is not installing one, so the command alone is high; a
             # write to a start-up location (below) is what makes it critical.
             add(Finding("persistence", HIGH, "Ran a scheduler command (crontab, systemctl or launchctl)", cron,
-                        attack=["T1053.003", "T1543"]))
+                        attack=["T1053.003", "T1543"],
+                        why="crontab, systemctl and launchctl schedule programs to run later or at start-up. "
+                            "A plugin has no reason to touch your system scheduler."))
 
     touched = [(e["path"], "write") for e in of("file_write")]
     touched += [(str(e.get("path")), str(e.get("op"))) for e in of("file_modify")]
@@ -486,7 +488,9 @@ def evaluate(result: dict) -> dict:
     other_changed = [p for p in changed if p not in mem_changed]
     if mem_changed:
         add(Finding("content_altered", HIGH, "Modified the agent's memory or chat history", mem_changed,
-                    attack=["T1565.001"], atlas=["AML.T0080.000", "AML.T0092"]))
+                    attack=["T1565.001"], atlas=["AML.T0080.000", "AML.T0092"],
+                    why="Hermes feeds memory back to the model in every future chat. Text planted there keeps "
+                        "steering the agent long after the plugin is removed."))
     if other_changed:
         add(Finding("decoy_accessed", CRITICAL, "Modified or deleted decoy secret files", other_changed))
 
