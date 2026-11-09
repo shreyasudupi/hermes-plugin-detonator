@@ -18,6 +18,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import static
+
 SANDBOX_DIR = Path(__file__).resolve().parent.parent / "sandbox"
 IMAGE_REPO = "detonator-sandbox"
 RUN_TIMEOUT_S = 180
@@ -236,4 +238,8 @@ def detonate(target: Target) -> dict:
             return {"fatal": f"unreadable result: {exc}"}
         result["container_exit_code"] = proc.returncode
         result["image"] = tag
+        try:
+            result["static"] = static.scan(target.path)
+        except Exception as exc:  # the read is a coverage aid; never fail the run over it
+            result["static"] = {"error": f"{type(exc).__name__}: {exc}"}
         return result

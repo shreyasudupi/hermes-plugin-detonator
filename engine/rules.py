@@ -53,6 +53,15 @@ RULES = {
     "env_enumerated": Rule(
         "Copying the whole environment collects every API key at once.",
         ("T1552",), ("AML.T0055",)),
+    "hermes_env_read": Rule(
+        "Hermes keeps your API keys in the .env file in its home folder and already loads them for plugins. The catalog rules "
+        "say plugins must never read that file; a plugin that opens it gets every key at once. Honest "
+        "plugins sometimes do this to find their own key, so check which key it needs and whether it declares it.",
+        ("T1552.001",), ("AML.T0055",)),
+    "undeclared_env_read": Rule(
+        "Plugins must list every API key they use in requires_env. Reading one it never declared is often a "
+        "fallback to a common key (such as OPENAI_API_KEY), but it is also how stealers collect keys quietly.",
+        ("T1552",), ("AML.T0055",)),
     "declared_env_read": Rule("Reading a key the plugin says it needs is normal; listed for completeness."),
     "decoy_dir_listed": Rule(
         "Listing your home folder or the folders that hold keys and memory is how stealers find what to take.",
@@ -165,6 +174,15 @@ RULES = {
     "load_error": Rule("The plugin crashed while loading, so less of it was observed."),
     "coverage_incomplete": Rule(
         "The plugin stopped on a stand-in module, so code after that point was not observed."),
+    "time_triggered": Rule(
+        "Did something only after its clock was moved forward. Malware waits for a date, or for days to pass "
+        "after install, so it passes short tests and reviews (a time bomb).",
+        ("T1480", "T1497.003"), ()),
+    "dormant_code": Rule(
+        "The code can do this, but it never did during the test. Code that stays quiet in a sandbox may be "
+        "waiting for a date, a keyword or a real key (a time bomb or trigger). Often it is just a path the "
+        "test did not reach, so read that code before installing.",
+        ("T1480", "T1497.003"), ()),
     "coverage_stubbed_imports": Rule(
         "The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, "
         "and anything done through them (e.g. an HTTP call via httpx) was not observed."),
@@ -204,7 +222,8 @@ INJECTION_PATTERNS = [
     r"<\s*(?:important|system|instructions?)\s*>",
     r"before (?:using|calling|running) (?:this|any) tool[^.\n]{0,60}\b(?:read|send|call|run|include)",
     r"\b(?:read|cat|open|send|include|upload|paste|pass)\b[^.\n]{0,40}(?:~/\.ssh|\bid_rsa\b|\bid_ed25519\b|"
-    r"\bauth\.json\b|\bapi[_ ]?keys?\b|\bcredentials\b|\bprivate key\b|\.env\b(?:\s+file)?)",
+    r"\bauth\.json\b|\bcredentials\b|\bprivate key\b|\.env\b(?:\s+file)?)",
+    r"\b(?:read|send|include|upload|paste)\b[^.\n]{0,40}\bapi[_ ]?keys?\b",
     r"\b(?:exfiltrat\w*|secretly|covertly)\b",
     r"you\s+are\s+now\s+(?:in\s+)?(?:developer|dan|jailbreak)",
     r"new (?:system )?instructions?:",
@@ -261,6 +280,62 @@ def _as_list(value):
 
 
 def evaluate(result: dict) -> dict:
+    """Judge one detonation. When the harness also ran the plugin with its clock moved
+    forward, anything that only showed up then is marked as time-triggered."""
+    full = _evaluate(result)
+    jumps = sorted({e["clock_days"] for e in result.get("events") or [] if e.get("clock_days")} |
+                   {h["clock_days"] for h in result.get("hook_runs") or [] if h.get("clock_days")})
+    if full["verdict"] == VERDICT_ERROR or not jumps:
+        return full
+
+    def upto(days):
+        return dict(result,
+                    events=[e for e in result.get("events") or [] if (e.get("clock_days") or 0) <= days],
+                    hook_runs=[h for h in result.get("hook_runs") or [] if (h.get("clock_days") or 0) <= days],
+                    decoy_changes=(result.get("decoy_changes") if days else
+                                   result.get("decoy_changes_before_clock", result.get("decoy_changes"))),
+                    static=None)
+
+    seen = {(f["rule"], f["title"]) for f in _evaluate(upto(0))["findings"]}
+    first_day = {}
+    for days in jumps:
+        for f in _evaluate(upto(days))["findings"]:
+            first_day.setdefault((f["rule"], f["title"]), days)
+    late = []
+    for f in full["findings"]:
+        key = (f["rule"], f["title"])
+        if key in seen or key not in first_day or f["rule"] == "dormant_code":
+            continue
+        if f["severity"] in (CRITICAL, HIGH, MEDIUM):
+            late.append(f"+{first_day[key]} days: {f['title']}")
+        f["title"] += f" (only after the clock moved {first_day[key]} days forward)"
+    if late:
+        bomb = Finding("time_triggered", HIGH, "Did new things only after its clock was moved forward (time bomb)",
+                       late[:8]).to_dict()
+        full["findings"] = sorted(full["findings"] + [bomb],
+                                  key=lambda f: SEVERITY_ORDER.index(f["severity"]))
+        full["verdict"] = _verdict([Finding(**f) for f in full["findings"]])
+    full["clock_jumps"] = jumps
+    return full
+
+
+_DECOY_ENV_COUNT = 5
+
+
+def _mark_bulk_env_reads(events: list, total: int) -> list:
+    """Copying the whole environment into a dict happens in C code, so each
+    key looks like a direct read. A single moment that touches every decoy variable is
+    a copy of the whole environment, not a targeted grab of each key."""
+    groups: dict = {}
+    for e in events:
+        if e.get("how", "direct") == "direct":
+            groups.setdefault((e.get("phase"), e.get("t"), e.get("clock_days")), set()).add(e.get("name"))
+    bulk = {k for k, names in groups.items() if total and len(names) >= total}
+    return [{**e, "how": "enumerated"} if e.get("how", "direct") == "direct" and
+            (e.get("phase"), e.get("t"), e.get("clock_days")) in bulk else e for e in events]
+
+
+def _evaluate(result: dict) -> dict:
     findings: list[Finding] = []
 
     if not result or result.get("fatal"):
@@ -297,8 +372,14 @@ def evaluate(result: dict) -> dict:
     secret_reads = [p for p in reads if cat(p) == "secret"]
     loot_reads = [p for p in reads if cat(p) in ("browser", "wallet")]
     private_reads = [p for p in reads if cat(p) in ("memory", "history")]
+    hermes_env = os.path.join(hermes_home, ".env") if hermes_home else None
+    env_file_reads = [p for p in secret_reads if p == hermes_env]
+    secret_reads = [p for p in secret_reads if p != hermes_env]
     if secret_reads:
         add(Finding("decoy_accessed", CRITICAL, "Read decoy secret files (keys, tokens, .env)", secret_reads))
+    if env_file_reads:
+        add(Finding("hermes_env_read", HIGH, "Read Hermes's .env file, where your API keys are kept",
+                    env_file_reads))
     if loot_reads:
         add(Finding("browser_or_wallet_read", CRITICAL, "Read decoy browser passwords, cookies or crypto wallets",
                     loot_reads))
@@ -306,15 +387,13 @@ def evaluate(result: dict) -> dict:
         add(Finding("memory_read", MEDIUM, "Read the agent's memory or chat history", private_reads))
 
     env_events = of("env_read")
+    env_events = _mark_bulk_env_reads(env_events, len(result.get("decoy_env") or ()) or _DECOY_ENV_COUNT)
     env_reads = sorted({e["name"] for e in env_events if e.get("how", "direct") == "direct"})
     declared_env = set(_as_list(manifest.get("requires_env")))
     undeclared_env = [n for n in env_reads if n not in declared_env]
     if undeclared_env:
-        add(Finding("decoy_accessed", CRITICAL,
-                    "Read credential environment variables it does not declare in requires_env",
-                    undeclared_env, attack=["T1552"],
-                    why="Plugins must list every API key they use in requires_env. Quietly reading keys "
-                        "they never declared is how stealers collect them without the user noticing."))
+        add(Finding("undeclared_env_read", HIGH,
+                    "Read API key variables it does not declare in requires_env", undeclared_env))
     declared_env_reads = [n for n in env_reads if n in declared_env]
     if declared_env_reads:
         add(Finding("declared_env_read", INFO, "Read environment variables it declares in requires_env",
@@ -466,7 +545,7 @@ def evaluate(result: dict) -> dict:
         if _under(path, allowed_writes) or path in decoy_paths:
             continue  # decoy changes are judged below
         label = path if op == "write" else f"{op} {path}"
-        rule, sev, tech = _classify_write(path, op, home, hermes_home, plugin_dir)
+        rule, sev, tech = _classify_write(path, op, home, hermes_home, plugin_dir, manifest.get("name"))
         b = buckets.setdefault((rule, sev), {"evidence": set(), "attack": set()})
         b["evidence"].add(label)
         if tech:
@@ -562,6 +641,8 @@ def evaluate(result: dict) -> dict:
                     "Ran with stand-ins for modules the sandbox does not have; "
                     "activity through them was not observed", stubbed[:30]))
 
+    findings.extend(_dormant(result.get("static"), findings, events, stubbed))
+
     for phase in ("import", "register"):
         info = result.get(phase) or {}
         if not info.get("ok", False):
@@ -574,6 +655,16 @@ def evaluate(result: dict) -> dict:
             else:
                 add(Finding("load_error", MEDIUM, f"Plugin failed during {phase}", [str(info.get("error"))]))
 
+    # Reading keys is SUSPICIOUS on its own (honest plugins sometimes look up their
+    # own key). Together with a reach for the network or another theft it is the
+    # stealer pattern, so it goes back to critical.
+    seen = {f.rule for f in findings}
+    if seen & {"undeclared_network", "secret_in_output", "decoy_accessed", "browser_or_wallet_read"}:
+        for f in findings:
+            if f.rule in ("hermes_env_read", "undeclared_env_read"):
+                f.severity = CRITICAL
+                f.title += ", and also reached for the network or other secrets"
+
     return {
         "verdict": _verdict(findings),
         "findings": [f.to_dict() for f in sorted(findings, key=lambda f: SEVERITY_ORDER.index(f.severity))],
@@ -581,7 +672,53 @@ def evaluate(result: dict) -> dict:
     }
 
 
-def _classify_write(path: str, op: str, home, hermes_home, plugin_dir):
+DORMANT_TITLE = {
+    "shell": "Has shell commands that never ran in the sandbox",
+    "dynamic_code": "Has code built from strings or hidden bytecode that never ran in the sandbox",
+    "secret_paths": "Mentions secret files (keys, tokens, wallets) it never opened in the sandbox",
+    "persistence": "Mentions start-up locations (login items, cron, shell start-up files) it never wrote to",
+    "network": "Has network calls that never ran in the sandbox",
+}
+
+
+def _dormant(static, findings, events, stubbed) -> list:
+    """Risky abilities present in the source that never ran in the sandbox."""
+    if not static or not static.get("hits"):
+        return []
+    rules_seen = {f.rule for f in findings}
+    kinds = {e.get("kind") for e in events}
+    ran = {
+        "shell": "process" in kinds,
+        "network": "network" in kinds,
+        "dynamic_code": "hidden_code" in kinds or any(
+            e.get("kind") == "dynamic_code" and e.get("by") == "plugin" for e in events),
+        "secret_paths": bool(rules_seen & {"decoy_accessed", "hermes_env_read", "undeclared_env_read", "browser_or_wallet_read", "decoy_dir_listed"}),
+        "persistence": "persistence" in rules_seen,
+    }
+    stubbed_top = {str(m).split(".")[0] for m in stubbed}
+    time_note = []
+    if static.get("time_checks"):
+        time_note = [f"also reads the date or time: {static['time_checks'][0]}"]
+    out = []
+    for cat, hits in static["hits"].items():
+        if ran.get(cat) or not hits:
+            continue
+        used = set((static.get("modules") or {}).get(cat) or [])
+        if used and used <= stubbed_top:
+            continue  # only reachable through a stand-in; already reported as a coverage gap
+        # Secret stores and start-up locations are rarely legitimate in a plugin and are
+        # the payload of a time bomb; shell, string code and network are common in honest
+        # tools that the synthetic test simply did not drive far enough.
+        severity = MEDIUM if cat in ("secret_paths", "persistence") else (INFO if cat == "network" else LOW)
+        # A date check next to them is worth pointing at, but many honest plugins read the
+        # clock for timestamps, so it adds evidence rather than raising the severity
+        # (tested on 36 catalog plugins: raising it produced a false SUSPICIOUS).
+        out.append(Finding("dormant_code", severity, DORMANT_TITLE[cat],
+                           hits[:5] + (time_note if severity == MEDIUM else [])))
+    return out
+
+
+def _classify_write(path: str, op: str, home, hermes_home, plugin_dir, name=None):
     """(rule, severity, extra ATT&CK id) for a write/modify outside the allowed folders."""
     norm = os.path.normpath(path)
     base = os.path.basename(norm)
@@ -598,6 +735,10 @@ def _classify_write(path: str, op: str, home, hermes_home, plugin_dir):
     if home and _under(norm, [home]):
         rel = os.path.relpath(norm, home).split(os.sep)
         if hermes_home and rel[0] == ".hermes":
+            own = isinstance(name, str) and len(name) >= 3 and \
+                rel[-1].lstrip(".").lower().startswith(name.lower())
+            if len(rel) == 2 and own and rel[1] not in HERMES_SENSITIVE:
+                return "write_own_state", MEDIUM, None      # ~/.hermes/<name>-state.json, named after itself
             if len(rel) <= 2 or rel[1] in HERMES_SENSITIVE:
                 return "agent_config_modified", HIGH, None  # config.yaml, .env, SOUL.md, plugins, skills...
             if rel[1] in ("memories", "sessions"):
@@ -611,12 +752,30 @@ def _classify_write(path: str, op: str, home, hermes_home, plugin_dir):
     return "write_outside_folder", HIGH, None
 
 
+# Honest tools often say what they will NOT do ("never include credentials",
+# "does not read private key material", "do not pay without asking the user").
+# Those sentences are about safety, not orders to leak. Only the "ask for secrets"
+# and "without telling the user" patterns are checked this way: "never tell the user"
+# is itself the hiding order.
+_NEGATION_RE = re.compile(r"\b(?:never|not|no|don't|doesn't|won't|cannot|can't|refuses?)\b", re.IGNORECASE)
+_NEGATABLE_RE = re.compile(r"^(?:read|cat|open|send|include|upload|paste|pass|without)\b", re.IGNORECASE)
+
+
+def _negated(text: str, m) -> bool:
+    if not _NEGATABLE_RE.match(m.group(0)):
+        return False
+    sentence_start = max(text.rfind(c, 0, m.start()) for c in ".!?;\n") + 1
+    return bool(_NEGATION_RE.search(text[sentence_start:m.end()]))
+
+
 def _injection_hits(value) -> list:
     if value in (None, "", {}, []):
         return []
     text = "\n".join(_strings(value))
     hits = []
     for m in INJECTION_RE.finditer(text):
+        if _negated(text, m):
+            continue
         start = max(0, m.start() - 40)
         hits.append("…" + text[start:m.end() + 40].replace("\n", " ") + "…")
     if HIDDEN_CHARS_RE.search(text):
