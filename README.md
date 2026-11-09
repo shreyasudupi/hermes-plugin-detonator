@@ -33,16 +33,17 @@ Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
 
 ## What it checks
 
-| Rule | Severity | Example |
-|---|---|---|
-| Decoy secret accessed | critical | Reads `~/.hermes/.env`, `auth.json`, an SSH key, or asks for an API-key env var it does not declare |
-| Secret leaked | critical | A tool result, hook return or network address contains a decoy key |
-| Hidden content change | high | An undeclared `pre_llm_call` injects text, a hook edits its arguments in place, `MEMORY.md` changes |
-| Network while loading or from a background hook | high | Socket connect or DNS lookup during import, `register()` or a hook (the sandbox has no network, so nothing leaves) |
-| Command run / sensitive write | high | `subprocess`, `os.system`; writing `~/.bashrc`, `~/.ssh`, Hermes config, other plugins or skills |
-| Declared vs registered mismatch | high | Registers hooks or tools missing from `plugin.yaml` (catalog rule 6) |
-| Needs a human look | medium | A declared prompt hook's added text, tools calling a host, localhost access, reading memory files, state kept outside `plugin-data/`, walking the whole environment in its own code, native code |
-| Coverage notes | low / info | Modules replaced by stand-ins, a load that stopped on a stand-in, temp files, runtime compile, a library scanning the environment for proxy settings |
+| Severity → verdict | Examples |
+|---|---|
+| critical → DANGEROUS | Reads decoy keys, `.env`, browser passwords or wallets; leaks a decoy secret; plants autostart, cron, LaunchAgent, `.bashrc` or `.pth` persistence |
+| high → SUSPICIOUS | Network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools |
+| medium → REVIEW | A declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; own state outside `plugin-data/`; exec of strings; sandbox checks; native code |
+| low / info | Coverage notes (stand-in modules), temp files, background threads, library behaviour |
+
+**Every finding says why it matters and maps to [MITRE ATT&CK](https://attack.mitre.org/) and
+[MITRE ATLAS](https://atlas.mitre.org/) techniques.** The full list, with each rule's reasoning and
+technique IDs, is in [docs/RULES.md](docs/RULES.md). A test fails if a rule is added without
+documenting it there.
 
 Verdicts: `DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS`, `ERROR`. The verdict comes
 from deterministic rules only. No model decides anything.

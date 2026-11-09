@@ -63,6 +63,31 @@ DECOY_FILES = {
     ),
 }
 
+# More places real stealers look (PyPI/npm malware reports): git, package
+# registries, cloud CLIs, browsers and crypto wallets.
+DECOY_FILES.update({
+    os.path.join(HOME, ".git-credentials"): f"https://user:{CANARY}-git-0011@github.com\n",
+    os.path.join(HOME, ".netrc"): f"machine api.example.com login user password {CANARY}-netrc-0012\n",
+    os.path.join(HOME, ".docker", "config.json"): json.dumps({"auths": {"ghcr.io": {"auth": f"{CANARY}-docker-0013"}}}),
+    os.path.join(HOME, ".kube", "config"): f"users:\n- name: admin\n  user:\n    token: {CANARY}-kube-0014\n",
+    os.path.join(HOME, ".npmrc"): f"//registry.npmjs.org/:_authToken={CANARY}-npm-0015\n",
+    os.path.join(HOME, ".pypirc"): f"[pypi]\nusername = __token__\npassword = pypi-{CANARY}-0016\n",
+    os.path.join(HOME, ".config", "gh", "hosts.yml"): f"github.com:\n  oauth_token: gho_{CANARY}-0017\n",
+})
+
+BROWSER_FILES = {
+    os.path.join(HOME, ".config", "google-chrome", "Default", "Login Data"): f"SQLite format 3 {CANARY}-chrome-0018",
+    os.path.join(HOME, ".config", "google-chrome", "Default", "Cookies"): f"SQLite format 3 {CANARY}-cookie-0019",
+    os.path.join(HOME, "Library", "Application Support", "Google", "Chrome", "Default", "Login Data"):
+        f"SQLite format 3 {CANARY}-chrome-0020",
+    os.path.join(HOME, ".mozilla", "firefox", "default", "logins.json"): json.dumps({"logins": [f"{CANARY}-ff-0021"]}),
+}
+
+WALLET_FILES = {
+    os.path.join(HOME, ".config", "solana", "id.json"): f"[{CANARY}-sol-0022]",
+    os.path.join(HOME, ".ethereum", "keystore", "UTC--2026-01-01--wallet"): json.dumps({"crypto": f"{CANARY}-eth-0023"}),
+}
+
 MEMORY_FILES = {
     os.path.join(HERMES_HOME, "memories", "MEMORY.md"): (
         f"# Memory\n- The user prefers concise answers. ({CANARY}-mem-0009)\n"
@@ -72,15 +97,33 @@ MEMORY_FILES = {
     ),
 }
 
+HISTORY_FILES = {
+    os.path.join(HERMES_HOME, "sessions", "det-old-session.jsonl"): json.dumps(
+        {"role": "user", "content": f"my bank pin is 0000 ({CANARY}-hist-0024)"}) + "\n",
+}
+
 # Substrings that only appear in decoy secrets / memory, never in synthetic args.
 SECRET_MARKERS = [f"{CANARY}-{tag}" for tag in (
     "0001", "0002", "0003", "0005", "auth-0006", "ssh-0007", "0008", "mem-0009", "user-0010",
+    "git-0011", "netrc-0012", "docker-0013", "kube-0014", "npm-0015", "0016", "0017",
+    "chrome-0018", "cookie-0019", "chrome-0020", "ff-0021", "sol-0022", "eth-0023", "hist-0024",
 )] + [f"ghp_{CANARY}0004"]
 
-DECOY_DIRS = sorted(
-    {os.path.dirname(p) for p in list(DECOY_FILES) + list(MEMORY_FILES)}
-)
-ALL_DECOY_PATHS = set(DECOY_FILES) | set(MEMORY_FILES)
+DECOY_CATEGORIES = {
+    **{p: "secret" for p in DECOY_FILES},
+    **{p: "browser" for p in BROWSER_FILES},
+    **{p: "wallet" for p in WALLET_FILES},
+    **{p: "memory" for p in MEMORY_FILES},
+    **{p: "history" for p in HISTORY_FILES},
+}
+ALL_DECOY_PATHS = set(DECOY_CATEGORIES)
+DECOY_DIRS = sorted({os.path.dirname(p) for p in ALL_DECOY_PATHS} | {HOME})
+
+# Files malware reads to tell a sandbox or debugger from a real machine.
+SANDBOX_PROBES = ("/.dockerenv", "/run/.containerenv", "/proc/1/cgroup", "/proc/self/cgroup",
+                  "/proc/self/mountinfo", "/proc/1/sched", "/proc/self/status", "/sys/class/dmi/id",
+                  "/proc/cpuinfo", "/sys/hypervisor")
+RECON_FILES = ("/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/hosts", "/etc/os-release")
 
 # --------------------------------------------------------------------------
 # Observation log
@@ -144,7 +187,29 @@ def _audit(event, args):
             write = _is_write(mode, flags)
             if not write and (real.startswith(_STD_PREFIXES) or real.startswith(PLUGIN_DIR)):
                 return  # normal imports / reading its own files
+            if not write and (real.startswith(SANDBOX_PROBES) or path.startswith(SANDBOX_PROBES)):
+                _record("sandbox_probe", path=path, by=_caller())
+                return
+            if not write and real in RECON_FILES:
+                _record("recon_read", path=real, by=_caller())
+                return
             _record("file_write" if write else "file_read", path=real)
+        elif event in ("os.putenv", "os.unsetenv"):
+            key = os.fsdecode(args[0]) if args and isinstance(args[0], (str, bytes)) else _short(args)
+            _record("env_write", op=event, name=key, by=_caller())
+        elif event == "sys.addaudithook":
+            _record("monitor_tamper", op=event, by=_caller())
+        elif event in ("gc.get_objects", "gc.get_referrers", "gc.get_referents"):
+            if _caller() == "plugin":
+                _record("monitor_tamper", op=event, by="plugin")
+        elif event in ("marshal.loads", "marshal.load"):
+            if _caller() == "plugin":
+                _record("hidden_code", op=event)
+        elif event == "pickle.find_class":
+            mod, attr = (list(args) + [None, None])[:2]
+            if str(mod).split(".")[0] in ("os", "posix", "nt", "subprocess", "builtins", "sys", "socket",
+                                          "importlib", "shutil", "pty", "runpy", "code", "ctypes"):
+                _record("hidden_code", op=event, detail=f"{mod}.{attr}")
         elif event in ("os.remove", "os.rename", "os.unlink", "shutil.rmtree", "os.rmdir", "os.truncate", "os.chmod"):
             _record("file_modify", op=event, path=_target_path(args[0] if args else None))
         elif event in ("os.listdir", "os.scandir"):
@@ -162,14 +227,24 @@ def _audit(event, args):
             _record("network", op=event, address=_short(args[0] if args else None))
         elif event in ("ctypes.dlopen", "ctypes.dlsym"):
             _record("native", op=event, detail=_short(args))
-        elif event == "compile" and _PHASE != "import":
+        elif event == "compile":
             source, filename = (list(args) + [None, None])[:2]
             fname = os.fsdecode(filename) if isinstance(filename, (str, bytes)) else ""
+            by = _caller()
+            # exec("...") / compile("...", "<x>") use a pseudo file name; real
+            # module files (stdlib imported without .pyc caches) do not count.
+            if by == "plugin" and isinstance(source, (str, bytes)) and fname.startswith("<") \
+                    and not fname.startswith("<frozen"):
+                # exec()/eval()/compile() of a string written by the plugin itself
+                _record("dynamic_code", op=event, by="plugin", detail=_short(source, 200))
+                return
+            if _PHASE == "import":
+                return
             if not os.path.realpath(fname or "/").startswith(_STD_PREFIXES + (PLUGIN_DIR,)) \
                     or fname in ("<string>", "<unknown>"):
                 if fname.startswith("<frozen"):
                     return
-                _record("dynamic_code", op=event, detail=_short(source, 120))
+                _record("dynamic_code", op=event, by=by, detail=_short(source, 120))
         elif event == "exec" and _PHASE != "import":
             code = args[0] if args else None
             fname = getattr(code, "co_filename", "") or ""
@@ -186,6 +261,17 @@ def _audit(event, args):
         pass
     finally:
         _IN_HOOK = False
+
+
+def _caller(depth=2):
+    """'plugin' when the nearest real Python frame is plugin code, else 'library'."""
+    frame = sys._getframe(depth)
+    while frame is not None:
+        name = frame.f_code.co_filename
+        if not name.startswith("<frozen") and name != __file__:
+            return "plugin" if name == PLUGIN_DIR or name.startswith(PLUGIN_DIR + "/") else "library"
+        frame = frame.f_back
+    return "library"
 
 
 def _env_caller():
@@ -232,7 +318,21 @@ class _EnvWatch:
 STUBBED_MODULES = []
 
 
+HERMES_MODULES = {"tools", "agent", "gateway", "hermes_cli", "hermes_state", "run_agent",
+                  "model_tools", "toolsets", "cli", "hermes_constants", "plugins", "acp_adapter"}
+
+
+def _note_override(target, name):
+    if _ACTIVE and _caller(3) == "plugin":
+        _record("hermes_override", target=f"{target}.{name}")
+
+
 class _StubMeta(type):
+    def __setattr__(cls, name, value):
+        if cls.__dict__.get("_detonator_stub"):
+            _note_override(cls.__dict__.get("_detonator_path", cls.__name__), name)
+        super().__setattr__(name, value)
+
     def __getattr__(cls, name):
         if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
@@ -273,17 +373,23 @@ class _Stub(metaclass=_StubMeta):
         return False
 
 
-def _new_stub(name):
-    return _StubMeta(str(name), (_Stub,), {})
+def _new_stub(name, path=None):
+    return _StubMeta(str(name), (_Stub,), {"_detonator_stub": True, "_detonator_path": path or str(name)})
 
 
 class _StubModule(type(sys)):
     def __getattr__(self, name):
         if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
-        value = _new_stub(name)
-        setattr(self, name, value)
+        value = _new_stub(name, f"{self.__name__}.{name}")
+        object.__setattr__(self, name, value)
         return value
+
+    def __setattr__(self, name, value):
+        if (not name.startswith("__") and self.__name__.split(".")[0] in HERMES_MODULES
+                and not isinstance(value, type(sys))):  # the import system binding a submodule
+            _note_override(self.__name__, name)
+        object.__setattr__(self, name, value)
 
 
 class _StubLoader:
@@ -326,6 +432,62 @@ class _StubFinder:
         import importlib.machinery
 
         return importlib.machinery.ModuleSpec(fullname, _StubLoader(), is_package=True)
+
+# --------------------------------------------------------------------------
+# Monkeypatch watch: functions malware swaps out to spy on or redirect traffic
+# --------------------------------------------------------------------------
+PATCH_TARGETS = {
+    "builtins": ["open", "exec", "eval", "compile", "__import__", "print", "input"],
+    "os": ["system", "popen", "open", "getenv", "putenv", "listdir", "remove"],
+    "subprocess": ["Popen", "run", "call", "check_output"],
+    "socket": ["socket", "create_connection", "getaddrinfo"],
+    "ssl": ["create_default_context", "SSLContext"],
+    "json": ["dumps", "loads"],
+    "urllib.request": ["urlopen", "Request", "OpenerDirector"],
+    "http.client": ["HTTPConnection", "HTTPSConnection"],
+    "sys": ["audit", "addaudithook", "excepthook", "displayhook", "settrace", "setprofile"],
+    "importlib": ["import_module"],
+    "logging": ["Logger", "getLogger"],
+}
+
+
+def snapshot_patch_targets():
+    import importlib as _il
+    snap = {}
+    for modname, attrs in PATCH_TARGETS.items():
+        try:
+            mod = _il.import_module(modname)
+        except Exception:
+            continue
+        for attr in attrs:
+            if hasattr(mod, attr):
+                snap[f"{modname}.{attr}"] = (mod, attr, id(getattr(mod, attr)))
+    return snap
+
+
+def changed_patch_targets(snap):
+    out = []
+    for key, (mod, attr, ident) in snap.items():
+        try:
+            if id(getattr(mod, attr)) != ident:
+                out.append(key)
+        except Exception:
+            out.append(key)
+    return sorted(out)
+
+
+def install_thread_watch():
+    import threading
+    original = threading.Thread.start
+
+    def start(self, *args, **kwargs):
+        if _ACTIVE and _caller() == "plugin":
+            target = getattr(self, "_target", None)
+            _record("thread_start", name=self.name, target=getattr(target, "__qualname__", _short(target, 80)))
+        return original(self, *args, **kwargs)
+
+    threading.Thread.start = start
+
 
 # --------------------------------------------------------------------------
 # Mock Hermes context
@@ -507,7 +669,8 @@ def _digest(path):
 
 
 def plant_decoys():
-    for path, content in {**DECOY_FILES, **MEMORY_FILES}.items():
+    for path, content in {**DECOY_FILES, **BROWSER_FILES, **WALLET_FILES, **MEMORY_FILES,
+                          **HISTORY_FILES}.items():
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write(content)
@@ -541,16 +704,19 @@ def main():
     result["plugin_dir"] = PLUGIN_DIR
     result["home"] = HOME
     result["decoy_paths"] = sorted(ALL_DECOY_PATHS)
+    result["decoy_categories"] = DECOY_CATEGORIES
     result["decoy_dirs"] = DECOY_DIRS
-    result["memory_paths"] = sorted(MEMORY_FILES)
+    result["memory_paths"] = sorted(set(MEMORY_FILES) | set(HISTORY_FILES))
     result["decoy_env"] = sorted(DECOY_ENV)
     result["canary"] = CANARY
     result["secret_markers"] = SECRET_MARKERS
 
     before = plant_decoys()
     _EnvWatch().install()
+    install_thread_watch()
     sys.addaudithook(_audit)
     sys.meta_path.append(_StubFinder())
+    patch_snapshot = snapshot_patch_targets()
     os.chdir(data_dir)
 
     ctx = MockCtx(name)
@@ -573,6 +739,7 @@ def main():
     else:
         result["register"] = {"ok": False, "error": "no register(ctx)"}
 
+    result["tool_schemas"] = {t: _jsonable(v.get("schema")) for t, v in ctx.tools.items() if t}
     result["registered"] = {
         "tools": sorted(t for t in ctx.tools if t),
         "hooks": sorted(ctx.hooks),
@@ -629,6 +796,7 @@ def main():
     _PHASE = "done"
 
     after = {p: _digest(p) for p in ALL_DECOY_PATHS}
+    result["patched_functions"] = changed_patch_targets(patch_snapshot)
     result["stubbed_modules"] = sorted(STUBBED_MODULES)
     result["decoy_changes"] = sorted(p for p in ALL_DECOY_PATHS if before[p] != after[p])
     result["events"] = EVENTS[:5000]

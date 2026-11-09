@@ -20,6 +20,17 @@ CAVEAT = (
 )
 
 
+def mitre_url(tech: str) -> str:
+    if tech.startswith("AML."):
+        return f"https://atlas.mitre.org/techniques/{tech}"
+    return "https://attack.mitre.org/techniques/" + tech.replace(".", "/") + "/"
+
+
+def mitre_links(finding: dict) -> str:
+    parts = [f"[{t}]({mitre_url(t)})" for t in (finding.get("attack") or []) + (finding.get("atlas") or [])]
+    return " · ".join(parts)
+
+
 def render(label: str, evaluation: dict, raw: dict | None = None) -> str:
     raw = raw or {}
     verdict = evaluation.get("verdict", "ERROR")
@@ -36,14 +47,24 @@ def render(label: str, evaluation: dict, raw: dict | None = None) -> str:
         lines += ["```", str(evaluation.get("detail") or raw.get("fatal") or "unknown error")[:2000], "```", ""]
     findings = evaluation.get("findings") or []
     if findings:
-        lines += ["## Findings", "", "| Severity | Rule | What happened |", "|---|---|---|"]
+        lines += ["## Findings", "", "| Severity | What happened | MITRE |", "|---|---|---|"]
         for f in findings:
-            lines.append(f"| {f['severity']} | `{f['rule']}` | {f['title']} |")
+            ids = ", ".join((f.get("attack") or []) + (f.get("atlas") or [])) or "–"
+            lines.append(f"| {f['severity']} | {f['title']} | {ids} |")
         lines.append("")
-        lines.append("## Evidence")
+        lines.append("## Why each finding matters")
         lines.append("")
         for f in findings:
-            lines.append(f"**{f['title']}** ({f['severity']})")
+            lines.append(f"### {f['title']} ({f['severity']})")
+            lines.append("")
+            if f.get("why"):
+                lines.append(f"**Why:** {f['why']}")
+                lines.append("")
+            refs = mitre_links(f)
+            if refs:
+                lines.append(f"**MITRE:** {refs}")
+                lines.append("")
+            lines.append("**Evidence:**")
             for ev in f.get("evidence") or []:
                 lines.append(f"- `{str(ev)[:300]}`")
             lines.append("")
@@ -60,8 +81,12 @@ def render(label: str, evaluation: dict, raw: dict | None = None) -> str:
         "## How it was tested",
         "",
         "Disposable Docker container: no network, read-only root, all capabilities dropped, "
-        "non-root user, fake Hermes home with decoy API keys, SSH key, auth file and memory. "
+        "non-root user, fake Hermes home with decoy API keys, SSH key, auth file, git/npm/PyPI/cloud "
+        "credentials, browser passwords, crypto wallets, memory and chat history. "
         "Every registered hook was fired with synthetic inputs and every tool was called once.",
+        "",
+        "Technique IDs are from MITRE ATT&CK (Enterprise) and MITRE ATLAS (AI systems). They describe "
+        "what the observed behaviour resembles; they are not a claim about the author's intent.",
         "",
         f"> {CAVEAT}",
         "",

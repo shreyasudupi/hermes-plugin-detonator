@@ -79,7 +79,10 @@ def summary(evaluation: dict, path: Path) -> str:
     verdict = evaluation.get("verdict", "ERROR")
     lines = [report.VERDICT_TEXT.get(verdict, verdict)]
     for f in (evaluation.get("findings") or [])[:6]:
-        lines.append(f"- [{f['severity']}] {f['title']}")
+        ids = ", ".join((f.get("attack") or []) + (f.get("atlas") or []))
+        lines.append(f"- [{f['severity']}] {f['title']}" + (f" ({ids})" if ids else ""))
+        if f["severity"] in ("critical", "high", "medium") and f.get("why"):
+            lines.append(f"  Why: {f['why']}")
     lines.append(f"Full report: {path}")
     lines.append("Advisory only: a clean run is evidence, not proof.")
     return "\n".join(lines)
