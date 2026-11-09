@@ -45,7 +45,6 @@ DOCKER_DIRS = (
     "/usr/local/bin",
     "/opt/homebrew/bin",
     "/Applications/Docker.app/Contents/Resources/bin",
-    os.path.expanduser("~/.docker/bin"),
     os.path.expanduser("~/.rd/bin"),          # Rancher Desktop
     os.path.expanduser("~/.orbstack/bin"),    # OrbStack
 )
