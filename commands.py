@@ -93,7 +93,24 @@ def run_detonation(repo: str, sha: str, subdir: str | None, with_raw: bool = Fal
     markdown = report.render(target.label, evaluation, raw)
     path = _report_path(repo, sha[:12], subdir)
     path.write_text(markdown)
+    _write_summary_json(path, repo, sha, subdir, evaluation)
     return (evaluation, markdown, path, raw) if with_raw else (evaluation, markdown, path)
+
+
+def _write_summary_json(path: Path, repo: str, sha: str, subdir: str | None, evaluation: dict) -> None:
+    """Machine-readable copy of the verdict and findings, read by the detonator_report tool."""
+    try:
+        import json
+
+        path.with_suffix(".json").write_text(json.dumps({
+            "repo": repo, "sha": sha, "subdir": subdir or None,
+            "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "verdict": evaluation.get("verdict", "ERROR"),
+            "findings": evaluation.get("findings") or [],
+            "report_path": str(path),
+        }, default=str))
+    except Exception:
+        pass  # the Markdown report is the record; the JSON copy is a convenience
 
 
 def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None) -> str:

@@ -15,6 +15,14 @@ def register(ctx):
         schema=schemas.DETONATE_PLUGIN,
         handler=tools.detonate_plugin,
     )
+    # Read-only: hands a finished report to the model so it can explain it.
+    # The model never decides or changes the verdict.
+    ctx.register_tool(
+        name="detonator_report",
+        toolset="detonator",
+        schema=schemas.DETONATOR_REPORT,
+        handler=tools.detonator_report,
+    )
     ctx.register_command(
         "detonate",
         commands.make_slash_handler(ctx),

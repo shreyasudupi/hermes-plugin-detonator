@@ -56,6 +56,16 @@ There is no flag that skips the question. The `detonate_plugin` tool lets the
 agent suggest a run, but it only returns the `/detonate` command for you to run.
 Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
 
+### Rules decide, AI explains
+
+After a run, ask Hermes "explain that Detonator report". The read-only
+`detonator_report` tool hands the saved verdict and findings to your model so it
+can explain them in plain words: what each finding means and whether it looks
+normal for this kind of plugin. The model never decides or changes the verdict.
+A plugin can carry text written to talk an AI reviewer into calling it safe, so
+the verdict comes from fixed rules only, and everything the tested plugin
+produced is passed to the model as untrusted data with hidden characters removed.
+
 ## Compare two versions (rug-pull check)
 
 A plugin can be clean when you install it and turn bad in an update. Give two commits
