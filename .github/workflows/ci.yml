@@ -35,3 +35,36 @@ jobs:
       - run: hermes --version
       - name: hermes plugins validate (same check the catalog CI runs)
         run: hermes plugins validate .
+
+  fixtures:
+    name: Fake-malicious fixtures get their expected verdict
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Read-only token for the private fixtures repo. Unset on forks, so the job skips there.
+      FIXTURES_TOKEN: ${{ secrets.FIXTURES_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip when the fixtures token is not set
+        if: env.FIXTURES_TOKEN == ''
+        run: echo "::notice::FIXTURES_TOKEN is not set, so the fixtures check was skipped."
+      - uses: actions/checkout@v4
+        if: env.FIXTURES_TOKEN != ''
+        with:
+          repository: shreyasudupi/detonator-test-fixtures
+          token: ${{ secrets.FIXTURES_TOKEN }}
+          path: fixtures
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        if: env.FIXTURES_TOKEN != ''
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements-dev.txt
+        if: env.FIXTURES_TOKEN != ''
+      - name: Check out the trojan's clean first version
+        if: env.FIXTURES_TOKEN != ''
+        run: git -C fixtures worktree add -q ../fixtures-v1 cc4d572136cb8b8fad0787023dd78c91ce852823
+      - name: Run every fixture inside the Docker sandbox
+        if: env.FIXTURES_TOKEN != ''
+        run: python ci/check_fixtures.py fixtures fixtures-v1
