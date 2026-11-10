@@ -155,7 +155,8 @@ Detonator does things a reviewer should know about:
   `sandbox/Dockerfile` (a digest-pinned `python:3.11-slim` with nothing extra
   installed; this pulls the base image over the network), and `docker run` for each test.
 - **Clones code.** For a GitHub target it runs `git init` / `git fetch` / `git checkout`
-  of the exact 40-character SHA you give it, with git hooks disabled and no submodules.
+  of the exact 40-character SHA you give it, with git hooks disabled, no submodules, and symlinks checked out as plain files
+  (links are never copied into the sandbox, so a repo cannot pull in real files from your machine).
   No code from the target runs on your machine outside the container.
 - **Shell commands.** Only `git` and `docker`, as above, and only after you approve
   the run. No background processes.
