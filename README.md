@@ -36,8 +36,8 @@ sandbox image (a minute or two); after that a run takes seconds:
 
 ```
 🔴 DANGEROUS: the plugin did something stealers and malware do (took or leaked decoy secrets, ...).
-- [critical] Read decoy secret files (keys, tokens, .env) (T1552.001, T1552.004, AML.T0055, AML.T0083)
-  Why: Plugins have no reason to open your key files or ask for API keys they did not declare. ...
+- [critical] Read Hermes's .env file, where your API keys are kept, and also reached for the network or other secrets (T1552.001, AML.T0055)
+  Why: It read your API keys and, in the same run, reached for the network or took other secrets. ...
 - [high] Reached for the network while loading or from a background hook (the sandbox has no network; nothing left the box) (T1071.001, T1041, AML.T0025)
 Full report: ~/.hermes/plugin-data/detonator/reports/....md
 ```
@@ -77,9 +77,9 @@ and Detonator runs both, then shows what the newer one does that the older one d
 
 ```
 ⚠️ NEW VERSION IS RISKIER: it does things the old version did not.
-Verdict: NO_FINDINGS (eea9e9b8) → DANGEROUS (dafae722)
+Verdict: NO_FINDINGS (cc4d5721) → DANGEROUS (26e9a4b4)
 New in this version:
-+ [critical] Read decoy secret files (keys, tokens, .env) (T1552.001, T1552.004, AML.T0055, AML.T0083)
++ [critical] Read Hermes's .env file, where your API keys are kept, and also reached for the network or other secrets (T1552.001, AML.T0055)
 + [high] Reached for the network while loading or from a background hook (...)
 ```
 
@@ -166,6 +166,9 @@ Detonator does things a reviewer should know about:
 - **Sandbox settings.** `--network none --read-only --cap-drop ALL
   --security-opt no-new-privileges --user 10001:10001 --pids-limit 128 --memory 512m`,
   a 64 MB `/tmp`, and a 180-second timeout.
+- **A different world every run.** Each run gets a random username, home folder
+  (`/home/<name>`) and host name, and random fake-key values, so a plugin cannot spot
+  the sandbox by a fixed path or a fixed marker in the decoys.
 
 ## Developer usage
 

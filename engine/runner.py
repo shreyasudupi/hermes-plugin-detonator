@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -174,19 +175,38 @@ def load_manifest(plugin_dir: Path) -> dict:
     return json.loads(json.dumps(data, default=str))
 
 
-def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path) -> list[str]:
+# Each run gets a different, ordinary-looking user, home folder and host name, so a
+# plugin cannot spot the sandbox by a fixed path such as /tmp/home. The fake key
+# values are randomised inside the harness for the same reason.
+_USERS = ("alex", "sam", "jordan", "taylor", "morgan", "casey", "riley", "jamie",
+          "chris", "dana", "lee", "kim", "robin", "drew", "maria", "dev")
+_HOSTS = ("laptop", "macbook", "workstation", "desktop", "devbox", "mbp")
+
+
+def random_world() -> dict:
+    rng = secrets.SystemRandom()
+    user = rng.choice(_USERS) + (str(rng.randint(1, 99)) if rng.random() < 0.5 else "")
+    return {"user": user, "home": f"/home/{user}", "host": f"{user}-{rng.choice(_HOSTS)}"}
+
+
+def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, world: dict | None = None) -> list[str]:
+    world = world or random_world()
     return [
         "docker", "run", "--rm",
         "--network", "none",
         "--read-only",
         "--tmpfs", "/tmp:rw,size=64m,mode=1777",
+        "--tmpfs", f"{world['home']}:rw,size=32m,uid=10001,gid=10001,mode=0700",
+        "--hostname", world["host"],
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges",
         "--pids-limit", "128",
         "--memory", "512m",
         "--cpus", "1",
         "--user", "10001:10001",
-        "-e", "HOME=/tmp/home",
+        "-e", f"HOME={world['home']}",
+        "-e", f"USER={world['user']}",
+        "-e", f"LOGNAME={world['user']}",
         "-e", "PYTHONDONTWRITEBYTECODE=1",
         "-v", f"{plugin_dir}:/plugin:ro",
         "-v", f"{in_dir}:/in:ro",
