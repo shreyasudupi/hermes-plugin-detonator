@@ -139,7 +139,7 @@ no Python code to run, and Detonator says so instead of guessing.
 - **Detection** is checked against 11 harmless fake-malicious test plugins (fake keys, reserved
   TEST-NET addresses, `true` as the only command): key stealer, persistence, prompt injection,
   memory tampering, tool poisoning, rug pull, environment hijack, a trojan update, a date-triggered
-  time bomb and a sleeper thread. All 11 get their expected verdict. They live in a separate
+  time bomb and a sleeper thread. All 11 get their expected verdict, and CI re-checks them on every change. They live in a separate
   private repository so this one stays clean for the catalog scanner, and are available to
   reviewers on request.
 - **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
