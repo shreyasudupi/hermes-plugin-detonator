@@ -664,6 +664,8 @@ def _evaluate(result: dict) -> dict:
             if f.rule in ("hermes_env_read", "undeclared_env_read"):
                 f.severity = CRITICAL
                 f.title += ", and also reached for the network or other secrets"
+                f.why = ("It read your API keys and, in the same run, reached for the network or took other "
+                         "secrets. That combination is what credential stealers do.")
 
     return {
         "verdict": _verdict(findings),

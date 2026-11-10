@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -113,7 +114,9 @@ def fetch_github(repo: str, sha: str, workdir: Path, subdir: str | None = None) 
         raise DetonatorError("sha must be a full 40-character commit SHA (catalog rule 2)")
     dest = workdir / "src"
     url = f"https://github.com/{repo}.git"
-    safe = ["-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=never"]
+    # core.symlinks=false: a link in the repo is checked out as a small text file, so it can
+    # never point at a real file on this machine.
+    safe = ["-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=never", "-c", "core.symlinks=false"]
     steps = [
         ["git", *safe, "init", "-q", str(dest)],
         ["git", *safe, "-C", str(dest), "fetch", "-q", "--depth", "1", url, sha],
@@ -127,6 +130,8 @@ def fetch_github(repo: str, sha: str, workdir: Path, subdir: str | None = None) 
     if head != sha:
         raise DetonatorError(f"checked out {head}, expected {sha}")
     path = dest / subdir if subdir else dest
+    if subdir and not path.resolve().is_relative_to(dest.resolve()):
+        raise DetonatorError("subdir must stay inside the repository")
     check_runnable(path, "that commit" + (f" in {subdir}" if subdir else ""))
     return Target(path=path, label=f"{repo}@{sha[:12]}", repo=repo, sha=sha)
 
@@ -174,25 +179,51 @@ def load_manifest(plugin_dir: Path) -> dict:
     return json.loads(json.dumps(data, default=str))
 
 
-def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path) -> list[str]:
+# Each run gets a different, ordinary-looking user, home folder and host name, so a
+# plugin cannot spot the sandbox by a fixed path such as /tmp/home. The fake key
+# values are randomised inside the harness for the same reason.
+_USERS = ("alex", "sam", "jordan", "taylor", "morgan", "casey", "riley", "jamie",
+          "chris", "dana", "lee", "kim", "robin", "drew", "maria", "dev")
+_HOSTS = ("laptop", "macbook", "workstation", "desktop", "devbox", "mbp")
+
+
+def random_world() -> dict:
+    rng = secrets.SystemRandom()
+    user = rng.choice(_USERS) + (str(rng.randint(1, 99)) if rng.random() < 0.5 else "")
+    return {"user": user, "home": f"/home/{user}", "host": f"{user}-{rng.choice(_HOSTS)}"}
+
+
+def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, world: dict | None = None) -> list[str]:
+    world = world or random_world()
     return [
         "docker", "run", "--rm",
         "--network", "none",
         "--read-only",
         "--tmpfs", "/tmp:rw,size=64m,mode=1777",
+        "--tmpfs", f"{world['home']}:rw,size=32m,uid=10001,gid=10001,mode=0700",
+        "--hostname", world["host"],
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges",
         "--pids-limit", "128",
         "--memory", "512m",
         "--cpus", "1",
         "--user", "10001:10001",
-        "-e", "HOME=/tmp/home",
+        "-e", f"HOME={world['home']}",
+        "-e", f"USER={world['user']}",
+        "-e", f"LOGNAME={world['user']}",
         "-e", "PYTHONDONTWRITEBYTECODE=1",
         "-v", f"{plugin_dir}:/plugin:ro",
         "-v", f"{in_dir}:/in:ro",
         "-v", f"{out_dir}:/out:rw",
         tag,
     ]
+
+
+def _skip_links(src: str, names: list[str]) -> set[str]:
+    """Never copy symlinks into the sandbox copy: one could point at a real file on this
+    machine (an SSH key, the real Hermes .env), and reading it would look like a normal
+    read of the plugin's own files."""
+    return {n for n in names if n == ".git" or os.path.islink(os.path.join(src, n))}
 
 
 def _make_world_readable(root: Path) -> None:
@@ -211,11 +242,11 @@ def detonate(target: Target) -> dict:
     with tempfile.TemporaryDirectory(prefix="detonator-") as tmp:
         tmp = Path(tmp)
         plugin_copy = tmp / "plugin"
-        shutil.copytree(target.path, plugin_copy, ignore=shutil.ignore_patterns(".git"))
+        shutil.copytree(target.path, plugin_copy, ignore=_skip_links)
         _make_world_readable(tmp)
         in_dir = tmp / "in"
         in_dir.mkdir()
-        (in_dir / "manifest.json").write_text(json.dumps(load_manifest(target.path)))
+        (in_dir / "manifest.json").write_text(json.dumps(load_manifest(plugin_copy)))
         os.chmod(in_dir, 0o755)
         os.chmod(in_dir / "manifest.json", 0o644)
         out_dir = tmp / "out"

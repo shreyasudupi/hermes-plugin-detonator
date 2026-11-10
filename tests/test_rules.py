@@ -51,7 +51,7 @@ def test_hermes_env_file_read_plus_network_is_dangerous():
                                       ev("network", op="socket.connect", address="('203.0.113.10', 443)")]))
     assert out["verdict"] == "DANGEROUS"
     f = next(f for f in out["findings"] if f["rule"] == "hermes_env_read")
-    assert f["severity"] == "critical" and "network" in f["title"]
+    assert f["severity"] == "critical" and "network" in f["title"] and "stealers" in f["why"]
 
 
 def test_undeclared_env_read_is_suspicious_but_declared_is_info():

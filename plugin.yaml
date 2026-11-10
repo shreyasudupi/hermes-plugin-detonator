@@ -1,5 +1,5 @@
 name: detonator
-version: "0.1.0"
+version: "0.2.0"
 description: >
   Dynamic sandbox for Hermes plugins. After you approve it, runs a plugin at an
   exact commit inside a disposable, no-network Docker container with decoy
@@ -10,6 +10,7 @@ license: MIT
 requires_hermes: ">=0.23.0"
 provides_tools:
   - detonate_plugin
+  - detonator_report
 provides_hooks: []
 homepage: https://github.com/shreyasudupi/hermes-plugin-detonator
 tags: [security, sandbox, docker]

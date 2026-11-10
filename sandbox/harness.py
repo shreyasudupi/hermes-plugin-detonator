@@ -16,6 +16,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import secrets
 import os
 import re
 import signal
@@ -33,7 +34,9 @@ HOOK_REPEATS = 3
 SETTLE_S = 2.0
 CLOCK_SETTLE_S = 0.5
 
-CANARY = "DETONATOR-CANARY"
+# Random on every run, so the fake keys don't carry a fixed word a plugin could
+# look for. The rules find leaks through the markers the harness reports.
+CANARY = secrets.token_hex(10).upper()
 
 # --------------------------------------------------------------------------
 # Decoys. All values are fake and contain the canary marker.

@@ -36,8 +36,8 @@ sandbox image (a minute or two); after that a run takes seconds:
 
 ```
 🔴 DANGEROUS: the plugin did something stealers and malware do (took or leaked decoy secrets, ...).
-- [critical] Read decoy secret files (keys, tokens, .env) (T1552.001, T1552.004, AML.T0055, AML.T0083)
-  Why: Plugins have no reason to open your key files or ask for API keys they did not declare. ...
+- [critical] Read Hermes's .env file, where your API keys are kept, and also reached for the network or other secrets (T1552.001, AML.T0055)
+  Why: It read your API keys and, in the same run, reached for the network or took other secrets. ...
 - [high] Reached for the network while loading or from a background hook (the sandbox has no network; nothing left the box) (T1071.001, T1041, AML.T0025)
 Full report: ~/.hermes/plugin-data/detonator/reports/....md
 ```
@@ -56,6 +56,16 @@ There is no flag that skips the question. The `detonate_plugin` tool lets the
 agent suggest a run, but it only returns the `/detonate` command for you to run.
 Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
 
+### Rules decide, AI explains
+
+After a run, ask Hermes "explain that Detonator report". The read-only
+`detonator_report` tool hands the saved verdict and findings to your model so it
+can explain them in plain words: what each finding means and whether it looks
+normal for this kind of plugin. The model never decides or changes the verdict.
+A plugin can carry text written to talk an AI reviewer into calling it safe, so
+the verdict comes from fixed rules only, and everything the tested plugin
+produced is passed to the model as untrusted data with hidden characters removed.
+
 ## Compare two versions (rug-pull check)
 
 A plugin can be clean when you install it and turn bad in an update. Give two commits
@@ -67,9 +77,9 @@ and Detonator runs both, then shows what the newer one does that the older one d
 
 ```
 ⚠️ NEW VERSION IS RISKIER: it does things the old version did not.
-Verdict: NO_FINDINGS (eea9e9b8) → DANGEROUS (dafae722)
+Verdict: NO_FINDINGS (cc4d5721) → DANGEROUS (26e9a4b4)
 New in this version:
-+ [critical] Read decoy secret files (keys, tokens, .env) (T1552.001, T1552.004, AML.T0055, AML.T0083)
++ [critical] Read Hermes's .env file, where your API keys are kept, and also reached for the network or other secrets (T1552.001, AML.T0055)
 + [high] Reached for the network while loading or from a background hook (...)
 ```
 
@@ -108,12 +118,12 @@ your machine, never executed) and compares it with what actually ran. Abilities 
 exist in the code but stayed quiet are reported as `dormant_code`: secret-file paths or
 start-up locations at **REVIEW**, with a note when the code also checks the date; shell,
 string-built code and network calls as low/info notes, because honest tools often have
-those on paths a synthetic test does not reach. On 36 real catalog plugins this check
-changed no verdicts.
+those on paths a synthetic test does not reach. Across the whole catalog, 37 of 1,043
+plugins get a REVIEW verdict from this check alone (28 of them also check the date).
 
 **The report is advisory evidence, not proof.** Sandbox-aware code, triggers other than
 time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still evade it, and the Python audit hooks run in the
-same process as the plugin. A clean report does not mean a plugin is safe.
+same process as the plugin, so a determined plugin could tamper with them or write a fake clean result. A clean report does not mean a plugin is safe.
 
 The sandbox image has no Hermes and no third-party packages. When a plugin imports one
 (`tools.registry`, `httpx`, ...), Detonator gives it an inert stand-in so the rest of the
@@ -121,6 +131,21 @@ plugin still runs, and lists those modules in the report. Anything done *through
 stand-in (for example an HTTP call made with `httpx`) is not observed. Standard-library
 modules are never replaced. Portable `plugin.json` packages and desktop-only plugins have
 no Python code to run, and Detonator says so instead of guessing.
+
+## How it was tested
+
+- **Every change** runs 79 tests in CI, including real Docker sandbox runs, plus Hermes's own
+  `hermes plugins validate` (the same check the catalog runs).
+- **Detection** is checked against 11 harmless fake-malicious test plugins (fake keys, reserved
+  TEST-NET addresses, `true` as the only command): key stealer, persistence, prompt injection,
+  memory tampering, tool poisoning, rug pull, environment hijack, a trojan update, a date-triggered
+  time bomb and a sleeper thread. All 11 get their expected verdict. They live in a separate
+  private repository so this one stays clean for the catalog scanner, and are available to
+  reviewers on request.
+- **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
+  their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
+  first pass had 7 dangerous results; each was checked by hand, all were false alarms, and the
+  rules were tuned. Only totals are published, never plugin names.
 
 ## Disclosures (catalog rule 13)
 
@@ -130,7 +155,8 @@ Detonator does things a reviewer should know about:
   `sandbox/Dockerfile` (a digest-pinned `python:3.11-slim` with nothing extra
   installed; this pulls the base image over the network), and `docker run` for each test.
 - **Clones code.** For a GitHub target it runs `git init` / `git fetch` / `git checkout`
-  of the exact 40-character SHA you give it, with git hooks disabled and no submodules.
+  of the exact 40-character SHA you give it, with git hooks disabled, no submodules, and symlinks checked out as plain files
+  (links are never copied into the sandbox, so a repo cannot pull in real files from your machine).
   No code from the target runs on your machine outside the container.
 - **Shell commands.** Only `git` and `docker`, as above, and only after you approve
   the run. No background processes.
@@ -141,6 +167,9 @@ Detonator does things a reviewer should know about:
 - **Sandbox settings.** `--network none --read-only --cap-drop ALL
   --security-opt no-new-privileges --user 10001:10001 --pids-limit 128 --memory 512m`,
   a 64 MB `/tmp`, and a 180-second timeout.
+- **A different world every run.** Each run gets a random username, home folder
+  (`/home/<name>`) and host name, and random fake-key values, so a plugin cannot spot
+  the sandbox by a fixed path or a fixed marker in the decoys.
 
 ## Developer usage
 
