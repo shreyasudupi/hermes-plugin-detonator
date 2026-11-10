@@ -123,7 +123,7 @@ plugins get a REVIEW verdict from this check alone (28 of them also check the da
 
 **The report is advisory evidence, not proof.** Sandbox-aware code, triggers other than
 time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still evade it, and the Python audit hooks run in the
-same process as the plugin. A clean report does not mean a plugin is safe.
+same process as the plugin, so a determined plugin could tamper with them or write a fake clean result. A clean report does not mean a plugin is safe.
 
 The sandbox image has no Hermes and no third-party packages. When a plugin imports one
 (`tools.registry`, `httpx`, ...), Detonator gives it an inert stand-in so the rest of the
