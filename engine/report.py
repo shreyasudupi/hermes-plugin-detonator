@@ -11,14 +11,14 @@ VERDICT_TEXT = {
                   "model or your system) that needs a close look before you install it.",
     "REVIEW": "🟡 REVIEW: nothing clearly malicious, but some behaviour deserves a look.",
     "NO_FINDINGS": "🟢 NO FINDINGS: nothing risky was observed in this run.",
-    "ERROR": "⚪ ERROR: the sandbox could not complete the run.",
+    "ERROR": "⚪ ERROR: the sandbox could not complete the run, so the plugin was NOT tested. Treat it as unknown, not as safe.",
 }
 
 CAVEAT = (
     "This report is advisory evidence, not proof. Detonator only sees what the plugin did "
     "during this run: time bombs, sandbox-aware code and paths the synthetic inputs did not "
     "trigger can evade it, and the audit hooks run inside the same Python process as the "
-    "plugin. A clean run does not mean a plugin is safe."
+    "plugin, so a determined plugin could tamper with them or fake a clean result. A clean run does not mean a plugin is safe."
 )
 
 
