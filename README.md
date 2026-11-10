@@ -108,8 +108,8 @@ your machine, never executed) and compares it with what actually ran. Abilities 
 exist in the code but stayed quiet are reported as `dormant_code`: secret-file paths or
 start-up locations at **REVIEW**, with a note when the code also checks the date; shell,
 string-built code and network calls as low/info notes, because honest tools often have
-those on paths a synthetic test does not reach. On 36 real catalog plugins this check
-changed no verdicts.
+those on paths a synthetic test does not reach. Across the whole catalog, 37 of 1,043
+plugins get a REVIEW verdict from this check alone (28 of them also check the date).
 
 **The report is advisory evidence, not proof.** Sandbox-aware code, triggers other than
 time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still evade it, and the Python audit hooks run in the
@@ -121,6 +121,21 @@ plugin still runs, and lists those modules in the report. Anything done *through
 stand-in (for example an HTTP call made with `httpx`) is not observed. Standard-library
 modules are never replaced. Portable `plugin.json` packages and desktop-only plugins have
 no Python code to run, and Detonator says so instead of guessing.
+
+## How it was tested
+
+- **Every change** runs 79 tests in CI, including real Docker sandbox runs, plus Hermes's own
+  `hermes plugins validate` (the same check the catalog runs).
+- **Detection** is checked against 11 harmless fake-malicious test plugins (fake keys, reserved
+  TEST-NET addresses, `true` as the only command): key stealer, persistence, prompt injection,
+  memory tampering, tool poisoning, rug pull, environment hijack, a trojan update, a date-triggered
+  time bomb and a sleeper thread. All 11 get their expected verdict. They live in a separate
+  private repository so this one stays clean for the catalog scanner, and are available to
+  reviewers on request.
+- **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
+  their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
+  first pass had 7 dangerous results; each was checked by hand, all were false alarms, and the
+  rules were tuned. Only totals are published, never plugin names.
 
 ## Disclosures (catalog rule 13)
 
