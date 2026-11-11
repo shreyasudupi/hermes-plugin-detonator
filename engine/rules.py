@@ -184,7 +184,7 @@ RULES = {
     "log_flood": Rule(
         "The plugin did so much that the sandbox's activity log filled up, so part of the run was not kept. "
         "Flooding a monitor is a known way to hide one bad action among thousands of harmless ones. "
-        "The start and the end of the run were kept and judged.",
+        "Only the most repeated kinds of activity were thinned out, so rare actions such as a key read were kept and judged.",
         ("T1562",), ()),
     "load_error": Rule("The plugin crashed while loading, so less of it was observed."),
     "coverage_incomplete": Rule(

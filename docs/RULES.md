@@ -80,7 +80,7 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 | `declared_not_registered` | low | Declares tools it did not register; usually a stale plugin.yaml. | – |
 | `load_error` | medium | The plugin crashed while loading, so less of it was observed. | – |
 | `unsafe_plugin_name` | high | The plugin's name becomes the name of its own data folder, where it may write freely. A name with slashes or dot-dot steps could point that folder at your whole home folder, so harmful writes there would look allowed. Detonator used a safe folder instead. | [T1036](https://attack.mitre.org/techniques/T1036/) |
-| `log_flood` | high | The plugin did so much that the sandbox's activity log filled up, so part of the run was not kept. Flooding a monitor is a known way to hide one bad action among thousands of harmless ones. The start and the end of the run were kept and judged. | [T1562](https://attack.mitre.org/techniques/T1562/) |
+| `log_flood` | high | The plugin did so much that the sandbox's activity log filled up, so part of the run was not kept. Flooding a monitor is a known way to hide one bad action among thousands of harmless ones. Only the most repeated kinds of activity were thinned out, so rare actions such as a key read were kept and judged. | [T1562](https://attack.mitre.org/techniques/T1562/) |
 | `coverage_incomplete` | low | The plugin stopped on a stand-in module, so code after that point was not observed. | – |
 | `coverage_stubbed_imports` | info | The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, and anything done through them (e.g. an HTTP call via httpx) was not observed. | – |
 

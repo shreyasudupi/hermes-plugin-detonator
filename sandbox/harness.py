@@ -767,6 +767,29 @@ def plant_decoys():
     return {p: _digest(p) for p in ALL_DECOY_PATHS}
 
 
+def trim_events(events, limit=None):
+    """Cut an over-long log down to `limit` events by thinning the noisiest kinds first.
+
+    Events are grouped by kind (and, for file events, by whether they touch a decoy).
+    Small groups are kept whole; the biggest groups share what is left, keeping their
+    first and last events. So one decoy read hidden among thousands of harmless
+    listings survives, in every clock pass, instead of falling out of the middle."""
+    limit = limit or MAX_EVENTS
+    if len(events) <= limit:
+        return events
+    groups = {}
+    for i, e in enumerate(events):
+        groups.setdefault((e.get("kind"), e.get("path") in ALL_DECOY_PATHS), []).append(i)
+    keep, left = set(), limit
+    ordered = sorted(groups.values(), key=len)
+    for n, idx in enumerate(ordered):
+        quota = min(len(idx), left // (len(ordered) - n))
+        head = (quota + 1) // 2
+        keep.update(idx[:head] + (idx[len(idx) - (quota - head):] if quota - head else []))
+        left -= quota
+    return [e for i, e in enumerate(events) if i in keep]
+
+
 def unsafe_name(name):
     """True for a name that would not stay one folder inside plugin-data."""
     return any(c in name for c in ("/", "\\", "\0")) or name.strip() in ("", ".", "..") or len(name) > 200
@@ -946,7 +969,7 @@ def main():
     # it does at the end is still seen, and the rules flag the flood itself.
     result["event_count"] = len(EVENTS)
     result["events_truncated"] = len(EVENTS) > MAX_EVENTS
-    result["events"] = EVENTS if len(EVENTS) <= MAX_EVENTS else EVENTS[:MAX_EVENTS - 1000] + EVENTS[-1000:]
+    result["events"] = trim_events(EVENTS)
 
     with open(OUT_PATH, "w") as f:
         json.dump(result, f, indent=1, default=_short)

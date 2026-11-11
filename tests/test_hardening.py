@@ -1,7 +1,11 @@
 """Phase 0 hardening (v0.2.2): unsafe plugin names, plugin-chosen names in titles,
 log floods, reading the environment through /proc, and per-run account files."""
 
+import pathlib
+
 from engine import rules, runner
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 HOME = "/home/alex"
 
@@ -99,3 +103,23 @@ def test_account_files_name_the_random_user(tmp_path):
 def test_image_has_no_fixed_account():
     dockerfile = (runner.Path(__file__).parent.parent / "sandbox" / "Dockerfile").read_text()
     assert "useradd" not in dockerfile and "detonee" not in dockerfile
+
+
+def _load_harness():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("det_harness", ROOT / "sandbox" / "harness.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_trimmed_log_keeps_a_decoy_read_hidden_in_a_flood():
+    h = _load_harness()
+    decoy = sorted(h.ALL_DECOY_PATHS)[0]
+    noise = [{"kind": "dir_list", "path": "/tmp/n"}] * 3000
+    events = noise + [{"kind": "file_read", "path": decoy, "clock_days": 0}] + noise + \
+        [{"kind": "file_read", "path": decoy, "clock_days": 30}]
+    kept = h.trim_events(events)
+    assert len(kept) == h.MAX_EVENTS
+    assert [e.get("clock_days") for e in kept if e["kind"] == "file_read"] == [0, 30]
+    assert h.trim_events(events[:10]) == events[:10]
