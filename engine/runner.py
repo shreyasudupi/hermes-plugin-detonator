@@ -54,10 +54,26 @@ DOCKER_DIRS = (
 )
 
 
+# The only variables `git` and `docker` get from the Hermes process. Everything else,
+# including every provider API key Hermes has loaded, stays out of their environment.
+_PASS_ENV = (
+    "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "XDG_RUNTIME_DIR",
+    # Which Docker to talk to (contexts, Colima, rootless, remote hosts)
+    "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
+    "DOCKER_BUILDKIT",
+    # Corporate proxies and certificate bundles, needed for git fetch and the one-time image build
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy",
+    "all_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO",
+    # Windows basics, so the CLIs can start there
+    "SYSTEMROOT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "TEMP", "TMP",
+)
+
+
 def _env() -> dict:
-    env = dict(os.environ)
+    """A minimal environment for git and docker: allow-listed variables only."""
+    env = {k: os.environ[k] for k in _PASS_ENV if k in os.environ}
     extra = [d for d in DOCKER_DIRS if os.path.isdir(d)]
-    env["PATH"] = os.pathsep.join([env.get("PATH", "")] + extra)
+    env["PATH"] = os.pathsep.join([os.environ.get("PATH", "")] + extra)
     env["GIT_TERMINAL_PROMPT"] = "0"  # never hang waiting for a password prompt
     return env
 
@@ -246,13 +262,20 @@ def local_target(path: str) -> Target:
 
 
 def _yaml_safe_load(text: str):
-    """Parse YAML with PyYAML if present, else ruamel.yaml (which Hermes ships)."""
+    """Parse YAML the way Hermes does (hermes_yaml). Outside Hermes (tests, CI) fall back
+    to PyYAML, then plain ruamel.yaml."""
+    try:
+        import hermes_yaml  # Hermes's shared YAML policy
+
+        return hermes_yaml.safe_load(text)
+    except ImportError:
+        pass
     try:
         import yaml  # PyYAML (dev environments)
 
         return yaml.safe_load(text)
     except ImportError:
-        from ruamel.yaml import YAML  # Hermes's own YAML dependency
+        from ruamel.yaml import YAML
 
         return YAML(typ="safe", pure=True).load(text)
 
