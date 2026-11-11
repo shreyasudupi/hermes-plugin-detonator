@@ -233,8 +233,11 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
-- **v0.2.3** (Nov 11, 2026): Windows groundwork. `/detonate check` spots Docker Desktop set to
-  Windows containers and says how to switch. `git` and `docker` keep the Windows settings they
+- **v0.2.3** (Nov 11, 2026): Windows fixes, found by the new Windows CI job. Reports and
+  plugin files are always read and written as UTF-8 (Windows' default code page crashed on the
+  report's symbols), and the rules always treat sandbox paths as Linux paths (on Windows some
+  matches were missed, so a few verdicts came out different). `/detonate check` spots Docker
+  Desktop set to Windows containers and says how to switch. `git` and `docker` keep the Windows settings they
   need (still no API keys), Docker Desktop's Windows folder is searched, Docker mount paths
   are clean on Windows, and files always check out with Linux line endings. CI now runs the
   tests and a Windows smoke test on a Windows machine.

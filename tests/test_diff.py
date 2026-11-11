@@ -106,7 +106,7 @@ def test_run_comparison_writes_a_diff_report(monkeypatch, tmp_path):
     out = c.run_comparison("a/b", SHA, NEW, None)
     assert "RISKIER" in out
     reports = list(tmp_path.glob("*-vs-*.md"))
-    assert len(reports) == 1 and "Detonator version diff" in reports[0].read_text()
+    assert len(reports) == 1 and "Detonator version diff" in reports[0].read_text(encoding="utf-8")
 
 
 def test_tool_passes_new_sha_through():

@@ -13,7 +13,7 @@ from engine import runner
 def _commit_repo(path, files, links):
     path.mkdir()
     for name, text in files.items():
-        (path / name).write_text(text)
+        (path / name).write_text(text, encoding="utf-8")
     for name, target in links.items():
         os.symlink(target, path / name)
     git = ["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
@@ -38,7 +38,7 @@ def _local_fetch(monkeypatch, repo_dir):
 @pytest.mark.skipif(not shutil.which("git"), reason="git not available")
 def test_fetched_symlinks_become_plain_files(tmp_path, monkeypatch):
     secret = tmp_path / "host-secret"
-    secret.write_text("REAL-HOST-SECRET")
+    secret.write_text("REAL-HOST-SECRET", encoding="utf-8")
     repo = tmp_path / "repo"
     sha = _commit_repo(repo, {"plugin.yaml": "name: x\n", "__init__.py": "def register(ctx): pass\n"},
                        {"stolen": str(secret)})
@@ -46,7 +46,7 @@ def test_fetched_symlinks_become_plain_files(tmp_path, monkeypatch):
     target = runner.fetch_github("owner/name", sha, tmp_path / "work")
     stolen = target.path / "stolen"
     assert not stolen.is_symlink()
-    assert "REAL-HOST-SECRET" not in stolen.read_text()
+    assert "REAL-HOST-SECRET" not in stolen.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="git not available")
@@ -60,10 +60,10 @@ def test_subdir_cannot_leave_the_repo(tmp_path, monkeypatch):
 
 def test_sandbox_copy_drops_symlinks(tmp_path):
     secret = tmp_path / "host-secret"
-    secret.write_text("REAL-HOST-SECRET")
+    secret.write_text("REAL-HOST-SECRET", encoding="utf-8")
     src = tmp_path / "plugin"
     src.mkdir()
-    (src / "__init__.py").write_text("")
+    (src / "__init__.py").write_text("", encoding="utf-8")
     os.symlink(secret, src / "stolen")
     os.symlink(tmp_path, src / "stolen_dir")
     dst = tmp_path / "copy"

@@ -294,7 +294,7 @@ def _yaml_safe_load(text: str):
 
 def load_manifest(plugin_dir: Path) -> dict:
     try:
-        data = _yaml_safe_load((plugin_dir / "plugin.yaml").read_text()) or {}
+        data = _yaml_safe_load((plugin_dir / "plugin.yaml").read_text(encoding="utf-8")) or {}
     except Exception as exc:
         raise DetonatorError(f"cannot parse plugin.yaml: {exc}")
     if not isinstance(data, dict):
@@ -389,8 +389,8 @@ def write_accounts(etc_dir: Path, world: dict) -> None:
     """passwd and group files for this run's random user (mounted read-only)."""
     etc_dir.mkdir(exist_ok=True)
     user, home = world["user"], world["home"]
-    (etc_dir / "passwd").write_text(_BASE_PASSWD + f"{user}:x:10001:10001:{user}:{home}:/bin/bash\n")
-    (etc_dir / "group").write_text(_BASE_GROUP + f"{user}:x:10001:\n")
+    (etc_dir / "passwd").write_text(_BASE_PASSWD + f"{user}:x:10001:10001:{user}:{home}:/bin/bash\n", encoding="utf-8")
+    (etc_dir / "group").write_text(_BASE_GROUP + f"{user}:x:10001:\n", encoding="utf-8")
     for f in ("passwd", "group"):
         os.chmod(etc_dir / f, 0o644)
     os.chmod(etc_dir, 0o755)
@@ -453,7 +453,7 @@ def detonate(target: Target) -> dict:
         _make_world_readable(tmp)
         in_dir = tmp / "in"
         in_dir.mkdir()
-        (in_dir / "manifest.json").write_text(json.dumps(load_manifest(plugin_copy)))
+        (in_dir / "manifest.json").write_text(json.dumps(load_manifest(plugin_copy)), encoding="utf-8")
         os.chmod(in_dir, 0o755)
         os.chmod(in_dir / "manifest.json", 0o644)
         out_dir = tmp / "out"
@@ -475,7 +475,7 @@ def detonate(target: Target) -> dict:
             hint = explain_docker_error(err)
             return {"fatal": (f"{hint} " if hint else "") + f"no result (exit {proc.returncode}): {err[-800:]}"}
         try:
-            result = json.loads(result_path.read_text())
+            result = json.loads(result_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             return {"fatal": f"unreadable result: {exc}"}
         result["container_exit_code"] = proc.returncode

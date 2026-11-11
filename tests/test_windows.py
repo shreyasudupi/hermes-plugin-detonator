@@ -49,10 +49,26 @@ def test_docker_run_mounts_use_clean_windows_paths():
 
 def test_files_are_checked_out_with_lf_everywhere():
     """Git for Windows converts line endings unless told not to; the sandbox image must not change."""
-    assert "eol=lf" in (ROOT / ".gitattributes").read_text()
+    assert "eol=lf" in (ROOT / ".gitattributes").read_text(encoding="utf-8")
 
 
 def test_sandbox_files_have_no_windows_line_endings():
     for f in (ROOT / "sandbox").iterdir():
         if f.is_file() and f.suffix != ".pyc":
             assert b"\r\n" not in f.read_bytes(), f.name
+
+
+def test_rules_never_use_the_host_path_style():
+    """Sandbox paths are Linux paths; on Windows os.path would rewrite / to \\ and miss matches."""
+    from engine import rules
+    assert not hasattr(rules, "os"), "use posixpath for sandbox paths in engine/rules.py"
+
+
+def test_text_files_are_always_utf8():
+    """Windows defaults to an old code page, which crashes on the report's symbols."""
+    import ast
+    for f in [ROOT / "commands.py", ROOT / "tools.py", *(ROOT / "engine").glob("*.py")]:
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("read_text", "write_text")):
+                assert any(k.arg == "encoding" for k in node.keywords), f"{f.name}:{node.lineno}"

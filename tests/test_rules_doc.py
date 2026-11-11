@@ -5,7 +5,7 @@ import re
 
 from engine import rules
 
-DOC = (pathlib.Path(__file__).parent.parent / "docs" / "RULES.md").read_text()
+DOC = (pathlib.Path(__file__).parent.parent / "docs" / "RULES.md").read_text(encoding="utf-8")
 
 
 def test_every_rule_is_documented():
