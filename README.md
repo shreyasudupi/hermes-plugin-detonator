@@ -4,6 +4,10 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
+[![Watch the 82-second Plugin Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
+
+▶️ **[Watch the 82-second demo](https://x.com/shreyasudupi/status/2120289870908465286)**: a real run catching a fake key-stealer plugin, comparing two versions, the clock jump, and the plain-words AI explanation.
+
 Detonator is a security sandbox for [Hermes Agent](https://hermes-agent.nousresearch.com/)
 plugins. You point it at a plugin at an exact commit and approve the run. It then
 loads that plugin inside a disposable Docker container with a fake Hermes home full
