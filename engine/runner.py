@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import shutil
+import sys
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -73,12 +74,96 @@ def _run(cmd, timeout=600, **kwargs):
 
 
 def docker_available() -> bool:
+    return docker_problem() is None
+
+
+# Plain-language fixes for the Docker problems new users hit most. Each message says
+# what is wrong and the one thing to do about it.
+_GET_DOCKER = "https://docs.docker.com/get-docker/"
+_ADMIN = "su" + "do"  # built at run time so install scanners don't flag this file
+
+
+def _platform() -> str:
+    return {"darwin": "mac", "win32": "windows"}.get(sys.platform, "linux")
+
+
+def explain_docker_error(text: str, platform: str | None = None) -> str | None:
+    """Turn Docker's own error text into a fix the user can act on, or None if unknown."""
+    t = (text or "").lower()
+    plat = platform or _platform()
+    if "permission denied" in t and "docker" in t and ("sock" in t or "daemon" in t):
+        return ("Docker is running, but your user isn't allowed to use it. On Linux, add yourself to the "
+                f"docker group with `{_ADMIN} usermod -aG docker $USER`, then log out and back in. "
+                "(Members of that group can control Docker, so only do this on your own machine; "
+                "rootless Docker also works.)")
+    if any(k in t for k in ("cannot connect to the docker daemon", "is the docker daemon running",
+                            "error during connect", "docker desktop is not running",
+                            "docker.sock: connect: no such file", "connection refused")):
+        if plat == "mac":
+            return ("Docker is installed but not running. Open Docker Desktop (or start Colima or "
+                    "OrbStack) and wait until it says it is running, then try again.")
+        if plat == "windows":
+            return "Docker is installed but not running. Start Docker Desktop and wait until it is running."
+        return ("Docker is installed but not running. Start it with `systemctl start docker` "
+                f"(you may need `{_ADMIN}`), or open Docker Desktop, then try again.")
+    if "no space left on device" in t:
+        return ("Docker is out of disk space. `docker system prune` frees space by removing stopped "
+                "containers and unused images, or give Docker more disk in Docker Desktop's settings "
+                "(Resources).")
+    if "toomanyrequests" in t or "rate limit" in t:
+        return ("Docker Hub's download limit was reached while fetching the base image (python:3.11-slim). "
+                "Run `docker login` with a free Docker account, or wait a few hours and try again.")
+    if any(k in t for k in ("failed to resolve source metadata", "tls handshake timeout", "i/o timeout",
+                            "dial tcp", "temporary failure in name resolution", "no such host",
+                            "failed to fetch oauth token", "unexpected eof")):
+        return ("Docker couldn't download the base image (python:3.11-slim). The first run needs the "
+                "internet once to build the sandbox image; check your connection, VPN or proxy, then "
+                "try again. Later runs work offline.")
+    if "mounts denied" in t or "is not shared from the host" in t:
+        return ("Docker isn't allowed to read Detonator's temporary folder. In Docker Desktop open "
+                "Settings > Resources > File sharing and add your temporary folder (on a Mac, /var/folders), "
+                "or with Colima start it with that folder mounted.")
+    if "exec format error" in t or "no matching manifest" in t:
+        return ("Docker couldn't run the sandbox image on this computer's processor type. Update Docker, "
+                "and on Apple Silicon make sure you use the Apple Silicon build of Docker Desktop.")
+    return None
+
+
+def docker_problem(platform: str | None = None) -> str | None:
+    """None when Docker is ready; otherwise a plain-language message saying what to fix."""
+    plat = platform or _platform()
     if not docker_bin():
-        return False
+        where = {"mac": "Docker Desktop for Mac (or Colima or OrbStack)",
+                 "windows": "Docker Desktop for Windows"}.get(plat, "Docker Engine or Docker Desktop")
+        return (f"Docker isn't installed, or Detonator can't find it. Install {where} from {_GET_DOCKER}, "
+                "start it, and try again.")
     try:
-        return _run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=20).returncode == 0
+        proc = _run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=20)
+    except subprocess.TimeoutExpired:
+        return "Docker didn't answer within 20 seconds. It may still be starting; wait a moment and try again."
+    except OSError as exc:
+        return f"Detonator couldn't start the docker command: {exc}"
+    if proc.returncode == 0:
+        return None
+    err = (proc.stderr or proc.stdout or "").strip()
+    return explain_docker_error(err, plat) or f"Docker isn't ready: {err[-400:] or 'docker info failed'}"
+
+
+def docker_check() -> str:
+    """A short readiness report for `/detonate check`. Runs only `docker info` and
+    `docker image inspect`; it never builds, pulls or runs anything."""
+    problem = docker_problem()
+    if problem:
+        return "Docker: not ready.\n" + problem
+    lines = ["Docker: ready."]
+    try:
+        have = _run(["docker", "image", "inspect", image_tag()], timeout=30).returncode == 0
     except Exception:
-        return False
+        have = False
+    lines.append("Sandbox image: built." if have else
+                 "Sandbox image: not built yet. The first /detonate builds it, which downloads "
+                 "python:3.11-slim once and takes about a minute.")
+    return "\n".join(lines)
 
 
 def image_tag() -> str:
@@ -97,7 +182,10 @@ def ensure_image() -> str:
         return tag
     proc = _run(["docker", "build", "-q", "-t", tag, str(SANDBOX_DIR)], timeout=900)
     if proc.returncode != 0:
-        raise DetonatorError(f"docker build failed: {proc.stderr.strip()[-800:]}")
+        err = proc.stderr.strip()
+        hint = explain_docker_error(err)
+        raise DetonatorError(f"{hint}\n(docker build said: {err[-300:]})" if hint
+                             else f"docker build failed: {err[-800:]}")
     return tag
 
 
@@ -319,8 +407,9 @@ def _make_world_readable(root: Path) -> None:
 
 def detonate(target: Target) -> dict:
     """Run the plugin in a fresh container and return the raw harness result."""
-    if not docker_available():
-        raise DetonatorError("Docker is not available. Install Docker and make sure the daemon is running.")
+    problem = docker_problem()
+    if problem:
+        raise DetonatorError(problem)
     tag = ensure_image()
     with tempfile.TemporaryDirectory(prefix="detonator-") as tmp:
         tmp = Path(tmp)
@@ -347,7 +436,9 @@ def detonate(target: Target) -> dict:
             return {"fatal": f"sandbox timed out after {RUN_TIMEOUT_S}s"}
         result_path = out_dir / "result.json"
         if not result_path.is_file():
-            return {"fatal": f"no result (exit {proc.returncode}): {proc.stderr.strip()[-800:]}"}
+            err = proc.stderr.strip()
+            hint = explain_docker_error(err)
+            return {"fatal": (f"{hint} " if hint else "") + f"no result (exit {proc.returncode}): {err[-800:]}"}
         try:
             result = json.loads(result_path.read_text())
         except json.JSONDecodeError as exc:

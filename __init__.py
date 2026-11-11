@@ -27,7 +27,7 @@ def register(ctx):
         "detonate",
         commands.make_slash_handler(ctx),
         description="Test a plugin at an exact commit in a disposable Docker sandbox (asks first)",
-        args_hint="<owner/repo> <sha> [subdir]",
+        args_hint="<owner/repo> <sha> [subdir] | check",
     )
     ctx.register_cli_command(
         name="detonate",

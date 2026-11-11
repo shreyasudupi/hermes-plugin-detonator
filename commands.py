@@ -22,7 +22,8 @@ if __package__:
     from .engine import diff, report, rules, runner
 
 USAGE = ("Usage: /detonate <owner/repo> <40-char-sha> [subdir]\n"
-         "   or: /detonate <owner/repo> <old-sha> <new-sha> [subdir]   (compare two versions)")
+         "   or: /detonate <owner/repo> <old-sha> <new-sha> [subdir]   (compare two versions)\n"
+         "   or: /detonate check   (is Docker ready? runs nothing)")
 APPROVE, CANCEL = "run", "cancel"
 
 
@@ -142,6 +143,12 @@ def summary(evaluation: dict, path: Path) -> str:
 
 def make_slash_handler(ctx):
     def handle(raw_args: str = "", **_kwargs) -> str:
+        if (raw_args or "").strip().lower() in ("check", "doctor"):
+            # Read-only: `docker info` and `docker image inspect`. Runs no plugin code.
+            try:
+                return runner.docker_check()
+            except Exception as exc:  # never crash the session
+                return f"Detonator could not check Docker: {type(exc).__name__}: {exc}"
         try:
             repo, sha, subdir = parse_target(raw_args)
         except ValueError as exc:
