@@ -81,6 +81,7 @@ if a run fails for one of these reasons.
 | Your user isn't allowed to use Docker (Linux) | Add yourself to the `docker` group and log out and back in, or use rootless Docker. Members of that group control Docker, so do this only on your own machine. |
 | Couldn't download the base image | The first run downloads `python:3.11-slim` once to build the sandbox. Check your internet, VPN or proxy. Later runs need no network. |
 | Docker Hub download limit | Run `docker login` with a free Docker account, or wait a few hours. |
+| Docker Desktop says "WSL not installed" (Windows) | Docker Desktop runs Linux containers through WSL 2. Open PowerShell as administrator, run `wsl --install`, restart the PC, then open Docker Desktop again. |
 | Docker Desktop is set to Windows containers (Windows) | Right-click the Docker icon in the taskbar and choose **Switch to Linux containers...**. The sandbox is a Linux container. |
 | Out of disk space | `docker system prune` removes stopped containers and unused images, or give Docker more disk in Docker Desktop (Settings > Resources). |
 | Mounts denied | Docker Desktop: Settings > Resources > File sharing, add your temporary folder (on a Mac, `/var/folders`). Colima: start it with that folder mounted. |
