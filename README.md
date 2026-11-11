@@ -4,6 +4,8 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
+**Current version: v0.2.2** ([what's new](#versions))
+
 [![Watch the 82-second Plugin Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
 ▶️ **[Watch the 82-second demo](https://x.com/shreyasudupi/status/2120289870908465286)**: a real run catching a fake key-stealer plugin, comparing two versions, the clock jump, and the plain-words AI explanation.
@@ -219,6 +221,23 @@ python -m engine --repo owner/name --sha <40-char sha> [--subdir path]
 Only run untrusted plugins inside a disposable environment such as a Codespace or CI.
 Harmless "malicious" test plugins are kept in a separate private repository, so this
 repository stays clean for the catalog scanner. CI runs every one of them on each change.
+
+## Versions
+
+The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
+
+- **v0.2.2** (Nov 11, 2026): Three new rules: reading every API key at once through `/proc`,
+  a plugin name with `../` in it, and flooding the activity log to hide something. Report titles
+  can't carry text from the plugin, and each run writes its own account files. Plain-language
+  Docker errors and `/detonate check`. 23 test plugins now set off all 45 rules in CI, and
+  GitHub Actions are pinned to exact commits.
+- **v0.2.1** (Nov 10, 2026): First public release, the version submitted to the Hermes plugin
+  catalog. CI runs the fake-malicious test plugins on every change.
+- **v0.2.0** (Nov 10, 2026): Clock jump (time bombs and sleepers), the dormant-code check, rules
+  tuned on the whole catalog, read-only AI explanations (`detonator_report`), a random sandbox
+  world every run, and the symlink fix.
+- **v0.1** (Nov 9, 2026): First working version: the Docker sandbox with decoys, rules mapped to
+  MITRE ATT&CK and ATLAS, `/detonate`, and comparing two versions.
 
 ## Layout
 
