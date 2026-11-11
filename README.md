@@ -62,7 +62,8 @@ Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
 
 ### Rules decide, AI explains
 
-After a run, ask Hermes "explain that Detonator report". The read-only
+After a run, ask Hermes: "Use the detonator_report tool to explain my latest
+Detonator report". (Naming the tool helps smaller models find it.) The read-only
 `detonator_report` tool hands the saved verdict and findings to your model so it
 can explain them in plain words: what each finding means and whether it looks
 normal for this kind of plugin. The model never decides or changes the verdict.
@@ -173,7 +174,9 @@ Detonator does things a reviewer should know about:
   a 64 MB `/tmp`, and a 180-second timeout.
 - **A different world every run.** Each run gets a random username, home folder
   (`/home/<name>`) and host name, and random fake-key values, so a plugin cannot spot
-  the sandbox by a fixed path or a fixed marker in the decoys.
+  the sandbox by a fixed path or a fixed marker in the decoys. The container's user
+  and group lists are written per run (mounted read-only) so they name the same
+  random user; the image itself has no sandbox account.
 
 ## Developer usage
 

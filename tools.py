@@ -93,7 +93,7 @@ def detonator_report(args: dict, **kwargs) -> str:
         findings = []
         for f in (found.get("findings") or [])[:_MAX_FINDINGS]:
             findings.append({
-                "severity": f.get("severity"), "rule": f.get("rule"), "title": f.get("title"),
+                "severity": f.get("severity"), "rule": f.get("rule"), "title": _HIDDEN.sub("", str(f.get("title") or ""))[:400],
                 "why": f.get("why"), "attack": f.get("attack") or [], "atlas": f.get("atlas") or [],
                 "evidence_untrusted": [_clean(e) for e in (f.get("evidence") or [])[:_MAX_EVIDENCE]],
             })

@@ -26,14 +26,25 @@ EXPECTED = {
     "time-bomb": "DANGEROUS",
     "sleeper": "DANGEROUS",
     "trojan-update": "DANGEROUS",  # v1.0.1 at the fixtures head
+    "info-stealer": "DANGEROUS",
+    "secret-leaker": "DANGEROUS",
+    "memory-snooper": "DANGEROUS",
+    "env-dumper": "SUSPICIOUS",
+    "backdoor-listener": "SUSPICIOUS",
+    "config-hijacker": "SUSPICIOUS",
+    "name-escaper": "SUSPICIOUS",
+    "log-flooder": "SUSPICIOUS",
+    "native-loader": "REVIEW",
+    "broken-loader": "REVIEW",
+    "trigger-word": "REVIEW",
+    "missing-deps": "NO_FINDINGS",
 }
 # The trojan's first version (an older commit) must look clean.
 EXPECTED_V1 = {"trojan-update": "NO_FINDINGS"}
 
 
-def verdict(path: pathlib.Path) -> str:
-    raw = runner.detonate(runner.local_target(str(path)))
-    return rules.evaluate(raw)["verdict"]
+def run(path: pathlib.Path) -> dict:
+    return rules.evaluate(runner.detonate(runner.local_target(str(path))))
 
 
 def main() -> int:
@@ -41,12 +52,22 @@ def main() -> int:
     if len(sys.argv) > 2:
         checks.append((pathlib.Path(sys.argv[2]), EXPECTED_V1))
     failed = 0
+    fired = set()
     for root, expected in checks:
         for name, want in expected.items():
-            got = verdict(root / name)
+            report = run(root / name)
+            got = report["verdict"]
+            fired |= {f["rule"] for f in report["findings"]}
             ok = got == want
             failed += not ok
             print(f"{'ok  ' if ok else 'FAIL'} {name} ({root.name}): expected {want}, got {got}")
+    # Every rule must be set off by at least one fixture, so none can break unnoticed.
+    untested = sorted(set(rules.RULES) - fired)
+    if untested:
+        failed += 1
+        print(f"FAIL no fixture sets off: {', '.join(untested)}")
+    else:
+        print(f"ok   all {len(rules.RULES)} rules set off by at least one fixture")
     print(f"{failed} failed")
     return 1 if failed else 0
 
