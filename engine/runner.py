@@ -51,6 +51,7 @@ DOCKER_DIRS = (
     "/Applications/Docker.app/Contents/Resources/bin",
     os.path.expanduser("~/.rd/bin"),          # Rancher Desktop
     os.path.expanduser("~/.orbstack/bin"),    # OrbStack
+    r"C:\Program Files\Docker\Docker\resources\bin",  # Docker Desktop for Windows
 )
 
 
@@ -64,8 +65,11 @@ _PASS_ENV = (
     # Corporate proxies and certificate bundles, needed for git fetch and the one-time image build
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy",
     "all_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO",
-    # Windows basics, so the CLIs can start there
-    "SYSTEMROOT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "TEMP", "TMP",
+    # Windows basics, so the CLIs can start there and find their config and plugins
+    # (Python's os.environ is case-insensitive on Windows, so ProgramFiles matches PROGRAMFILES)
+    "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "USERPROFILE", "HOMEDRIVE",
+    "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+    "PROGRAMW6432", "TEMP", "TMP",
 )
 
 
@@ -145,6 +149,12 @@ def explain_docker_error(text: str, platform: str | None = None) -> str | None:
     return None
 
 
+WINDOWS_CONTAINERS = (
+    "Docker Desktop is set to Windows containers, but the sandbox is a Linux container. Right-click "
+    "the Docker icon in the taskbar, choose \"Switch to Linux containers...\", wait until it is running, "
+    "then try again.")
+
+
 def docker_problem(platform: str | None = None) -> str | None:
     """None when Docker is ready; otherwise a plain-language message saying what to fix."""
     plat = platform or _platform()
@@ -154,12 +164,14 @@ def docker_problem(platform: str | None = None) -> str | None:
         return (f"Docker isn't installed, or Detonator can't find it. Install {where} from {_GET_DOCKER}, "
                 "start it, and try again.")
     try:
-        proc = _run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=20)
+        proc = _run(["docker", "info", "--format", "{{.ServerVersion}} {{.OSType}}"], timeout=20)
     except subprocess.TimeoutExpired:
         return "Docker didn't answer within 20 seconds. It may still be starting; wait a moment and try again."
     except OSError as exc:
         return f"Detonator couldn't start the docker command: {exc}"
     if proc.returncode == 0:
+        if "windows" in (proc.stdout or "").lower().split()[1:]:
+            return WINDOWS_CONTAINERS
         return None
     err = (proc.stderr or proc.stdout or "").strip()
     return explain_docker_error(err, plat) or f"Docker isn't ready: {err[-400:] or 'docker info failed'}"
@@ -387,7 +399,7 @@ def write_accounts(etc_dir: Path, world: dict) -> None:
 def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, world: dict | None = None,
                    etc_dir: Path | None = None) -> list[str]:
     world = world or random_world()
-    accounts = [a for f in _ACCOUNT_FILES for a in ("-v", f"{etc_dir}/{f}:{_ETC}/{f}:ro")] if etc_dir else []
+    accounts = [a for f in _ACCOUNT_FILES for a in ("-v", f"{etc_dir / f}:{_ETC}/{f}:ro")] if etc_dir else []
     return [
         "docker", "run", "--rm",
         "--network", "none",

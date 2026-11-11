@@ -4,7 +4,7 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-**Current version: v0.2.2** ([what's new](#versions))
+**Current version: v0.2.3** ([what's new](#versions))
 
 [![Watch the 82-second Plugin Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
@@ -19,6 +19,10 @@ matters and which MITRE ATT&CK / ATLAS technique it matches.
 
 Tested on Linux (x86_64) and macOS on Apple Silicon (Docker Desktop). Every change runs
 the full test suite and Hermes's own `hermes plugins validate` in CI.
+**Windows:** should work with Docker Desktop in Linux-containers mode (the default), but a
+full run hasn't been tested on a real Windows PC yet. CI checks the Windows side on every
+change (tests, git fetch, Docker paths); the sandbox itself can't run on GitHub's Windows
+machines. Under WSL2 it works like Linux. If you try it, please open an issue either way.
 
 ## Try it in 60 seconds
 
@@ -77,6 +81,7 @@ if a run fails for one of these reasons.
 | Your user isn't allowed to use Docker (Linux) | Add yourself to the `docker` group and log out and back in, or use rootless Docker. Members of that group control Docker, so do this only on your own machine. |
 | Couldn't download the base image | The first run downloads `python:3.11-slim` once to build the sandbox. Check your internet, VPN or proxy. Later runs need no network. |
 | Docker Hub download limit | Run `docker login` with a free Docker account, or wait a few hours. |
+| Docker Desktop is set to Windows containers (Windows) | Right-click the Docker icon in the taskbar and choose **Switch to Linux containers...**. The sandbox is a Linux container. |
 | Out of disk space | `docker system prune` removes stopped containers and unused images, or give Docker more disk in Docker Desktop (Settings > Resources). |
 | Mounts denied | Docker Desktop: Settings > Resources > File sharing, add your temporary folder (on a Mac, `/var/folders`). Colima: start it with that folder mounted. |
 | Docker didn't answer in time | Docker may still be starting. Wait a moment and try again. |
@@ -228,6 +233,11 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
+- **v0.2.3** (Nov 11, 2026): Windows groundwork. `/detonate check` spots Docker Desktop set to
+  Windows containers and says how to switch. `git` and `docker` keep the Windows settings they
+  need (still no API keys), Docker Desktop's Windows folder is searched, Docker mount paths
+  are clean on Windows, and files always check out with Linux line endings. CI now runs the
+  tests and a Windows smoke test on a Windows machine.
 - **v0.2.2** (Nov 11, 2026): Three new rules: reading every API key at once through `/proc`,
   a plugin name with `../` in it, and flooding the activity log to hide something. Report titles
   can't carry text from the plugin, and each run writes its own account files. Plain-language
@@ -251,6 +261,7 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
 - `sandbox/`: the container image and the in-container harness
 - `tests/`: rule tests, plus integration tests that run harmless plugins in real Docker
 - `ci/check_fixtures.py`: runs the private test plugins in CI and checks every rule fires
+- `ci/windows_smoke.py`: Windows host checks in CI (git fetch, Docker message, mount paths)
 - `docs/RULES.md`: every rule, why it matters, and its ATT&CK / ATLAS IDs
 
 ## License

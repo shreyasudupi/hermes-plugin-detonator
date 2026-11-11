@@ -108,7 +108,7 @@ def test_docker_is_found_outside_path(tmp_path, monkeypatch):
     """Apps launched from the Dock don't read shell profiles; Detonator must still find Docker."""
     from engine import runner
 
-    fake = tmp_path / "docker"
+    fake = tmp_path / ("docker.exe" if sys.platform == "win32" else "docker")
     fake.write_text("#!/bin/sh\nexit 0\n")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", "/nonexistent")

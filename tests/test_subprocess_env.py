@@ -1,6 +1,7 @@
 """git and docker must not inherit Hermes's API keys (catalog review of 4026b2f8)."""
 
 import subprocess
+import sys
 
 from engine import runner
 
@@ -38,5 +39,7 @@ def test_every_subprocess_gets_the_minimal_env(monkeypatch):
 
 def test_real_child_process_sees_no_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-real-looking")
-    out = runner._run(["env"], timeout=10).stdout
+    # A Python child prints its environment, so this works on Windows too (no `env` there).
+    show = "import os; print(chr(10).join(k + '=' + v for k, v in os.environ.items()))"
+    out = runner._run([sys.executable, "-c", show], timeout=30).stdout
     assert "OPENAI_API_KEY" not in out and "GIT_TERMINAL_PROMPT=0" in out
