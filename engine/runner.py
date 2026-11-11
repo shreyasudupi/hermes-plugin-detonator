@@ -118,7 +118,9 @@ def explain_docker_error(text: str, platform: str | None = None) -> str | None:
                 "rootless Docker also works.)")
     if any(k in t for k in ("cannot connect to the docker daemon", "is the docker daemon running",
                             "error during connect", "docker desktop is not running",
-                            "docker.sock: connect: no such file", "connection refused")):
+                            "docker.sock: connect: no such file", "connection refused",
+                            "failed to connect to the docker api",  # newer CLIs, e.g. Windows named pipe
+                            "dockerdesktoplinuxengine")):
         if plat == "mac":
             return ("Docker is installed but not running. Open Docker Desktop (or start Colima or "
                     "OrbStack) and wait until it says it is running, then try again.")

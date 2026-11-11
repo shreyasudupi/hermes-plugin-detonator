@@ -72,3 +72,14 @@ def test_text_files_are_always_utf8():
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and node.func.attr in ("read_text", "write_text")):
                 assert any(k.arg == "encoding" for k in node.keywords), f"{f.name}:{node.lineno}"
+
+
+# Real text from Docker Desktop on Windows when it isn't running (Nov 11, 2026 test on a real PC)
+NOT_RUNNING_WINDOWS = ("failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine; "
+                       "check if the path is correct and if the daemon is running: open "
+                       "//./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified.")
+
+
+def test_docker_desktop_not_running_on_windows_is_explained():
+    msg = runner.explain_docker_error(NOT_RUNNING_WINDOWS, "windows")
+    assert msg and "Start Docker Desktop" in msg
