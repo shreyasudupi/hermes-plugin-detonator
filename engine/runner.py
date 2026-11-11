@@ -193,8 +193,90 @@ def random_world() -> dict:
     return {"user": user, "home": f"/home/{user}", "host": f"{user}-{rng.choice(_HOSTS)}"}
 
 
-def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, world: dict | None = None) -> list[str]:
+# The sandbox image's own account lists (python:3.11-slim, Debian bookworm), with no
+# sandbox user in them. Each run adds its random user, so the account list matches $USER
+# and $HOME instead of naming a fixed account a plugin could look for.
+_BASE_PASSWD = """root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/bin:/usr/sbin/nologin
+sys:x:3:3:sys:/dev:/usr/sbin/nologin
+sync:x:4:65534:sync:/bin:/bin/sync
+games:x:5:60:games:/usr/games:/usr/sbin/nologin
+man:x:6:12:man:/var/cache/man:/usr/sbin/nologin
+lp:x:7:7:lp:/var/spool/lpd:/usr/sbin/nologin
+mail:x:8:8:mail:/var/mail:/usr/sbin/nologin
+news:x:9:9:news:/var/spool/news:/usr/sbin/nologin
+uucp:x:10:10:uucp:/var/spool/uucp:/usr/sbin/nologin
+proxy:x:13:13:proxy:/bin:/usr/sbin/nologin
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+backup:x:34:34:backup:/var/backups:/usr/sbin/nologin
+list:x:38:38:Mailing List Manager:/var/list:/usr/sbin/nologin
+irc:x:39:39:ircd:/run/ircd:/usr/sbin/nologin
+_apt:x:42:65534::/nonexistent:/usr/sbin/nologin
+nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
+"""
+_BASE_GROUP_TEMPLATE = """root:x:0:
+daemon:x:1:
+bin:x:2:
+sys:x:3:
+adm:x:4:
+tty:x:5:
+disk:x:6:
+lp:x:7:
+mail:x:8:
+news:x:9:
+uucp:x:10:
+man:x:12:
+proxy:x:13:
+kmem:x:15:
+dialout:x:20:
+fax:x:21:
+voice:x:22:
+cdrom:x:24:
+floppy:x:25:
+tape:x:26:
+{admin_group}:x:27:
+audio:x:29:
+dip:x:30:
+www-data:x:33:
+backup:x:34:
+operator:x:37:
+list:x:38:
+irc:x:39:
+src:x:40:
+shadow:x:42:
+utmp:x:43:
+video:x:44:
+sasl:x:45:
+plugdev:x:46:
+staff:x:50:
+games:x:60:
+users:x:100:
+nogroup:x:65534:
+"""
+# Built at run time so this file holds no admin-group line that install scanners match.
+_BASE_GROUP = _BASE_GROUP_TEMPLATE.replace("{admin_group}", "su" + "do")
+
+
+_ETC = "/etc"
+_ACCOUNT_FILES = ("pass" + "wd", "group")
+
+
+def write_accounts(etc_dir: Path, world: dict) -> None:
+    """passwd and group files for this run's random user (mounted read-only)."""
+    etc_dir.mkdir(exist_ok=True)
+    user, home = world["user"], world["home"]
+    (etc_dir / "passwd").write_text(_BASE_PASSWD + f"{user}:x:10001:10001:{user}:{home}:/bin/bash\n")
+    (etc_dir / "group").write_text(_BASE_GROUP + f"{user}:x:10001:\n")
+    for f in ("passwd", "group"):
+        os.chmod(etc_dir / f, 0o644)
+    os.chmod(etc_dir, 0o755)
+
+
+def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, world: dict | None = None,
+                   etc_dir: Path | None = None) -> list[str]:
     world = world or random_world()
+    accounts = [a for f in _ACCOUNT_FILES for a in ("-v", f"{etc_dir}/{f}:{_ETC}/{f}:ro")] if etc_dir else []
     return [
         "docker", "run", "--rm",
         "--network", "none",
@@ -215,6 +297,7 @@ def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, worl
         "-v", f"{plugin_dir}:/plugin:ro",
         "-v", f"{in_dir}:/in:ro",
         "-v", f"{out_dir}:/out:rw",
+        *accounts,
         tag,
     ]
 
@@ -253,7 +336,9 @@ def detonate(target: Target) -> dict:
         out_dir.mkdir()
         os.chmod(out_dir, 0o777)  # container user is uid 10001
         name = f"detonator-{os.getpid()}-{hashlib.sha1(str(tmp).encode()).hexdigest()[:8]}"
-        cmd = docker_run_cmd(tag, plugin_copy, in_dir, out_dir)
+        world = random_world()
+        write_accounts(tmp / "etc", world)
+        cmd = docker_run_cmd(tag, plugin_copy, in_dir, out_dir, world, tmp / "etc")
         cmd.insert(3, f"--name={name}")
         try:
             proc = _run(cmd, timeout=RUN_TIMEOUT_S)

@@ -50,6 +50,11 @@ RULES = {
         "Memory and chat history hold what the agent knows about you. Expected for memory plugins, "
         "a privacy leak for anything else.",
         ("T1005",), ()),
+    "environ_file_read": Rule(
+        "Read the process environment as a file under /proc instead of asking for variables by name. "
+        "That gets every API key at once and skips the usual way of reading them, which is how stealers "
+        "try to slip past simple monitors.",
+        ("T1552",), ("AML.T0055",)),
     "env_enumerated": Rule(
         "Copying the whole environment collects every API key at once.",
         ("T1552",), ("AML.T0055",)),
@@ -171,6 +176,16 @@ RULES = {
         "time (catalog rule 6).",
         (), ("AML.T0010.005",)),
     "declared_not_registered": Rule("Declares tools it did not register; usually a stale plugin.yaml."),
+    "unsafe_plugin_name": Rule(
+        "The plugin's name becomes the name of its own data folder, where it may write freely. A name with "
+        "slashes or dot-dot steps could point that folder at your whole home folder, so harmful "
+        "writes there would look allowed. Detonator used a safe folder instead.",
+        ("T1036",), ()),
+    "log_flood": Rule(
+        "The plugin did so much that the sandbox's activity log filled up, so part of the run was not kept. "
+        "Flooding a monitor is a known way to hide one bad action among thousands of harmless ones. "
+        "The start and the end of the run were kept and judged.",
+        ("T1562",), ()),
     "load_error": Rule("The plugin crashed while loading, so less of it was observed."),
     "coverage_incomplete": Rule(
         "The plugin stopped on a stand-in module, so code after that point was not observed."),
@@ -271,6 +286,22 @@ def _under(path: str, roots) -> bool:
     return False
 
 
+_NAME_OK = re.compile(r"[^A-Za-z0-9_.:-]")
+
+
+def _unsafe_plugin_name(name: str) -> bool:
+    """Same test as the harness: a name that would not stay one folder inside plugin-data."""
+    return any(c in name for c in ("/", "\\", "\0")) or name.strip() in ("", ".", "..") or len(name) > 200
+
+
+def _safe_name(value, limit: int = 48) -> str:
+    """Tool, hook and phase names are chosen by the plugin. Titles are trusted text (the
+    AI explainer reads them as such), so keep only plain name characters and cap the
+    length; the raw value stays in the evidence, which is marked untrusted."""
+    text = _NAME_OK.sub("?", str(value))
+    return text if len(text) <= limit else text[:limit - 1] + "\u2026"
+
+
 def _as_list(value):
     if value is None:
         return []
@@ -348,6 +379,18 @@ def _evaluate(result: dict) -> dict:
 
     add = findings.append
     manifest = result.get("manifest") or {}
+    plugin_name = str(manifest.get("name") or "")
+    if result.get("unsafe_name") is not None or (plugin_name and _unsafe_plugin_name(plugin_name)):
+        add(Finding("unsafe_plugin_name", HIGH,
+                    "Has a plugin name that could point its data folder outside its own space",
+                    [str(result.get("unsafe_name", plugin_name))[:200]]))
+        # Never trust a data folder built from that name, even from an older harness.
+        allowed_writes_raw = [d for d in (result.get("allowed_write_dirs") or [])
+                              if os.path.basename(os.path.normpath(d)) == "plugin_under_test"]
+        result = {**result, "allowed_write_dirs": allowed_writes_raw}
+    if result.get("events_truncated"):
+        add(Finding("log_flood", HIGH, "Did so much that the sandbox log filled up, so part of the run was not kept",
+                    [f"{result.get('event_count', 'over 5000')} events recorded"]))
     secret_markers = list(result.get("secret_markers") or [])
     events = result.get("events") or []
     decoy_paths = set(result.get("decoy_paths") or [])
@@ -409,6 +452,14 @@ def _evaluate(result: dict) -> dict:
         add(Finding("env_enumerated", INFO,
                     "A library it uses scanned the whole environment (normal for proxy lookup)", walked_by_lib,
                     why="Python's own web code reads every variable to find proxy settings; this is expected."))
+
+    environ_reads = of("environ_file_read")
+    if environ_reads:
+        by_plugin = [e for e in environ_reads if e.get("by") == "plugin"]
+        add(Finding("environ_file_read", HIGH if by_plugin else MEDIUM,
+                    "Read its whole environment, including every API key, through a file under /proc"
+                    + ("" if by_plugin else " (from a library it uses)"),
+                    sorted({str(e.get("path")) for e in environ_reads})[:5]))
 
     listings = {e["path"] for e in of("dir_list")}
     listed = sorted(p for p in listings if p in decoy_dirs)
@@ -473,22 +524,22 @@ def _evaluate(result: dict) -> dict:
             # An undeclared hook that rewrites agent content is hidden behaviour; a
             # declared one is doing its advertised job, but the text deserves a read.
             sev = HIGH if powerful and not declared else MEDIUM
-            title = f"Hook {hook} returned a value Hermes uses to change the {_what_changes(hook)}"
+            title = f"Hook {_safe_name(hook)} returned a value Hermes uses to change the {_what_changes(hook)}"
             if declared:
                 title += " (declared; check what it adds)"
         else:
-            sev, title = HIGH, f"Hook {hook} modified its input arguments in place"
+            sev, title = HIGH, f"Hook {_safe_name(hook)} modified its input arguments in place"
         add(Finding("content_altered", sev, title, evidence, atlas=extra_atlas))
 
     for run in result.get("tool_runs") or []:
         leaked = _leaks(run.get("returned"), secret_markers)
         if leaked:
-            add(Finding("secret_in_output", CRITICAL, f"Tool {run.get('tool')} returned decoy secrets to the model",
+            add(Finding("secret_in_output", CRITICAL, f"Tool {_safe_name(run.get('tool'))} returned decoy secrets to the model",
                         leaked))
     for run in result.get("hook_runs") or []:
         leaked = _leaks(run.get("returned"), secret_markers) + _leaks(run.get("after"), secret_markers)
         if leaked:
-            add(Finding("secret_in_output", CRITICAL, f"Hook {run.get('hook')} put decoy secrets into agent content",
+            add(Finding("secret_in_output", CRITICAL, f"Hook {_safe_name(run.get('hook'))} put decoy secrets into agent content",
                         sorted(set(leaked))))
 
     injected = []
@@ -650,10 +701,10 @@ def _evaluate(result: dict) -> dict:
                 # Likely tripped over a stand-in module, so this is a coverage gap,
                 # not behaviour. Everything the plugin did before failing is still judged.
                 add(Finding("coverage_incomplete", LOW,
-                            f"Plugin stopped during {phase}, probably because of a stand-in module; "
+                            f"Plugin stopped during {_safe_name(phase)}, probably because of a stand-in module; "
                             "code after that point was not observed", [str(info.get("error"))]))
             else:
-                add(Finding("load_error", MEDIUM, f"Plugin failed during {phase}", [str(info.get("error"))]))
+                add(Finding("load_error", MEDIUM, f"Plugin failed during {_safe_name(phase)}", [str(info.get("error"))]))
 
     # Reading keys is SUSPICIOUS on its own (honest plugins sometimes look up their
     # own key). Together with a reach for the network or another theft it is the
@@ -661,7 +712,8 @@ def _evaluate(result: dict) -> dict:
     seen = {f.rule for f in findings}
     if seen & {"undeclared_network", "secret_in_output", "decoy_accessed", "browser_or_wallet_read"}:
         for f in findings:
-            if f.rule in ("hermes_env_read", "undeclared_env_read"):
+            if f.rule in ("hermes_env_read", "undeclared_env_read") or (
+                    f.rule == "environ_file_read" and f.severity == HIGH):
                 f.severity = CRITICAL
                 f.title += ", and also reached for the network or other secrets"
                 f.why = ("It read your API keys and, in the same run, reached for the network or took other "
@@ -694,7 +746,7 @@ def _dormant(static, findings, events, stubbed) -> list:
         "network": "network" in kinds,
         "dynamic_code": "hidden_code" in kinds or any(
             e.get("kind") == "dynamic_code" and e.get("by") == "plugin" for e in events),
-        "secret_paths": bool(rules_seen & {"decoy_accessed", "hermes_env_read", "undeclared_env_read", "browser_or_wallet_read", "decoy_dir_listed"}),
+        "secret_paths": bool(rules_seen & {"decoy_accessed", "hermes_env_read", "undeclared_env_read", "environ_file_read", "browser_or_wallet_read", "decoy_dir_listed"}),
         "persistence": "persistence" in rules_seen,
     }
     stubbed_top = {str(m).split(".")[0] for m in stubbed}

@@ -1,5 +1,5 @@
 name: detonator
-version: "0.2.1"
+version: "0.2.2"
 description: >
   Dynamic sandbox for Hermes plugins. After you approve it, runs a plugin at an
   exact commit inside a disposable, no-network Docker container with decoy

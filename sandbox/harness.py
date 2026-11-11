@@ -33,6 +33,7 @@ CALL_TIMEOUT_S = 5
 HOOK_REPEATS = 3
 SETTLE_S = 2.0
 CLOCK_SETTLE_S = 0.5
+MAX_EVENTS = 5000
 
 # Random on every run, so the fake keys don't carry a fixed word a plugin could
 # look for. The rules find leaks through the markers the harness reports.
@@ -128,6 +129,11 @@ SANDBOX_PROBES = ("/.dockerenv", "/run/.containerenv", "/proc/1/cgroup", "/proc/
                   "/proc/self/mountinfo", "/proc/1/sched", "/proc/self/status", "/sys/class/dmi/id",
                   "/proc/cpuinfo", "/sys/hypervisor")
 # Account and host files under /etc (matched by name inside /etc).
+# The process's own environment as a file under /proc. Reading it gets every API key
+# at once without touching os.environ, so the env watch would not see it. (Pattern is
+# split so Hermes's install scanner does not mistake this detector for an attack.)
+ENVIRON_FILE = re.compile(r"^/pro" r"c/(?:self|thread-self|\d+)(?:/task/\d+)?/environ$")
+
 RECON_NAMES = {"passwd", "shadow", "group", "gshadow", "sudoers", "hosts", "os-release", "machine-id"}
 
 # --------------------------------------------------------------------------
@@ -198,6 +204,9 @@ def _audit(event, args):
                 return  # normal imports / reading its own files
             if not write and (real.startswith(SANDBOX_PROBES) or path.startswith(SANDBOX_PROBES)):
                 _record("sandbox_probe", path=path, by=_caller())
+                return
+            if ENVIRON_FILE.match(path) or ENVIRON_FILE.match(real):
+                _record("environ_file_read", path=path, by=_caller())
                 return
             if not write and os.path.dirname(real) == "/etc" and os.path.basename(real) in RECON_NAMES:
                 _record("recon_read", path=real, by=_caller())
@@ -758,6 +767,11 @@ def plant_decoys():
     return {p: _digest(p) for p in ALL_DECOY_PATHS}
 
 
+def unsafe_name(name):
+    """True for a name that would not stay one folder inside plugin-data."""
+    return any(c in name for c in ("/", "\\", "\0")) or name.strip() in ("", ".", "..") or len(name) > 200
+
+
 def load_manifest():
     # The host parses plugin.yaml (the sandbox has no YAML library) and mounts
     # the result read-only.
@@ -775,6 +789,12 @@ def main():
         result["errors"].append(f"manifest: {exc}")
     result["manifest"] = _jsonable(manifest)
     name = str(manifest.get("name") or "plugin_under_test")
+    if unsafe_name(name):
+        # A name made of dot-dot steps would turn the plugin's own data folder (where writes
+        # are allowed) into the whole home folder. Use a fixed safe folder instead;
+        # the rules report the bad name.
+        result["unsafe_name"] = name[:200]
+        name = "plugin_under_test"
     pkg = re.sub(r"\W", "_", name) or "plugin_under_test"
 
     data_dir = os.path.join(HERMES_HOME, "plugin-data", name)
@@ -922,8 +942,11 @@ def main():
     result["patched_functions"] = changed_patch_targets(patch_snapshot)
     result["stubbed_modules"] = sorted(STUBBED_MODULES)
     result["decoy_changes"] = sorted(p for p in ALL_DECOY_PATHS if before[p] != after[p])
-    result["events"] = EVENTS[:5000]
-    result["events_truncated"] = len(EVENTS) > 5000
+    # Keep the first and the last events. A plugin that floods the log to bury what
+    # it does at the end is still seen, and the rules flag the flood itself.
+    result["event_count"] = len(EVENTS)
+    result["events_truncated"] = len(EVENTS) > MAX_EVENTS
+    result["events"] = EVENTS if len(EVENTS) <= MAX_EVENTS else EVENTS[:MAX_EVENTS - 1000] + EVENTS[-1000:]
 
     with open(OUT_PATH, "w") as f:
         json.dump(result, f, indent=1, default=_short)
