@@ -21,6 +21,8 @@ the full test suite and Hermes's own `hermes plugins validate` in CI.
 ## Try it in 60 seconds
 
 You need [Docker](https://docs.docker.com/get-docker/) running and Hermes installed.
+Not sure Docker is ready? Type `/detonate check` in Hermes: it only asks Docker for its
+status, runs nothing, and tells you what to fix (see [Docker problems](#docker-problems)).
 
 ```bash
 hermes plugins install shreyasudupi/hermes-plugin-detonator
@@ -59,6 +61,22 @@ job, a hook, a non-interactive or unattended run), it refuses instead of running
 There is no flag that skips the question. The `detonate_plugin` tool lets the
 agent suggest a run, but it only returns the `/detonate` command for you to run.
 Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
+
+### Docker problems
+
+`/detonate check` tells you which of these you have. Detonator shows the same advice
+if a run fails for one of these reasons.
+
+| What you see | What to do |
+|---|---|
+| Docker isn't installed, or can't be found | Install [Docker Desktop](https://docs.docker.com/get-docker/) (Mac, Windows), or Docker Engine on Linux. Colima, OrbStack and Rancher Desktop also work. |
+| Docker is installed but not running | Open Docker Desktop (or start Colima or OrbStack) and wait until it says it is running. On Linux: `systemctl start docker`. |
+| Your user isn't allowed to use Docker (Linux) | Add yourself to the `docker` group and log out and back in, or use rootless Docker. Members of that group control Docker, so do this only on your own machine. |
+| Couldn't download the base image | The first run downloads `python:3.11-slim` once to build the sandbox. Check your internet, VPN or proxy. Later runs need no network. |
+| Docker Hub download limit | Run `docker login` with a free Docker account, or wait a few hours. |
+| Out of disk space | `docker system prune` removes stopped containers and unused images, or give Docker more disk in Docker Desktop (Settings > Resources). |
+| Mounts denied | Docker Desktop: Settings > Resources > File sharing, add your temporary folder (on a Mac, `/var/folders`). Colima: start it with that folder mounted. |
+| Docker didn't answer in time | Docker may still be starting. Wait a moment and try again. |
 
 ### Rules decide, AI explains
 
@@ -139,14 +157,16 @@ no Python code to run, and Detonator says so instead of guessing.
 
 ## How it was tested
 
-- **Every change** runs 79 tests in CI, including real Docker sandbox runs, plus Hermes's own
+- **Every change** runs over 100 tests in CI, including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
-- **Detection** is checked against 11 harmless fake-malicious test plugins (fake keys, reserved
-  TEST-NET addresses, `true` as the only command): key stealer, persistence, prompt injection,
-  memory tampering, tool poisoning, rug pull, environment hijack, a trojan update, a date-triggered
-  time bomb and a sleeper thread. All 11 get their expected verdict, and CI re-checks them on every change. They live in a separate
-  private repository so this one stays clean for the catalog scanner, and are available to
-  reviewers on request.
+- **Detection** is checked against 23 harmless test plugins (fake keys, reserved TEST-NET
+  addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,
+  prompt injection, tool poisoning, a rug pull, a backdoor port, a config hijack, a log flood, a
+  trojan update, a date-triggered time bomb, a sleeper thread, plus honest and grey-area plugins
+  that must not be flagged as dangerous. All 23 get their expected verdict, together they set off
+  every one of the 45 rules, and CI re-checks them on every change. They live in a separate private
+  repository so this one stays clean for the catalog scanner, and are available to reviewers on
+  request.
 - **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
   their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
   first pass had 7 dangerous results; each was checked by hand, all were false alarms, and the
@@ -188,8 +208,8 @@ python -m engine --repo owner/name --sha <40-char sha> [--subdir path]
 ```
 
 Only run untrusted plugins inside a disposable environment such as a Codespace or CI.
-Harmless "malicious" test fixtures live in a separate repository,
-`detonator-test-fixtures`, so this repository stays clean for the catalog scanner.
+Harmless "malicious" test plugins are kept in a separate private repository, so this
+repository stays clean for the catalog scanner. CI runs every one of them on each change.
 
 ## Layout
 
