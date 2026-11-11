@@ -170,7 +170,12 @@ no Python code to run, and Detonator says so instead of guessing.
 - **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
   their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
   first pass had 7 dangerous results; each was checked by hand, all were false alarms, and the
-  rules were tuned. Only totals are published, never plugin names.
+  rules were tuned. Only totals are published, never plugin names. "Suspicious" usually means risky but
+  undisclosed behaviour, not malware: the most common reasons were running shell commands (23),
+  writing outside the plugin's folder (8) and reading undeclared API keys (7). The one dangerous
+  result reads Hermes's .env for its own OpenRouter key and sends it to OpenRouter, which breaks
+  catalog rule 11 but looks like a convenience fallback, not theft. The 2 errors are plugins that
+  ran past the time limit or were stopped by the container.
 
 ## Disclosures (catalog rule 13)
 
