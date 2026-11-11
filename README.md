@@ -4,6 +4,8 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
+**Current version: v0.2.2** ([what's new](#versions))
+
 [![Watch the 82-second Plugin Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
 ▶️ **[Watch the 82-second demo](https://x.com/shreyasudupi/status/2120289870908465286)**: a real run catching a fake key-stealer plugin, comparing two versions, the clock jump, and the plain-words AI explanation.
@@ -55,6 +57,7 @@ Full report: ~/.hermes/plugin-data/detonator/reports/....md
 ```
 
 or from a terminal: `hermes detonate <owner/repo> <40-char-sha> [--subdir path] [--compare-to new-sha]`.
+`/detonate check` only tells you whether Docker is ready; it runs nothing.
 
 Detonator always asks you before it runs anything. If no one can answer (a cron
 job, a hook, a non-interactive or unattended run), it refuses instead of running.
@@ -115,8 +118,8 @@ before `hermes plugins update`, or when reviewing a catalog SHA bump.
 | Severity → verdict | Examples |
 |---|---|
 | critical → DANGEROUS | Reads decoy SSH or cloud keys, browser passwords or wallets; reads API keys and also reaches for the network; leaks a decoy secret; plants autostart, cron, LaunchAgent, `.bashrc` or `.pth` persistence |
-| high → SUSPICIOUS | Reads Hermes's `.env` or API keys it does not declare; did something only after the clock was moved forward (time bomb); network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools |
-| medium → REVIEW | Secret-file paths or start-up locations in code that never ran (possible time bomb); a declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; own state outside `plugin-data/`; exec of strings; sandbox checks; native code |
+| high → SUSPICIOUS | Reads Hermes's `.env` or API keys it does not declare; reads every key at once through `/proc`; did something only after the clock was moved forward (time bomb); network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools; changes Hermes's config or files outside its folder; opens a listening port; a plugin name with `../` in it; floods the activity log to hide something |
+| medium → REVIEW | Secret-file paths or start-up locations in code that never ran (possible time bomb); a declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; copying the whole environment; listing your home or key folders; reading system account files; calling other agent tools on its own; own state outside `plugin-data/`; exec of strings; sandbox checks; native code; crashing while loading |
 | low / info | Shell, string-built code or network calls in code that never ran; coverage notes (stand-in modules), temp files, background threads, library behaviour |
 
 **Every finding says why it matters and maps to [MITRE ATT&CK](https://attack.mitre.org/) and
@@ -145,8 +148,10 @@ those on paths a synthetic test does not reach. Across the whole catalog, 37 of 
 plugins get a REVIEW verdict from this check alone (28 of them also check the date).
 
 **The report is advisory evidence, not proof.** Sandbox-aware code, triggers other than
-time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still evade it, and the Python audit hooks run in the
-same process as the plugin, so a determined plugin could tamper with them or write a fake clean result. A clean report does not mean a plugin is safe.
+time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still
+evade it, and the Python audit hooks run in the same process as the plugin, so a determined
+plugin could tamper with them or write a fake clean result. A clean report does not mean a
+plugin is safe.
 
 The sandbox image has no Hermes and no third-party packages. When a plugin imports one
 (`tools.registry`, `httpx`, ...), Detonator gives it an inert stand-in so the rest of the
@@ -170,7 +175,12 @@ no Python code to run, and Detonator says so instead of guessing.
 - **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
   their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
   first pass had 7 dangerous results; each was checked by hand, all were false alarms, and the
-  rules were tuned. Only totals are published, never plugin names.
+  rules were tuned. Only totals are published, never plugin names. "Suspicious" usually means risky but
+  undisclosed behaviour, not malware: the most common reasons were running shell commands (23),
+  writing outside the plugin's folder (8) and reading undeclared API keys (7). The one dangerous
+  result reads Hermes's .env for its own OpenRouter key and sends it to OpenRouter, which breaks
+  catalog rule 11 but looks like a convenience fallback, not theft. The 2 errors are plugins that
+  ran past the time limit or were stopped by the container.
 
 ## Disclosures (catalog rule 13)
 
@@ -190,8 +200,9 @@ Detonator does things a reviewer should know about:
 - **Credentials.** Detonator never reads your real Hermes home, `.env`, `auth.json`
   or any credential store. The sandbox gets its own fake home with fake keys.
 - **Sandbox settings.** `--network none --read-only --cap-drop ALL
-  --security-opt no-new-privileges --user 10001:10001 --pids-limit 128 --memory 512m`,
-  a 64 MB `/tmp`, and a 180-second timeout.
+  --security-opt no-new-privileges --user 10001:10001 --pids-limit 128 --memory 512m --cpus 1`,
+  a 64 MB `/tmp`, a 180-second timeout, and an activity log capped at 5,000 events (a flood is
+  reported, and the most repeated actions are thinned first so rare ones such as a key read are kept).
 - **A different world every run.** Each run gets a random username, home folder
   (`/home/<name>`) and host name, and random fake-key values, so a plugin cannot spot
   the sandbox by a fixed path or a fixed marker in the decoys. The container's user
@@ -211,13 +222,32 @@ Only run untrusted plugins inside a disposable environment such as a Codespace o
 Harmless "malicious" test plugins are kept in a separate private repository, so this
 repository stays clean for the catalog scanner. CI runs every one of them on each change.
 
+## Versions
+
+The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
+
+- **v0.2.2** (Nov 11, 2026): Three new rules: reading every API key at once through `/proc`,
+  a plugin name with `../` in it, and flooding the activity log to hide something. Report titles
+  can't carry text from the plugin, and each run writes its own account files. Plain-language
+  Docker errors and `/detonate check`. 23 test plugins now set off all 45 rules in CI, and
+  GitHub Actions are pinned to exact commits.
+- **v0.2.1** (Nov 10, 2026): First public release, the version submitted to the Hermes plugin
+  catalog. CI runs the fake-malicious test plugins on every change.
+- **v0.2.0** (Nov 10, 2026): Clock jump (time bombs and sleepers), the dormant-code check, rules
+  tuned on the whole catalog, read-only AI explanations (`detonator_report`), a random sandbox
+  world every run, and the symlink fix.
+- **v0.1** (Nov 9, 2026): First working version: the Docker sandbox with decoys, rules mapped to
+  MITRE ATT&CK and ATLAS, `/detonate`, and comparing two versions.
+
 ## Layout
 
 - `plugin.yaml`, `__init__.py`, `schemas.py`, `tools.py`, `commands.py`: the Hermes
   plugin (tool, `/detonate` slash command, `hermes detonate` CLI)
 - `engine/`: host side (fetch, run Docker, rules, report)
 - `sandbox/`: the container image and the in-container harness
-- `tests/`: rule tests, plus an integration test on a harmless fixture
+- `tests/`: rule tests, plus integration tests that run harmless plugins in real Docker
+- `ci/check_fixtures.py`: runs the private test plugins in CI and checks every rule fires
+- `docs/RULES.md`: every rule, why it matters, and its ATT&CK / ATLAS IDs
 
 ## License
 
