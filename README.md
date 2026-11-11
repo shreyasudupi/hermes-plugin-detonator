@@ -199,6 +199,8 @@ Detonator does things a reviewer should know about:
   container runs with `--network none`.
 - **Credentials.** Detonator never reads your real Hermes home, `.env`, `auth.json`
   or any credential store. The sandbox gets its own fake home with fake keys.
+  The `git` and `docker` commands it runs get only an allow-listed environment (PATH, HOME,
+  locale, Docker and proxy settings), never the API keys Hermes has loaded.
 - **Sandbox settings.** `--network none --read-only --cap-drop ALL
   --security-opt no-new-privileges --user 10001:10001 --pids-limit 128 --memory 512m --cpus 1`,
   a 64 MB `/tmp`, a 180-second timeout, and an activity log capped at 5,000 events (a flood is
@@ -231,6 +233,8 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   can't carry text from the plugin, and each run writes its own account files. Plain-language
   Docker errors and `/detonate check`. 23 test plugins now set off all 45 rules in CI, and
   GitHub Actions are pinned to exact commits.
+  From the catalog review: `git` and `docker` now get a minimal, allow-listed environment, so
+  Hermes's API keys never reach them, and `plugin.yaml` is read with Hermes's own YAML loader.
 - **v0.2.1** (Nov 10, 2026): First public release, the version submitted to the Hermes plugin
   catalog. CI runs the fake-malicious test plugins on every change.
 - **v0.2.0** (Nov 10, 2026): Clock jump (time bombs and sleepers), the dormant-code check, rules
