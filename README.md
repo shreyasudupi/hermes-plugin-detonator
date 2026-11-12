@@ -20,8 +20,6 @@ matters and which MITRE ATT&CK / ATLAS technique it matches.
 Tested on Linux (x86_64), macOS on Apple Silicon (Docker Desktop) and Windows (Docker
 Desktop with WSL 2, in both the `hermes` terminal chat and the Desktop app). Every change runs
 the full test suite and Hermes's own `hermes plugins validate` in CI, including on Windows.
-On Windows, the very first run in the Desktop app can show "request timed out after 30s"
-while the sandbox image builds; the run continues and posts its report.
 
 ## Try it in 60 seconds
 
@@ -241,7 +239,10 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   need (still no API keys), Docker Desktop's Windows folder is searched, Docker mount paths
   are clean on Windows, and files always check out with Linux line endings. Clear message when
   Docker Desktop isn't running on Windows. Tested on a real Windows PC: clean plugin
-  NO_FINDINGS, key stealer and persistence planter DANGEROUS. CI now runs the
+  NO_FINDINGS, key stealer and persistence planter DANGEROUS. Long runs no longer time out in
+  the Desktop app: `/detonate` answers at once, shows a "running" message, and replaces it
+  with the report when the run finishes (the first run builds the sandbox image, which can
+  take minutes; Desktop gives a slash command 30 seconds). CI now runs the
   tests and a Windows smoke test on a Windows machine.
 - **v0.2.2** (Nov 11, 2026): Three new rules: reading every API key at once through `/proc`,
   a plugin name with `../` in it, and flooding the activity log to hide something. Report titles
