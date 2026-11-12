@@ -1,6 +1,6 @@
 # Plugin Detonator
 
-![Plugin Detonator: a no-network Docker sandbox for Hermes plugins](docs/banner.png)
+![Plugin Detonator: a security testing sandbox for Hermes Agent plugins](docs/store/cover.png)
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
