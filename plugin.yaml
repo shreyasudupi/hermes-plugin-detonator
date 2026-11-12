@@ -1,10 +1,11 @@
 name: detonator
 version: "0.2.3"
 description: >
-  Dynamic sandbox for Hermes plugins. After you approve it, runs a plugin at an
-  exact commit inside a disposable, no-network Docker container with decoy
-  secrets, then reports what it actually did versus what it declares.
-  Advisory only. Requires Docker; runs git and docker commands (see README).
+  Security testing sandbox for Hermes plugins. After you approve it, runs a plugin
+  you did not write at an exact commit inside a disposable, no-network Docker
+  container with decoy secrets, then reports what it actually did (key theft,
+  network attempts, shell commands, persistence, tool poisoning) versus what it
+  declares. Advisory only. Requires Docker; runs git and docker commands (see README).
 author: shreyasudupi
 license: MIT
 requires_hermes: ">=0.23.0"
@@ -13,4 +14,4 @@ provides_tools:
   - detonator_report
 provides_hooks: []
 homepage: https://github.com/shreyasudupi/hermes-plugin-detonator
-tags: [security, sandbox, docker]
+tags: [security, security-testing, sandbox, malware, supply-chain, docker]
