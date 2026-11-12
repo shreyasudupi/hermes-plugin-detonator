@@ -190,7 +190,7 @@ def scan(plugin_dir) -> dict:
     trees, unparsed = {}, []
     for rel, path in files.items():
         try:
-            trees[rel] = ast.parse(path.read_text(errors="replace"), filename=rel)
+            trees[rel] = ast.parse(path.read_text(errors="replace", encoding="utf-8"), filename=rel)
         except (SyntaxError, ValueError):
             unparsed.append(rel)
     index = _module_index(trees)

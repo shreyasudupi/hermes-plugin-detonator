@@ -93,15 +93,15 @@ def test_plugin_chosen_names_are_cleaned_in_titles():
 def test_account_files_name_the_random_user(tmp_path):
     world = {"user": "robin7", "home": "/home/robin7", "host": "robin7-laptop"}
     runner.write_accounts(tmp_path, world)
-    passwd = (tmp_path / "passwd").read_text()
+    passwd = (tmp_path / "passwd").read_text(encoding="utf-8")
     assert "robin7:x:10001:10001:robin7:/home/robin7:/bin/bash" in passwd
-    assert "detonee" not in passwd and "detonee" not in (tmp_path / "group").read_text()
+    assert "detonee" not in passwd and "detonee" not in (tmp_path / "group").read_text(encoding="utf-8")
     cmd = " ".join(runner.docker_run_cmd("img", tmp_path, tmp_path, tmp_path, world, tmp_path))
-    assert f"{tmp_path}/passwd:/etc/passwd:ro" in cmd and f"{tmp_path}/group:/etc/group:ro" in cmd
+    assert f"{tmp_path / 'passwd'}:/etc/passwd:ro" in cmd and f"{tmp_path / 'group'}:/etc/group:ro" in cmd
 
 
 def test_image_has_no_fixed_account():
-    dockerfile = (runner.Path(__file__).parent.parent / "sandbox" / "Dockerfile").read_text()
+    dockerfile = (runner.Path(__file__).parent.parent / "sandbox" / "Dockerfile").read_text(encoding="utf-8")
     assert "useradd" not in dockerfile and "detonee" not in dockerfile
 
 

@@ -1,0 +1,3 @@
+# Check out text files with LF line endings on every OS (Git for Windows would
+# otherwise convert them), so the sandbox image is identical everywhere.
+* text=auto eol=lf

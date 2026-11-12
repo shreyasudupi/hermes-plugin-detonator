@@ -79,7 +79,7 @@ def detonator_report(args: dict, **kwargs) -> str:
         found = None
         for path in sorted(_reports_dir().glob("*.json"), reverse=True):
             try:
-                data = json.loads(path.read_text())
+                data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
             if repo and data.get("repo") != repo:

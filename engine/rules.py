@@ -10,7 +10,7 @@ rules lives in RULES below; docs/RULES.md is checked against it by a test.
 
 from __future__ import annotations
 
-import os
+import posixpath  # sandbox paths are Linux paths, even when the host is Windows
 import re
 from dataclasses import asdict, dataclass, field
 
@@ -278,10 +278,10 @@ class Finding:
 
 
 def _under(path: str, roots) -> bool:
-    path = os.path.normpath(str(path))
+    path = posixpath.normpath(str(path))
     for root in roots:
-        root = os.path.normpath(root)
-        if path == root or path.startswith(root + os.sep):
+        root = posixpath.normpath(root)
+        if path == root or path.startswith(root + "/"):
             return True
     return False
 
@@ -386,7 +386,7 @@ def _evaluate(result: dict) -> dict:
                     [str(result.get("unsafe_name", plugin_name))[:200]]))
         # Never trust a data folder built from that name, even from an older harness.
         allowed_writes_raw = [d for d in (result.get("allowed_write_dirs") or [])
-                              if os.path.basename(os.path.normpath(d)) == "plugin_under_test"]
+                              if posixpath.basename(posixpath.normpath(d)) == "plugin_under_test"]
         result = {**result, "allowed_write_dirs": allowed_writes_raw}
     if result.get("events_truncated"):
         add(Finding("log_flood", HIGH, "Did so much that the sandbox log filled up, so part of the run was not kept",
@@ -402,9 +402,9 @@ def _evaluate(result: dict) -> dict:
     registered = result.get("registered") or {}
     declared_hooks = set(_as_list(manifest.get("provides_hooks")))
     home = result.get("home") or _common_home(decoy_dirs)
-    hermes_home = os.path.join(home, ".hermes") if home else None
+    hermes_home = posixpath.join(home, ".hermes") if home else None
     if hermes_home:
-        allowed_writes.append(os.path.join(hermes_home, "plugin-data"))
+        allowed_writes.append(posixpath.join(hermes_home, "plugin-data"))
 
     def of(kind):
         return [e for e in events if e.get("kind") == kind]
@@ -415,7 +415,7 @@ def _evaluate(result: dict) -> dict:
     secret_reads = [p for p in reads if cat(p) == "secret"]
     loot_reads = [p for p in reads if cat(p) in ("browser", "wallet")]
     private_reads = [p for p in reads if cat(p) in ("memory", "history")]
-    hermes_env = os.path.join(hermes_home, ".env") if hermes_home else None
+    hermes_env = posixpath.join(hermes_home, ".env") if hermes_home else None
     env_file_reads = [p for p in secret_reads if p == hermes_env]
     secret_reads = [p for p in secret_reads if p != hermes_env]
     if secret_reads:
@@ -774,8 +774,8 @@ def _dormant(static, findings, events, stubbed) -> list:
 
 def _classify_write(path: str, op: str, home, hermes_home, plugin_dir, name=None):
     """(rule, severity, extra ATT&CK id) for a write/modify outside the allowed folders."""
-    norm = os.path.normpath(path)
-    base = os.path.basename(norm)
+    norm = posixpath.normpath(path)
+    base = posixpath.basename(norm)
     if _under(norm, [plugin_dir]):
         return "self_modify", HIGH, None
     if op == "write":
@@ -784,10 +784,10 @@ def _classify_write(path: str, op: str, home, hermes_home, plugin_dir, name=None
                 return "persistence", CRITICAL, tech
         if base.endswith(".pth") or base in PY_STARTUP:
             return "persistence", CRITICAL, "T1546.018"
-        if home and _under(norm, [home]) and os.path.relpath(norm, home) in SHELL_RC:
+        if home and _under(norm, [home]) and posixpath.relpath(norm, home) in SHELL_RC:
             return "persistence", CRITICAL, "T1546.004"
     if home and _under(norm, [home]):
-        rel = os.path.relpath(norm, home).split(os.sep)
+        rel = posixpath.relpath(norm, home).split("/")
         if hermes_home and rel[0] == ".hermes":
             own = isinstance(name, str) and len(name) >= 3 and \
                 rel[-1].lstrip(".").lower().startswith(name.lower())
@@ -853,7 +853,7 @@ def _strings(value, depth=0):
 def _common_home(decoy_dirs):
     for d in sorted(decoy_dirs, key=len):
         if d.endswith("/.hermes"):
-            return os.path.dirname(d)
+            return posixpath.dirname(d)
     return None
 
 

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 
@@ -46,7 +47,7 @@ def test_register_matches_manifest():
     assert set(ctx.tools) == {"detonate_plugin", "detonator_report"}
     assert set(ctx.commands) == {"detonate"}
     assert set(ctx.cli) == {"detonate"}
-    text = (ROOT / "plugin.yaml").read_text()
+    text = (ROOT / "plugin.yaml").read_text(encoding="utf-8")
     assert "- detonate_plugin" in text and "- detonator_report" in text
 
 
@@ -108,12 +109,12 @@ def test_docker_is_found_outside_path(tmp_path, monkeypatch):
     """Apps launched from the Dock don't read shell profiles; Detonator must still find Docker."""
     from engine import runner
 
-    fake = tmp_path / "docker"
-    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake = tmp_path / ("docker.exe" if sys.platform == "win32" else "docker")
+    fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", "/nonexistent")
     monkeypatch.setattr(runner, "DOCKER_DIRS", (str(tmp_path),))
-    assert runner.docker_bin() == str(fake)
+    assert os.path.normcase(runner.docker_bin()) == os.path.normcase(str(fake))  # Windows: .EXE
     assert runner._env()["GIT_TERMINAL_PROMPT"] == "0"
 
 

@@ -93,7 +93,7 @@ def run_detonation(repo: str, sha: str, subdir: str | None, with_raw: bool = Fal
     evaluation = rules.evaluate(raw)
     markdown = report.render(target.label, evaluation, raw)
     path = _report_path(repo, sha[:12], subdir)
-    path.write_text(markdown)
+    path.write_text(markdown, encoding="utf-8")
     _write_summary_json(path, repo, sha, subdir, evaluation)
     return (evaluation, markdown, path, raw) if with_raw else (evaluation, markdown, path)
 
@@ -109,7 +109,7 @@ def _write_summary_json(path: Path, repo: str, sha: str, subdir: str | None, eva
             "verdict": evaluation.get("verdict", "ERROR"),
             "findings": evaluation.get("findings") or [],
             "report_path": str(path),
-        }, default=str))
+        }, default=str), encoding="utf-8")
     except Exception:
         pass  # the Markdown report is the record; the JSON copy is a convenience
 
@@ -121,7 +121,7 @@ def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None) ->
     changes = diff.compare(old_eval, new_eval, old_raw, new_raw)
     label = repo + (f" ({subdir})" if subdir else "")
     path = _report_path(repo, f"{old_sha[:8]}-vs-{new_sha[:8]}", subdir)
-    path.write_text(diff.render(label, old_sha, new_sha, changes))
+    path.write_text(diff.render(label, old_sha, new_sha, changes), encoding="utf-8")
     return diff.summary(changes, old_sha, new_sha, paths=[path, old_path, new_path])
 
 

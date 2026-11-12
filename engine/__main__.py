@@ -37,7 +37,7 @@ def main(argv=None) -> int:
         return 2
 
     if args.raw:
-        Path(args.raw).write_text(json.dumps(raw, indent=1))
+        Path(args.raw).write_text(json.dumps(raw, indent=1), encoding="utf-8")
     evaluation = rules.evaluate(raw)
     if args.json:
         print(json.dumps(evaluation, indent=1))

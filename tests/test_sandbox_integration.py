@@ -46,9 +46,9 @@ def test_hermes_only_imports_get_stand_ins():
 
 
 def test_package_without_python_code_is_explained(tmp_path):
-    (tmp_path / "plugin.json").write_text("{}")
+    (tmp_path / "plugin.json").write_text("{}", encoding="utf-8")
     with pytest.raises(runner.DetonatorError, match="portable Agent Plugins"):
         runner.local_target(str(tmp_path))
-    (tmp_path / "plugin.yaml").write_text("name: x\n")
+    (tmp_path / "plugin.yaml").write_text("name: x\n", encoding="utf-8")
     with pytest.raises(runner.DetonatorError, match="no __init__.py"):
         runner.local_target(str(tmp_path))
