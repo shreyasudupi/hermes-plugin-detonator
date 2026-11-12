@@ -17,12 +17,11 @@ of decoys, fires synthetic hooks and tool calls at it, and reports what the plug
 actually did compared with what it declares. Each finding says, in plain words, why it
 matters and which MITRE ATT&CK / ATLAS technique it matches.
 
-Tested on Linux (x86_64) and macOS on Apple Silicon (Docker Desktop). Every change runs
-the full test suite and Hermes's own `hermes plugins validate` in CI.
-**Windows:** should work with Docker Desktop in Linux-containers mode (the default), but a
-full run hasn't been tested on a real Windows PC yet. CI checks the Windows side on every
-change (tests, git fetch, Docker paths); the sandbox itself can't run on GitHub's Windows
-machines. Under WSL2 it works like Linux. If you try it, please open an issue either way.
+Tested on Linux (x86_64), macOS on Apple Silicon (Docker Desktop) and Windows (Docker
+Desktop with WSL 2, in both the `hermes` terminal chat and the Desktop app). Every change runs
+the full test suite and Hermes's own `hermes plugins validate` in CI, including on Windows.
+On Windows, the very first run in the Desktop app can show "request timed out after 30s"
+while the sandbox image builds; the run continues and posts its report.
 
 ## Try it in 60 seconds
 
@@ -240,7 +239,9 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   matches were missed, so a few verdicts came out different). `/detonate check` spots Docker
   Desktop set to Windows containers and says how to switch. `git` and `docker` keep the Windows settings they
   need (still no API keys), Docker Desktop's Windows folder is searched, Docker mount paths
-  are clean on Windows, and files always check out with Linux line endings. CI now runs the
+  are clean on Windows, and files always check out with Linux line endings. Clear message when
+  Docker Desktop isn't running on Windows. Tested on a real Windows PC: clean plugin
+  NO_FINDINGS, key stealer and persistence planter DANGEROUS. CI now runs the
   tests and a Windows smoke test on a Windows machine.
 - **v0.2.2** (Nov 11, 2026): Three new rules: reading every API key at once through `/proc`,
   a plugin name with `../` in it, and flooding the activity log to hide something. Report titles
