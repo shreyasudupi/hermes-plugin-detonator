@@ -10,13 +10,11 @@ There is no flag that skips the question.
 
 from __future__ import annotations
 
-import contextvars
 import os
 import re
 import shlex
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
@@ -165,50 +163,17 @@ def make_slash_handler(ctx):
         if choice != APPROVE:
             return ("Not run: Detonator needs your explicit approval, and none was given "
                     "(cancelled, timed out, or no one could be asked).")
-        # Some chat apps give a slash command only ~30 s to answer (Hermes Desktop does), and a
-        # first run that builds the sandbox image takes minutes. So where Hermes lets us post a
-        # message, post a placeholder now, run in the background, and replace it with the
-        # report. Where it can't (the terminal chat), run here and answer directly.
-        note = _post(ctx, RUNNING)
-        if note is not None:
-            def work():
-                text = run_and_summarize(repo, sha, subdir)
-                result = note.edit(text)
-                if not (isinstance(result, dict) and result.get("ok")):
-                    note.edit(text)  # one retry; the report file is saved either way
-            threading.Thread(target=contextvars.copy_context().run, args=(work,),
-                             name="detonator-run", daemon=True).start()
-            return STARTED
-        return run_and_summarize(repo, sha, subdir)
+        try:
+            if isinstance(sha, tuple):
+                return run_comparison(repo, sha[0], sha[1], subdir)
+            evaluation, _md, path = run_detonation(repo, sha, subdir)
+        except runner.DetonatorError as exc:
+            return f"Detonator could not run: {exc}"
+        except Exception as exc:  # never crash the session
+            return f"Detonator failed unexpectedly: {type(exc).__name__}: {exc}"
+        return summary(evaluation, path)
 
     return handle
-
-
-RUNNING = ("\u23f3 Detonator is running the plugin in the sandbox. The first run builds the sandbox "
-           "image and can take a few minutes; later runs take seconds. The report will appear here.")
-STARTED = "Started. The report will replace the \u23f3 message when the run finishes."
-
-
-def _post(ctx, text: str):
-    """Post a message we can edit later, or None where this chat app can't take one."""
-    try:
-        note = ctx.post_message(text)
-    except Exception:
-        return None
-    return note if getattr(note, "ok", False) and callable(getattr(note, "edit", None)) else None
-
-
-def run_and_summarize(repo: str, sha, subdir: str | None) -> str:
-    """Run (or compare) and return the chat summary; never raises."""
-    try:
-        if isinstance(sha, tuple):
-            return run_comparison(repo, sha[0], sha[1], subdir)
-        evaluation, _md, path = run_detonation(repo, sha, subdir)
-    except runner.DetonatorError as exc:
-        return f"Detonator could not run: {exc}"
-    except Exception as exc:  # never crash the session
-        return f"Detonator failed unexpectedly: {type(exc).__name__}: {exc}"
-    return summary(evaluation, path)
 
 
 def setup_cli(subparser):
