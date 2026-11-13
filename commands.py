@@ -148,7 +148,9 @@ def summary(evaluation: dict, path: Path) -> str:
         if f["severity"] in ("critical", "high", "medium") and f.get("why"):
             lines.append(f"  Why: {f['why']}")
     lines.append(f"Full report: {path}")
-    lines.append('Ask "explain this report" for a plain-words explanation.')
+    # Hermes does not pass slash-command output to the model, so the model cannot know a report
+    # exists; naming the tool is the wording that works even with small free models.
+    lines.append('For a plain-words explanation, ask: "Use the detonator_report tool to explain my latest report"')
     if verdict == "NO_FINDINGS":
         lines.append("Advisory only: a clean run is evidence, not proof.")
     else:
