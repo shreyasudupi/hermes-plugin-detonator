@@ -36,12 +36,15 @@ You need [Docker](https://docs.docker.com/get-docker/) running and Hermes instal
 Not sure Docker is ready? Type `/detonate check` in Hermes: it only asks Docker for its
 status, runs nothing, and tells you what to fix (see [Docker problems](#docker-problems)).
 
+One command installs it, switches it on and restarts Hermes's plugin host so it loads:
+
 ```bash
-hermes plugins install shreyasudupi/hermes-plugin-detonator
-hermes plugins enable detonator
-hermes gateway stop   # restart the plugin host so it loads Detonator
+hermes plugins install shreyasudupi/hermes-plugin-detonator && hermes plugins enable detonator && hermes gateway stop
 hermes
 ```
+
+On Windows PowerShell 5, use `;` instead of `&&`. New to Hermes or Docker? The
+[step-by-step quickstart](docs/QUICKSTART.md) starts from nothing, on macOS, Windows and Linux.
 
 In the Hermes chat:
 
@@ -347,6 +350,14 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
 - `ci/check_fixtures.py`: runs the private test plugins in CI and checks every rule fires
 - `ci/windows_smoke.py`: Windows host checks in CI (git fetch, Docker message, mount paths)
 - `docs/RULES.md`: every rule, why it matters, and its ATT&CK / ATLAS IDs
+- `docs/QUICKSTART.md`: step-by-step install and first run; `CONTRIBUTING.md`: how to help
+
+## Contributing
+
+False alarms, missed behaviour and test reports from your machine (Windows and macOS especially)
+all help. [CONTRIBUTING.md](CONTRIBUTING.md) covers the 5-minute setup, how detection is tested,
+how to write a harmless test plugin, and how to add a rule. Sandbox escapes go privately through
+[SECURITY.md](SECURITY.md).
 
 ## License
 

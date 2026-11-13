@@ -1,0 +1,50 @@
+name: Missed behaviour
+description: A plugin did something risky and Detonator didn't report it.
+labels: [missed-behaviour]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks, this is the most valuable kind of report.
+
+        - **Never attach or link real malware.** Describe the behaviour in words, or test it with a harmless example plugin as described in [CONTRIBUTING.md](https://github.com/shreyasudupi/hermes-plugin-detonator/blob/main/CONTRIBUTING.md#writing-a-harmless-test-plugin) (fake keys, reserved addresses, `true` as the only command).
+        - If the plugin **got out of the sandbox** or reached your real files, keys or the network, [report it privately](https://github.com/shreyasudupi/hermes-plugin-detonator/security/advisories/new) instead.
+        - Please don't name another person's plugin here.
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: What did the plugin do?
+      description: The risky behaviour, in plain words. For example "read the SSH key, but only when a tool is called with a certain word".
+    validations:
+      required: true
+  - type: textarea
+    id: why-risky
+    attributes:
+      label: Why is it risky?
+      description: What an attacker gets from it. A MITRE ATT&CK or ATLAS technique ID helps if you know one.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: What Detonator reported
+      description: Paste the verdict and findings it did give.
+      render: text
+  - type: dropdown
+    id: when
+    attributes:
+      label: When does the behaviour happen?
+      options:
+        - While loading
+        - In a hook
+        - When a tool is called
+        - After a delay or on a date
+        - "Only on a trigger (a word, a user, an environment)"
+        - Not sure
+  - type: input
+    id: version
+    attributes:
+      label: Detonator version
+      placeholder: v0.2.3
+    validations:
+      required: true

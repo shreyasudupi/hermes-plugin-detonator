@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Sandbox escape or other security bypass (private)
+    url: https://github.com/shreyasudupi/hermes-plugin-detonator/security/advisories/new
+    about: A way for a plugin to escape the sandbox, reach your real files or keys, or reach the network. Please report it privately, not as a public issue.
+  - name: How to contribute
+    url: https://github.com/shreyasudupi/hermes-plugin-detonator/blob/main/CONTRIBUTING.md
+    about: Setup, how detection is tested, and how to write a harmless test plugin.

@@ -1,0 +1,53 @@
+name: Bug
+description: Detonator crashed, gave an error, or didn't work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. If a plugin got **out of the sandbox** or reached your real files, keys or the network, please don't use this form: [report it privately](https://github.com/shreyasudupi/hermes-plugin-detonator/security/advisories/new).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or error message
+      description: Paste the message, or the output of `/detonate check`. Remove anything private first.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Detonator version
+      description: From `hermes plugins list` or the top of the README.
+      placeholder: v0.2.3
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [macOS (Apple Silicon), macOS (Intel), Windows, Linux, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did you run it?
+      options: [hermes terminal chat, Hermes Desktop app, "hermes detonate (CLI)", "python -m engine (developer)"]
+    validations:
+      required: true
+  - type: input
+    id: docker
+    attributes:
+      label: Docker setup
+      description: Docker Desktop, Colima, OrbStack, Docker Engine... and its version if you know it.
+  - type: input
+    id: hermes
+    attributes:
+      label: Hermes version
+      description: From `hermes --version`.
