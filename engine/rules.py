@@ -977,9 +977,11 @@ def _outside_findings(result: dict) -> list:
         if _secret_hits(str(e.get("name") or ""), canary):
             sent.append(f'hidden in a DNS lookup: {str(e.get("name"))[:160]}')
     for e in events:
-        if e.get("call") in ("sendto", "sendmsg") and e.get("ip") and _secret_hits(str(e.get("data") or ""), canary):
-            item = f'sent to {e.get("ip")}:{e.get("port")} by process {e.get("pid")}'
-            if not any(e.get("ip") in s for s in sent):
+        if e.get("call") in ("sendto", "sendmsg") and not e.get("unix") \
+                and _secret_hits(str(e.get("data") or ""), canary):
+            where = f'{e.get("ip")}:{e.get("port")}' if e.get("ip") else "an open connection"
+            item = f'sent to {where} by process {e.get("pid")} (seen by the tracer)'
+            if item not in sent and not (e.get("ip") and any(str(e.get("ip")) in s for s in sent)):
                 sent.append(item)
     if sent:
         findings.append(Finding("secret_sent_out", CRITICAL,
@@ -1015,7 +1017,7 @@ def _outside_findings(result: dict) -> list:
         if call in ("open", "openat", "openat2", "creat"):
             if path.startswith(_PHASE_PREFIX):
                 continue
-            if path == _RESULT_FILE and e.get("write"):
+            if path == _RESULT_FILE and e.get("write") and e.get("ok"):
                 forged.append((j, e))
                 continue
             if not sensitive(path):
@@ -1034,7 +1036,24 @@ def _outside_findings(result: dict) -> list:
             hidden.append("started " + " ".join(e.get("argv") or [path])[:160])
         elif call in ("ptrace", "process_vm_readv", "process_vm_writev"):
             tamper.append(f'{call}({str(e.get("detail"))[:80]})')
+        elif call in ("kill", "tkill", "tgkill") and e.get("error") == "EPERM":
+            # Signalling a process it is not allowed to touch: the only such processes in
+            # its world are Detonator's own monitors.
+            tamper.append(f'{call}({str(e.get("detail")).split(")")[0][:40]}) refused')
     hidden = list(dict.fromkeys(hidden))
+    tracer = out.get("tracer") or {}
+    if tracer.get("truncated"):
+        findings.append(Finding("log_flood", HIGH,
+                                "Made so many system calls that the outside trace was thinned",
+                                [f'{tracer.get("lines_seen")} calls traced, {tracer.get("lines_kept")} kept'
+                                 + (f', {tracer.get("important_dropped")} that could matter were dropped'
+                                    if tracer.get("important_dropped") else
+                                    "; every call that could matter was kept")]))
+    if sink.get("full"):
+        findings.append(Finding("log_flood", HIGH,
+                                "Made so many connections that the fake internet's log filled up",
+                                [f'{len(sink.get("tcp") or [])} connections and {len(sink.get("dns") or [])} '
+                                 "lookups kept"]))
     if hidden:
         severe = any(h.startswith(("opened", "wrote")) for h in hidden)
         findings.append(Finding("monitor_blind_spot", CRITICAL if severe else HIGH,
@@ -1068,7 +1087,7 @@ def _outside_findings(result: dict) -> list:
                                  f'{" before the run finished" if j in early else ""}' for j, e in forged][:5]))
     if tamper:
         findings.append(Finding("monitor_tamper", HIGH,
-                                "Tried to trace or read the memory of another process (seen from outside)",
+                                "Tried to trace, read or stop another process (seen from outside)",
                                 sorted(set(tamper))[:8]))
     return findings
 

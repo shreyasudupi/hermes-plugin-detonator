@@ -33,7 +33,9 @@ TCP_PORTS = (21, 22, 23, 25, 80, 110, 143, 443, 465, 587, 993, 995, 1080, 1337, 
 READ_TIMEOUT_S = 2.0
 MAX_READ = 64 * 1024
 KEEP_BYTES = 4096
-MAX_ENTRIES = 2000
+KEEP_BYTES_LATER = 512   # after the first FULL_DETAIL entries, keep less of each payload
+FULL_DETAIL = 2000
+MAX_ENTRIES = 20000
 FAKE_NET = ipaddress.ip_network("198.18.0.0/15")  # RFC 2544 benchmarking range: never a real host
 
 _lock = threading.Lock()
@@ -206,8 +208,9 @@ def handle(conn, peer):
                 break  # TLS hello: we cannot read further without a certificate it trusts
             if is_http and _http_wants(data) == 0:
                 break
+        keep = KEEP_BYTES if _entries < FULL_DETAIL else KEEP_BYTES_LATER
         entry = {"dst": here[0], "port": here[1], "src_port": peer[1], "bytes": len(data),
-                 "data": data[:KEEP_BYTES].decode("latin-1")}
+                 "data": data[:keep].decode("latin-1")}
         sni = tls_server_name(data)
         if sni:
             entry["tls_server_name"] = sni[:255]

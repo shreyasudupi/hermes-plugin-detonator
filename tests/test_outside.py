@@ -211,3 +211,39 @@ def test_outside_monitor_can_be_switched_off(monkeypatch):
     assert not runner.outside_enabled()
     monkeypatch.delenv("DETONATOR_OUTSIDE")
     assert runner.outside_enabled()
+
+
+# ---- found by stress tests ---------------------------------------------------
+def test_tracer_keeps_lines_that_matter_even_in_a_flood():
+    spec = importlib.util.spec_from_file_location("detonator_tracer2", ROOT / "sandbox" / "monitor" / "tracer.py")
+    tracer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tracer)
+    assert not tracer.important('7 1:1.1 openat(AT_FDCWD</>, "/etc/hostname", O_RDONLY) = 3')
+    assert not tracer.important('7 1:1.1 openat(AT_FDCWD</home/a/.hermes/plugin-data/x>, "log.txt", O_WRONLY) = 3')
+    assert tracer.important('7 1:1.1 openat(AT_FDCWD</home/a/.hermes/plugin-data/x>, "../../.env", O_RDONLY) = 3')
+    assert tracer.important('7 1:1.1 openat(AT_FDCWD</>, "/proc/self/environ", O_RDONLY) = 3')
+    assert tracer.important('7 1:1.1 openat(AT_FDCWD</>, "/out/result.json", O_WRONLY|O_CREAT) = 3')
+    assert tracer.important('7 1:1.1 connect(3, {sa_family=AF_INET}, 16) = 0')
+
+
+def test_a_thinned_trace_and_a_full_fake_internet_log_are_reported():
+    res = _result(sink_log={"ready": True, "dns": [], "tcp": [], "full": True})
+    res["outside"]["tracer"] = {"harness_pid": 7, "truncated": True, "lines_seen": 9, "lines_kept": 5}
+    titles = [f.title for f in rules._outside_findings(res) if f.rule == "log_flood"]
+    assert len(titles) == 2
+
+
+def test_failed_result_writes_are_not_forgery_and_refused_kills_are_tampering():
+    failed = TRACE.replace('"/out/result.json", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = 3',
+                           '"/out/result.json", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = -1 EMFILE (Too many open files)')
+    failed = failed.replace('"/detonator-phase/plugin-done"', '"/x"')
+    assert "result_forged" not in {f.rule for f in rules._outside_findings(_result(trace=_parsed(failed)))}
+    killed = TRACE + "7     13:00:00.000020 kill(1, SIGKILL)                  = -1 EPERM (Operation not permitted)\n"
+    tamper = [f for f in rules._outside_findings(_result(trace=_parsed(killed))) if f.rule == "monitor_tamper"]
+    assert tamper and "kill(1, SIGKILL" in tamper[0].evidence[0]
+
+
+def test_a_key_sent_on_an_open_connection_is_caught_by_the_tracer():
+    sent = TRACE + f'9     13:00:00.000021 sendto(4<TCP:[1]>, "key=sk-{CANARY}-0002", 26, 0, NULL, 0) = 26\n'
+    found = rules._outside_findings(_result(trace=_parsed(sent)))
+    assert ("secret_sent_out", rules.CRITICAL) in _rules(found)

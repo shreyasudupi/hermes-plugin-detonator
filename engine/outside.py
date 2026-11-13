@@ -37,7 +37,7 @@ SINK_READY_TIMEOUT_S = 15
 TRACER_WAIT_S = 30
 PHASE_PREFIX = "/detonator-phase/"
 RESULT_FILE = "/out/result.json"
-MAX_SINK_LINES = 3000
+MAX_SINK_LINES = 21000
 
 
 def image_tag() -> str:

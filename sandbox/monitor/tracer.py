@@ -29,8 +29,13 @@ FIND_TIMEOUT_S = 60
 SYSCALLS = ("open,openat,openat2,creat,execve,execveat,connect,sendto,sendmsg,bind,listen,"
             "clone,clone3,fork,vfork,unlink,unlinkat,rename,renameat,renameat2,memfd_create,"
             "ptrace,process_vm_readv,process_vm_writev,kill,tkill,tgkill")
-HEAD_LINES = 40000
-TAIL_LINES = 10000
+# How much of the trace is kept. Lines that can matter (programs, connections, the result
+# file, and files in the home folder outside the plugin's own data folder) are kept up to
+# IMPORTANT_MAX. Everything else is noise: only its first and last lines are kept, so a
+# plugin cannot push one key read out of the log by flooding it with harmless calls.
+IMPORTANT_MAX = 60000
+NOISE_HEAD = 20000
+NOISE_TAIL = 5000
 
 # The standard library, the plugin's own files and the harness: reading these is
 # what every Python program does, so those reads are left out of the log. Writes
@@ -40,6 +45,20 @@ QUIET_READ = re.compile(
     r'^(?:\d+ +)?[\d:.]+ (?:open|openat|openat2)\((?:AT_FDCWD(?:<[^>]*>)?, )?"(?![^"]*/\.\.?(?:/|"))(?:/usr/|/lib|/etc/ld\.so|/plugin/|'
     r'/opt/detonator/|/dev/(?:null|urandom|tty))[^"]*", (?:O_RDONLY|\{flags=O_RDONLY)'
     r'(?!.*O_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND))')
+
+_OPEN = re.compile(r'^\d+ +[\d:.]+ (?:open|openat|openat2|creat)\((?:(?:AT_FDCWD|\d+)<([^>]*)>, )?"((?:[^"\\]|\\.)*)"')
+_IMPORTANT_PATH = re.compile(r"^(?:/home/|/root/|/out/|/detonator-phase/|/proc/[^/]+/(?:task/\d+/)?environ$)")
+
+
+def important(line):
+    """Whether a trace line can matter to the rules (anything that is not a plain file open
+    outside the home folder or inside the plugin's own data folder)."""
+    m = _OPEN.match(line)
+    if not m:
+        return True  # programs, connections, process calls, unfinished/resumed lines
+    base, path = m.group(1) or "/", m.group(2)
+    full = os.path.normpath(path if path.startswith("/") else os.path.join(base, path))
+    return bool(_IMPORTANT_PATH.match(full)) and "/.hermes/plugin-data/" not in full + "/"
 
 
 def find_harness():
@@ -70,23 +89,33 @@ def main():
     cmd = ["strace", "-f", "-q", "-tt", "-yy", "-s", "256", "-e", f"trace={SYSCALLS}",
            "-o", "/dev/stderr", "-p", str(pid)]
     proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
-    head, tail, total, quiet = [], deque(maxlen=TAIL_LINES), 0, 0
+    keep, noise_tail = [], deque(maxlen=NOISE_TAIL)
+    total = quiet = noise = important_seen = 0
     for raw in proc.stderr:
         line = raw.decode("utf-8", "replace").rstrip("\n")
         total += 1
         if QUIET_READ.match(line):
             quiet += 1
             continue
-        if len(head) < HEAD_LINES:
-            head.append(line)
+        if important(line):
+            important_seen += 1
+            if important_seen <= IMPORTANT_MAX:
+                keep.append((total, line))
+            else:
+                noise_tail.append((total, line))
+            continue
+        noise += 1
+        if noise <= NOISE_HEAD:
+            keep.append((total, line))
         else:
-            tail.append(line)
+            noise_tail.append((total, line))
     rc = proc.wait()
-    kept = len(head) + len(tail)
+    lines = sorted(keep + list(noise_tail))
     with open(LOG_PATH, "w", encoding="utf-8") as f:
-        f.write("\n".join(head + list(tail)) + "\n")
-    status.update({"strace_exit": rc, "lines_seen": total, "lines_quiet": quiet, "lines_kept": kept,
-                   "truncated": total - quiet > kept})
+        f.write("\n".join(line for _, line in lines) + "\n")
+    status.update({"strace_exit": rc, "lines_seen": total, "lines_quiet": quiet, "lines_kept": len(lines),
+                   "important_dropped": max(0, important_seen - IMPORTANT_MAX),
+                   "truncated": total - quiet > len(lines)})
     _write_status(status)
     return 0
 

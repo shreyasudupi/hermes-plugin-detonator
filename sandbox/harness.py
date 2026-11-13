@@ -826,6 +826,29 @@ def wait_for_tracer():
     return False
 
 
+_SPARE_FD = None
+
+
+def reserve_fd():
+    """Keep one file handle spare, so a plugin that uses up every handle cannot stop the
+    harness from writing its result."""
+    global _SPARE_FD
+    try:
+        _SPARE_FD = os.open("/dev/null", os.O_RDONLY)
+    except OSError:
+        _SPARE_FD = None
+
+
+def release_fd():
+    global _SPARE_FD
+    if _SPARE_FD is not None:
+        try:
+            os.close(_SPARE_FD)
+        except OSError:
+            pass
+        _SPARE_FD = None
+
+
 def phase_marker(name):
     """Leave a mark in the outside trace: an open of a path that does not exist."""
     try:
@@ -925,6 +948,7 @@ def main():
     # 0. outside monitor: wait for the tracer, then mark where plugin code starts
     if TRACED:
         result["traced"] = wait_for_tracer()
+    reserve_fd()
     phase_marker("plugin-start")
 
     # 1. import
@@ -1042,6 +1066,7 @@ def main():
     result["clock_jumps"] = list(CLOCK_JUMPS)
     result["clock_runs"] = clock_runs
     _PHASE = "done"
+    release_fd()
     phase_marker("plugin-done")
 
     after = {p: _digest(p) for p in ALL_DECOY_PATHS}
@@ -1066,6 +1091,7 @@ if __name__ == "__main__":
         main()
     except Exception:
         _ACTIVE = False
+        release_fd()
         phase_marker("harness-fatal")
         with open(OUT_PATH, "w") as f:
             json.dump({"harness_version": 2, "fatal": traceback.format_exc()}, f)
