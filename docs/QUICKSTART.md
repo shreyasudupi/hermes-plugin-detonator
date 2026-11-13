@@ -78,7 +78,9 @@ In the Hermes chat:
 /detonate <owner/repo> <40-char-sha> [subdir]
 ```
 
-Detonator asks first. Choose **Run in sandbox**. The very first run builds the sandbox image, which
+Detonator asks first. Choose the run option: **Run in sandbox** in v0.2.3; from v0.3.0 the
+prompt offers **Run full test (recommended)** or **Run quick test** (faster, but skips the outside
+monitor). The very first run builds the sandbox image, which
 takes a minute or two; after that a run takes seconds.
 
 > **Desktop app:** the very first run can say "request timed out after 30s" while the image builds,
