@@ -8,7 +8,7 @@ import pathlib
 
 import pytest
 
-from engine import rules, runner
+from engine import outside, rules, runner
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 FIXTURE = FIXTURES / "clean_plugin"
@@ -22,6 +22,21 @@ def test_clean_plugin_passes_in_sandbox():
     assert raw["registered"]["tools"] == ["save_note"]
     out = rules.evaluate(raw)
     assert out["verdict"] == "NO_FINDINGS", out["findings"]
+    # The outside monitor watched the whole run from its own containers.
+    assert out["outside"]["ran"] and out["outside"]["traced"] and out["outside"]["fake_internet"], out["outside"]
+    assert raw.get("traced") is True
+
+
+def test_run_falls_back_to_inside_only_when_the_outside_monitor_cannot_start(monkeypatch):
+    def broken(run):
+        raise RuntimeError("could not build the monitor image")
+
+    monkeypatch.setattr(outside, "ensure_image", broken)
+    raw = runner.detonate(runner.local_target(str(FIXTURE)))
+    assert not raw.get("fatal"), raw.get("fatal")
+    out = rules.evaluate(raw)
+    assert out["verdict"] == "NO_FINDINGS"
+    assert out["outside"] == {"ran": False, "reason": "could not build the monitor image"}
 
 
 def test_sandbox_flags_are_locked_down(tmp_path):

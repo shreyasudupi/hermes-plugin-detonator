@@ -1,11 +1,11 @@
 name: detonator
-version: "0.2.3"
+version: "0.3.0"
 description: >
   Security testing sandbox for Hermes plugins. After you approve it, runs a plugin
-  you did not write at an exact commit inside a disposable, no-network Docker
-  container with decoy secrets, then reports what it actually did (key theft,
-  network attempts, shell commands, persistence, tool poisoning) versus what it
-  declares. Advisory only. Requires Docker; runs git and docker commands (see README).
+  you did not write at an exact commit inside a disposable Docker container with
+  decoy secrets and a fake internet, watched from inside and by an outside tracer,
+  then reports what it actually did (key theft, network attempts, shell commands,
+  persistence, tool poisoning) versus what it declares. Advisory only. Requires Docker; runs git and docker commands (see README).
 author: shreyasudupi
 license: MIT
 requires_hermes: ">=0.23.0"
