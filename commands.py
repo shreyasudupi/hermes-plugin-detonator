@@ -114,6 +114,7 @@ def _write_summary_json(path: Path, repo: str, sha: str, subdir: str | None, eva
             "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "verdict": evaluation.get("verdict", "ERROR"),
             "test_mode": report.test_mode(evaluation.get("outside")),
+            "not_checked": None if (evaluation.get("outside") or {}).get("ran") else report.NOT_CHECKED,
             "findings": evaluation.get("findings") or [],
             "report_path": str(path),
         }, default=str), encoding="utf-8")
@@ -147,6 +148,7 @@ def summary(evaluation: dict, path: Path) -> str:
         if f["severity"] in ("critical", "high", "medium") and f.get("why"):
             lines.append(f"  Why: {f['why']}")
     lines.append(f"Full report: {path}")
+    lines.append('Ask "explain this report" for a plain-words explanation.')
     if verdict == "NO_FINDINGS":
         lines.append("Advisory only: a clean run is evidence, not proof.")
     else:
