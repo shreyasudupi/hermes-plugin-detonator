@@ -42,7 +42,10 @@ skipped with the reason "Docker not available", which is fine.
 **Codespaces**). The dev container in `.devcontainer/` comes with Docker and installs the test tools
 for you. A Codespace is also the safe place to run plugins you don't trust.
 
-To try your copy inside Hermes itself (Hermes installed, Docker running):
+To try your copy inside Hermes itself (Hermes installed, Docker running; macOS, Linux or a
+Codespace). If you already installed Detonator with `hermes plugins install`, first move that copy
+out of the way (`mv ~/.hermes/plugins/detonator ~/.hermes/plugins/detonator.bak`), otherwise the
+link below lands inside it instead of replacing it:
 
 ```bash
 ln -sfn "$PWD" ~/.hermes/plugins/detonator   # use your working copy as the plugin

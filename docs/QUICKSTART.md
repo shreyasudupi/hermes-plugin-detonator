@@ -44,6 +44,16 @@ What the three parts do:
 3. `hermes gateway stop` stops Hermes's background plugin host, so it loads Detonator next time
    you start Hermes. Nothing is lost; it starts again on its own.
 
+`hermes plugins install` takes the latest code on the `main` branch, which only changes through
+reviewed pull requests with CI. **Want one exact version instead?** Pick a tag on the
+[Releases page](https://github.com/shreyasudupi/hermes-plugin-detonator/releases) and install that
+copy yourself (macOS or Linux; replace `<tag>`):
+
+```bash
+git clone --branch <tag> --depth 1 https://github.com/shreyasudupi/hermes-plugin-detonator ~/.hermes/plugins/detonator
+hermes plugins enable detonator && hermes gateway stop
+```
+
 We don't offer a `curl ... | bash` installer on purpose: a security tool shouldn't ask you to run a
 script you haven't read. These are Hermes's own commands.
 
