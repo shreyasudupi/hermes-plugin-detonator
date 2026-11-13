@@ -35,7 +35,7 @@ python -m pip install -r requirements-dev.txt && python -m pytest -q -rs
 ```
 
 The last line is the one command to remember: it installs the test tools and runs every test.
-With Docker running you should see over 100 tests pass; without Docker, 4 sandbox tests are
+With Docker running you should see over 100 tests pass; without Docker, the sandbox tests are
 skipped with the reason "Docker not available", which is fine.
 
 **Don't want to install anything?** Open the repo in a GitHub Codespace (green **Code** button >
