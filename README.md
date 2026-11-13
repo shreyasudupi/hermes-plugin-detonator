@@ -133,10 +133,10 @@ before `hermes plugins update`, or when reviewing a catalog SHA bump.
 
 | Severity → verdict | Examples |
 |---|---|
-| critical → DANGEROUS | Reads decoy SSH or cloud keys, browser passwords or wallets; reads API keys and also reaches for the network; leaks a decoy secret; plants autostart, cron, LaunchAgent, `.bashrc` or `.pth` persistence |
-| high → SUSPICIOUS | Reads Hermes's `.env` or API keys it does not declare; reads every key at once through `/proc`; did something only after the clock was moved forward (time bomb); network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools; changes Hermes's config or files outside its folder; opens a listening port; a plugin name with `../` in it; floods the activity log to hide something |
-| medium → REVIEW | Secret-file paths or start-up locations in code that never ran (possible time bomb); a declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; copying the whole environment; listing your home or key folders; reading system account files; calling other agent tools on its own; own state outside `plugin-data/`; exec of strings; sandbox checks; native code; crashing while loading |
-| low / info | Shell, string-built code or network calls in code that never ran; coverage notes (stand-in modules), temp files, background threads, library behaviour |
+| critical → DANGEROUS | Reads decoy SSH or cloud keys, browser passwords or wallets; reads API keys and also reaches for the network; leaks a decoy secret, even base64, hex, compressed or split across requests; quietly sends a tool call somewhere else (a new message recipient, web address or chained command); points model requests at another server; plants autostart, cron, LaunchAgent, `.bashrc` or `.pth` persistence |
+| high → SUSPICIOUS | Reads Hermes's `.env` or API keys it does not declare; reads every key at once through `/proc`; did something only after the clock was moved forward (time bomb); network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools; changes Hermes's config or files outside its folder; opens a listening port; a plugin name with `../` in it; floods the activity log to hide something; sends your chat text out; changes tool arguments from a hook; rewrites the model's messages or model; skips a real tool and makes up its result; tool names disguised as built-ins (`rеad_file` with a Cyrillic е, `termina1`); adds huge text to every prompt; a description that promises the opposite of what it does ("works offline" but connects out) |
+| medium → REVIEW | Secret-file paths or start-up locations in code that never ran (possible time bomb); a declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; copying the whole environment; listing your home or key folders; reading system account files; calling other agent tools on its own; declared middleware that rewrites tool arguments; a tool result over 100,000 characters; tool names one letter from a built-in; own state outside `plugin-data/`; exec of strings; sandbox checks; native code; crashing while loading |
+| low / info | Registers middleware; shell, string-built code or network calls in code that never ran; coverage notes (stand-in modules), temp files, background threads, library behaviour |
 
 **Every finding says why it matters and maps to [MITRE ATT&CK](https://attack.mitre.org/) and
 [MITRE ATLAS](https://atlas.mitre.org/) techniques.** The full list, with each rule's reasoning and
@@ -168,7 +168,7 @@ Detonator then compares the two records. Three rules come from this:
 
 | Rule | Severity | Catches |
 |---|---|---|
-| `secret_sent_out` | critical | A fake key reaching the fake internet, plain, URL-encoded, base64, hex or hidden in a DNS name |
+| `secret_sent_out` | critical | A fake key reaching the fake internet, plain or disguised (base64, base32, hex, URL escapes, rot13, reversed, compressed, or layers of these), or hidden in DNS names, even split across several lookups |
 | `monitor_blind_spot` | critical | The plugin's own process opening a decoy file, connecting out or starting a program that the inside monitor never recorded |
 | `result_forged` | critical | Anything other than Detonator writing the result file |
 
@@ -216,16 +216,17 @@ no Python code to run, and Detonator says so instead of guessing.
 
 ## How it was tested
 
-- **Every change** runs over 100 tests in CI, including real Docker sandbox runs, plus Hermes's own
+- **Every change** runs over 130 tests in CI, including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
-- **Detection** is checked against 25 harmless test plugins (fake keys, reserved TEST-NET
+- **Detection** is checked against 32 harmless test plugins (fake keys, reserved TEST-NET
   addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,
   prompt injection, tool poisoning, a rug pull, a backdoor port, a config hijack, a log flood, a
   trojan update, a date-triggered time bomb, a sleeper thread, a plugin that reads keys through C
   code to dodge the inside monitor and one that forges a clean result (both caught only from
-  outside), plus honest and grey-area plugins that must not be flagged as dangerous. All 25 get
-  their expected verdict, together they set off every one of the 48 rules, and CI re-checks them
-  on every change. They live in a separate private
+  outside), an encoded key leak, an argument swapper, a model-request redirector, look-alike tool
+  names, an output flood, a chat snooper and a plugin whose description lies, plus honest and
+  grey-area plugins that must not be flagged as dangerous. All 32 get their expected verdict,
+  together they set off every one of the 55 rules, and CI re-checks them on every change. They live in a separate private
   repository so this one stays clean for the catalog scanner, and are available to reviewers on
   request.
 - **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
@@ -303,15 +304,27 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
-- **v0.3.0** (Nov 13, 2026): The outside monitor. Every run is now also watched from two
+- **v0.3.0** (Nov 13, 2026): The outside monitor and sharper rules.
+  - **Outside monitor.** Every run is now also watched from two
   containers the plugin cannot reach: a `strace` tracer attached before the plugin loads, and a
   fake internet that answers every address and logs what is sent. Three new rules:
   `secret_sent_out`, `monitor_blind_spot` and `result_forged`. Programs the plugin starts are
   now followed too, and a plugin that kills the sandbox is judged on the outside evidence.
   The report has a new "Outside monitor" section listing names looked up, connections and
   programs started. The approval prompt now offers a full test (default) or a quick test
-  without the outside monitor. Two new test plugins that only the outside monitor catches; 25 test
-  plugins now set off all 48 rules.
+  without the outside monitor.
+  - **Sharper rules.** Leaked decoy keys are now found, by both monitors, even when a plugin
+  disguises them (base64, base32, hex, URL escapes, rot13, reversed, zlib/gzip, layers of these, or a
+  key cut into pieces across DNS lookups or requests), and in command lines too. The sandbox now drives
+  Hermes middleware (`tool_request`, `tool_execution`, `llm_request`, `llm_execution`), which earlier
+  versions did not watch at all, and calls `pre_tool_call` hooks with four kinds of tool call, so a
+  plugin that only rewrites outgoing messages is caught. Seven new rules: `tool_args_changed`,
+  `model_request_changed`, `middleware_registered`, `chat_data_sent`, `lookalike_name`, `output_flood`
+  and `claim_mismatch`; undeclared middleware counts as an undeclared registration. A plugin with very
+  slow code can no longer turn a run into an ERROR with no findings: slow callbacks are not called again
+  and the run reports what it could not cover.
+  - 9 new test plugins (2 caught only by the outside monitor, 7 for the sharper rules); 32 test
+  plugins now set off all 55 rules.
 
 - **v0.2.3** (Nov 11, 2026): Windows fixes, found by the new Windows CI job. Reports and
   plugin files are always read and written as UTF-8 (Windows' default code page crashed on the
