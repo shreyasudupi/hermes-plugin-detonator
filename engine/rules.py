@@ -1044,6 +1044,12 @@ def _outside_findings_raw(result: dict) -> list:
             hidden.append("started " + " ".join(e.get("argv") or [path])[:160])
         elif call in ("ptrace", "process_vm_readv", "process_vm_writev"):
             tamper.append(f'{call}({str(e.get("detail"))[:80]})')
+        elif call in ("kill", "tkill", "tgkill") and not e.get("error") and e.get("in_harness") \
+                and str(e.get("detail") or "").split(",")[0].strip() == str(trace.get("harness_pid")) \
+                and not str(e.get("detail") or "").rstrip(") ").endswith(("0", "SIGALRM")):
+            # The harness never signals itself (its timeouts use alarms), so this is the plugin
+            # ending the whole test early, which leaves no in-process record to judge.
+            tamper.append(f'{call}({str(e.get("detail")).split(")")[0][:40]}): ended its own sandbox')
         elif call in ("kill", "tkill", "tgkill") and e.get("error") == "EPERM":
             # Signalling a process it is not allowed to touch: the only such processes in
             # its world are Detonator's own monitors.
@@ -1095,7 +1101,7 @@ def _outside_findings_raw(result: dict) -> list:
                                  f'{" before the run finished" if j in early else ""}' for j, e in forged][:5]))
     if tamper:
         findings.append(Finding("monitor_tamper", HIGH,
-                                "Tried to trace, read or stop another process (seen from outside)",
+                                "Tried to trace, read or stop a process, or ended the test early (seen from outside)",
                                 sorted(set(tamper))[:8]))
     return findings
 

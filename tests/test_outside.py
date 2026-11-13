@@ -275,3 +275,11 @@ def test_evidence_from_the_plugin_stays_on_one_line_and_out_of_code_marks():
                                                    "data": f"`a`\nsk-{CANARY}-0002"}]}
     ev = rules._outside_findings(_result(trace={"events": []}, sink_log=sink_log))[0].evidence[0]
     assert "`" not in ev and "\n" not in ev
+
+
+def test_a_plugin_that_kills_its_own_sandbox_is_not_just_an_error():
+    killed = TRACE.replace(TRACE.splitlines()[-2] + "\n", "") .replace(TRACE.splitlines()[-1] + "\n", "")
+    killed += "7     13:00:00.000020 kill(7, SIGKILL)                  = ?\n"
+    raw = {"fatal": "no result (exit 137)", "outside": {**_result()["outside"], "trace": _parsed(killed)}}
+    tamper = [f for f in rules._outside_findings(raw) if f.rule == "monitor_tamper"]
+    assert tamper and "ended its own sandbox" in tamper[0].evidence[0]
