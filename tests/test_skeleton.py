@@ -78,12 +78,20 @@ def test_slash_command_refuses_without_approval(monkeypatch):
 def test_slash_command_runs_only_after_yes(monkeypatch, tmp_path):
     plugin = _load_plugin()
     path = tmp_path / "r.md"
-    monkeypatch.setattr(plugin.commands, "run_detonation",
-                        lambda repo, sha, subdir: ({"verdict": "NO_FINDINGS", "findings": []}, "", path))
-    ctx = FakeCtx(choice="run")
-    plugin.register(ctx)
-    out = ctx.commands["detonate"](f"a/b {SHA}")
-    assert "NO FINDINGS" in out and str(path) in out
+    modes = []
+
+    def fake(repo, sha, subdir, outside=None):
+        modes.append(outside)
+        return {"verdict": "NO_FINDINGS", "findings": []}, "", path
+
+    monkeypatch.setattr(plugin.commands, "run_detonation", fake)
+    for choice in ("run", "run-quick"):
+        ctx = FakeCtx(choice=choice)
+        plugin.register(ctx)
+        out = ctx.commands["detonate"](f"a/b {SHA}")
+        assert "NO FINDINGS" in out and str(path) in out
+    # Full test is the default; the quick test switches only the outside monitor off.
+    assert modes == [None, False]
 
 
 def test_slash_command_validates_input():

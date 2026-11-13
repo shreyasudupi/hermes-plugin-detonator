@@ -49,8 +49,9 @@ In the Hermes chat:
 /detonate <owner/repo> <40-char-sha> [subdir]
 ```
 
-Detonator asks before it does anything. Pick **Run in sandbox**. The first run builds the
-sandbox image (a minute or two); after that a run takes seconds:
+Detonator asks before it does anything. Pick **Run full test (recommended)**, or **Run quick
+test** to skip the outside monitor. The first run builds the sandbox images (a minute or two);
+after that a run takes seconds:
 
 ```
 🔴 DANGEROUS: the plugin did something stealers and malware do (took or leaked decoy secrets, ...).
@@ -176,8 +177,9 @@ sandbox, the outside evidence is still judged instead of reporting a bare error.
 The outside monitor is on by default and adds a second or two to a run. Its image is built
 once, next to the sandbox image (it installs `strace` from Debian, so the first build needs
 the internet). If it cannot start, the plugin is still tested by the inside monitor and the
-report says plainly that the outside monitor did not run. Set `DETONATOR_OUTSIDE=0` to switch
-it off on purpose.
+report says plainly that the outside monitor did not run. To skip it on purpose, pick **Run
+quick test** when `/detonate` asks (or `hermes detonate --quick`); the report then says the
+outside monitor was not used. `DETONATOR_OUTSIDE=0` switches it off for every run.
 
 ### Clock jump and code that stayed quiet
 
@@ -298,7 +300,8 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   `secret_sent_out`, `monitor_blind_spot` and `result_forged`. Programs the plugin starts are
   now followed too, and a plugin that kills the sandbox is judged on the outside evidence.
   The report has a new "Outside monitor" section listing names looked up, connections and
-  programs started. Two new test plugins that only the outside monitor catches; 25 test
+  programs started. The approval prompt now offers a full test (default) or a quick test
+  without the outside monitor. Two new test plugins that only the outside monitor catches; 25 test
   plugins now set off all 48 rules.
 
 - **v0.2.3** (Nov 11, 2026): Windows fixes, found by the new Windows CI job. Reports and

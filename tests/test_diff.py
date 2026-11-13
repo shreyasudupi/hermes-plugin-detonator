@@ -69,7 +69,7 @@ def test_slash_command_parses_two_shas_and_asks_once(monkeypatch):
     plugin = _load_plugin()
     calls = []
     monkeypatch.setattr(plugin.commands, "run_comparison",
-                        lambda repo, old, new, subdir: calls.append((repo, old, new, subdir)) or "DIFF")
+                        lambda repo, old, new, subdir, outside=None: calls.append((repo, old, new, subdir)) or "DIFF")
     ctx = FakeCtx(choice="run")
     plugin.register(ctx)
     assert ctx.commands["detonate"](f"a/b {SHA} {NEW} sub") == "DIFF"
@@ -102,7 +102,7 @@ def test_run_comparison_writes_a_diff_report(monkeypatch, tmp_path):
     monkeypatch.setattr(c, "reports_dir", lambda: tmp_path)
     results = {SHA: (CLEAN, "", tmp_path / "old.md", {"manifest": {}}),
                NEW: (STEALER, "", tmp_path / "new.md", {"manifest": {}})}
-    monkeypatch.setattr(c, "run_detonation", lambda repo, sha, subdir, with_raw=False: results[sha])
+    monkeypatch.setattr(c, "run_detonation", lambda repo, sha, subdir, with_raw=False, outside=None: results[sha])
     out = c.run_comparison("a/b", SHA, NEW, None)
     assert "RISKIER" in out
     reports = list(tmp_path.glob("*-vs-*.md"))

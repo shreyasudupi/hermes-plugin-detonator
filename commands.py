@@ -24,7 +24,7 @@ if __package__:
 USAGE = ("Usage: /detonate <owner/repo> <40-char-sha> [subdir]\n"
          "   or: /detonate <owner/repo> <old-sha> <new-sha> [subdir]   (compare two versions)\n"
          "   or: /detonate check   (is Docker ready? runs nothing)")
-APPROVE, CANCEL = "run", "cancel"
+APPROVE, QUICK, CANCEL = "run", "run-quick", "cancel"
 
 
 def parse_target(raw: str):
@@ -56,13 +56,13 @@ def approval_question(repo: str, sha, subdir: str | None) -> str:
         where = f"{repo}@{sha[0][:12]} and @{sha[1][:12]}" + (f" ({subdir})" if subdir else "")
         return (
             f"Detonate and compare {where}? Detonator will git-fetch both exact commits and run each "
-            "plugin version inside its own disposable Docker container with no network and fake secrets. "
+            "plugin version inside its own disposable Docker container with fake secrets and no real network. "
             "Your real Hermes home and keys are never mounted."
         )
     where = f"{repo}@{sha[:12]}" + (f" ({subdir})" if subdir else "")
     return (
         f"Detonate {where}? Detonator will git-fetch that exact commit and run the plugin's code "
-        "inside a disposable Docker container with no network and fake secrets. "
+        "inside a disposable Docker container with fake secrets and no real network. "
         "Your real Hermes home and keys are never mounted."
     )
 
@@ -85,11 +85,12 @@ def _report_path(repo: str, tag: str, subdir: str | None) -> Path:
     return reports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-{safe}.md"
 
 
-def run_detonation(repo: str, sha: str, subdir: str | None, with_raw: bool = False):
-    """Fetch, detonate, judge. Returns (evaluation, markdown, report_path[, raw])."""
+def run_detonation(repo: str, sha: str, subdir: str | None, with_raw: bool = False, outside: bool | None = None):
+    """Fetch, detonate, judge. Returns (evaluation, markdown, report_path[, raw]).
+    outside=False runs the quick test (in-process monitor only)."""
     with tempfile.TemporaryDirectory(prefix="detonator-src-") as work:
         target = runner.fetch_github(repo, sha, Path(work), subdir)
-        raw = runner.detonate(target)
+        raw = runner.detonate(target, outside=outside)
     evaluation = rules.evaluate(raw)
     markdown = report.render(target.label, evaluation, raw)
     path = _report_path(repo, sha[:12], subdir)
@@ -114,10 +115,10 @@ def _write_summary_json(path: Path, repo: str, sha: str, subdir: str | None, eva
         pass  # the Markdown report is the record; the JSON copy is a convenience
 
 
-def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None) -> str:
+def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None, outside: bool | None = None) -> str:
     """Detonate both commits, then report what the newer one does that the older did not."""
-    old_eval, _, old_path, old_raw = run_detonation(repo, old_sha, subdir, with_raw=True)
-    new_eval, _, new_path, new_raw = run_detonation(repo, new_sha, subdir, with_raw=True)
+    old_eval, _, old_path, old_raw = run_detonation(repo, old_sha, subdir, with_raw=True, outside=outside)
+    new_eval, _, new_path, new_raw = run_detonation(repo, new_sha, subdir, with_raw=True, outside=outside)
     changes = diff.compare(old_eval, new_eval, old_raw, new_raw)
     label = repo + (f" ({subdir})" if subdir else "")
     path = _report_path(repo, f"{old_sha[:8]}-vs-{new_sha[:8]}", subdir)
@@ -156,17 +157,21 @@ def make_slash_handler(ctx):
         choice = ctx.ask_choice(
             approval_question(repo, sha, subdir),
             [
-                {"value": APPROVE, "label": "Run in sandbox", "description": "uses Docker"},
+                {"value": APPROVE, "label": "Run full test (recommended)",
+                 "description": "uses Docker; also watched by the outside monitor"},
+                {"value": QUICK, "label": "Run quick test",
+                 "description": "uses Docker; in-process monitor only, a little faster"},
                 {"value": CANCEL, "label": "Cancel"},
             ],
         )
-        if choice != APPROVE:
+        if choice not in (APPROVE, QUICK):
             return ("Not run: Detonator needs your explicit approval, and none was given "
                     "(cancelled, timed out, or no one could be asked).")
+        outside = False if choice == QUICK else None
         try:
             if isinstance(sha, tuple):
-                return run_comparison(repo, sha[0], sha[1], subdir)
-            evaluation, _md, path = run_detonation(repo, sha, subdir)
+                return run_comparison(repo, sha[0], sha[1], subdir, outside=outside)
+            evaluation, _md, path = run_detonation(repo, sha, subdir, outside=outside)
         except runner.DetonatorError as exc:
             return f"Detonator could not run: {exc}"
         except Exception as exc:  # never crash the session
@@ -182,6 +187,8 @@ def setup_cli(subparser):
     subparser.add_argument("--subdir", help="plugin folder inside the repo")
     subparser.add_argument("--compare-to", dest="compare_to", metavar="NEW_SHA",
                            help="also run this newer commit and report what changed")
+    subparser.add_argument("--quick", action="store_true",
+                           help="quick test: in-process monitor only, without the outside monitor")
 
 
 def cli_handler(args) -> int:
@@ -204,11 +211,12 @@ def cli_handler(args) -> int:
     if answer != "yes":
         print("Cancelled.")
         return 1
+    outside = False if getattr(args, "quick", False) else None
     try:
         if isinstance(sha, tuple):
-            print(run_comparison(repo, sha[0], sha[1], subdir))
+            print(run_comparison(repo, sha[0], sha[1], subdir, outside=outside))
             return 0
-        evaluation, markdown, path = run_detonation(repo, sha, subdir)
+        evaluation, markdown, path = run_detonation(repo, sha, subdir, outside=outside)
     except runner.DetonatorError as exc:
         print(f"Detonator could not run: {exc}", file=sys.stderr)
         return 2
