@@ -61,7 +61,10 @@ def ensure_image(run) -> str:
     return tag
 
 
-_COMMON = ["--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+# --rm: Docker removes each monitor container as soon as it stops, and both stop on their own
+# after a few minutes, so a run that is interrupted leaves nothing behind.
+_COMMON = ["--rm", "--label", "detonator=monitor", "--network", "none", "--read-only", "--cap-drop", "ALL",
+           "--security-opt", "no-new-privileges"]
 
 
 def sink_cmd(tag: str, name: str, sink_dir: Path, hostname: str) -> list[str]:
@@ -131,6 +134,14 @@ class Monitor:
                 pass
 
 
+def _read_text(path: Path) -> str:
+    """Read a monitor log, never through a link: the folder is written by a container, and a
+    link there must not make Detonator read some other file on this computer."""
+    if path.is_symlink() or not path.is_file():
+        raise OSError(f"{path.name} is missing or not a plain file")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def _tail(path: Path, n: int = 300) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace")[-n:]
@@ -142,12 +153,12 @@ def collect(trace_dir: Path, sink_dir: Path) -> dict:
     """Everything the two monitor containers recorded, parsed into plain data."""
     out: dict = {"ran": True}
     try:
-        status = json.loads((trace_dir / "status.json").read_text(encoding="utf-8"))
+        status = json.loads(_read_text(trace_dir / "status.json"))
     except (OSError, ValueError):
         status = {"error": "the tracer wrote no status"}
     out["tracer"] = status
     try:
-        text = (trace_dir / "strace.log").read_text(encoding="utf-8", errors="replace")
+        text = _read_text(trace_dir / "strace.log")
     except OSError:
         text = ""
     out["trace"] = parse_strace(text, status.get("harness_pid"))
@@ -276,6 +287,8 @@ def _first_marker(events, name) -> int | None:
 def parse_sink(path: Path) -> dict:
     entries = []
     try:
+        if path.is_symlink():
+            raise OSError("link")
         with open(path, encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f):
                 if i >= MAX_SINK_LINES:

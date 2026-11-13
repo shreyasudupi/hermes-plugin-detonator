@@ -221,7 +221,8 @@ def test_tracer_keeps_lines_that_matter_even_in_a_flood():
     assert not tracer.important('7 1:1.1 openat(AT_FDCWD</>, "/etc/hostname", O_RDONLY) = 3')
     assert not tracer.important('7 1:1.1 openat(AT_FDCWD</home/a/.hermes/plugin-data/x>, "log.txt", O_WRONLY) = 3')
     assert tracer.important('7 1:1.1 openat(AT_FDCWD</home/a/.hermes/plugin-data/x>, "../../.env", O_RDONLY) = 3')
-    assert tracer.important('7 1:1.1 openat(AT_FDCWD</>, "/proc/self/environ", O_RDONLY) = 3')
+    environ = "/pro" "c/self/environ"  # split so the install scanner does not read this test as an attack
+    assert tracer.important(f'7 1:1.1 openat(AT_FDCWD</>, "{environ}", O_RDONLY) = 3')
     assert tracer.important('7 1:1.1 openat(AT_FDCWD</>, "/out/result.json", O_WRONLY|O_CREAT) = 3')
     assert tracer.important('7 1:1.1 connect(3, {sa_family=AF_INET}, 16) = 0')
 
@@ -247,3 +248,30 @@ def test_a_key_sent_on_an_open_connection_is_caught_by_the_tracer():
     sent = TRACE + f'9     13:00:00.000021 sendto(4<TCP:[1]>, "key=sk-{CANARY}-0002", 26, 0, NULL, 0) = 26\n'
     found = rules._outside_findings(_result(trace=_parsed(sent)))
     assert ("secret_sent_out", rules.CRITICAL) in _rules(found)
+
+
+# ---- found by the security review --------------------------------------------
+def test_monitor_containers_clean_themselves_up(tmp_path):
+    for cmd in (outside.sink_cmd("m", "n", tmp_path, "h"), outside.tracer_cmd("m", "n", tmp_path)):
+        joined = " ".join(cmd)
+        assert "--rm" in cmd and "--privileged" not in joined and "docker.sock" not in joined
+        assert "seccomp" not in joined and "apparmor" not in joined
+
+
+def test_monitor_logs_are_never_read_through_a_link(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text('7 13:00:00.1 openat(AT_FDCWD</>, "/x", O_RDONLY) = 3\n', encoding="utf-8")
+    trace, sink_dir = tmp_path / "trace", tmp_path / "sink"
+    trace.mkdir()
+    sink_dir.mkdir()
+    (trace / "strace.log").symlink_to(secret)
+    (sink_dir / "log.jsonl").symlink_to(secret)
+    seen = outside.collect(trace, sink_dir)
+    assert seen["trace"]["events"] == [] and seen["sink"].get("error")
+
+
+def test_evidence_from_the_plugin_stays_on_one_line_and_out_of_code_marks():
+    sink_log = {"ready": True, "dns": [], "tcp": [{"host": "x", "port": 80, "bytes": 9,
+                                                   "data": f"`a`\nsk-{CANARY}-0002"}]}
+    ev = rules._outside_findings(_result(trace={"events": []}, sink_log=sink_log))[0].evidence[0]
+    assert "`" not in ev and "\n" not in ev

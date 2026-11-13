@@ -269,8 +269,14 @@ Detonator does things a reviewer should know about:
   --security-opt no-new-privileges` with small memory and process limits. The tracer adds only
   `SYS_PTRACE` (to attach `strace`). The fake internet adds `NET_ADMIN` (to make every address
   answer locally inside its own empty network) and `NET_BIND_SERVICE` (to listen on ports such
-  as 80 and 443). Neither container can reach a real network or any of your files; each only
-  writes its own log folder.
+  as 80 and 443), and gives both up once it is listening. Neither container is privileged, both
+  keep Docker's default seccomp and AppArmor profiles, neither can reach a real network, the
+  Docker socket or any of your files, and each only writes its own log folder (Detonator never
+  follows a link there). Docker removes them as soon as they stop, and they stop by themselves
+  after 5 minutes, so even a run you interrupt leaves nothing running: when the tracer stops,
+  the plugin's container stops with it.
+- **Private run folder.** Each run's temporary folder is readable only by you, so other users
+  on the same computer cannot read it or plant files in it.
 - **A different world every run.** Each run gets a random username, home folder
   (`/home/<name>`) and host name, and random fake-key values, so a plugin cannot spot
   the sandbox by a fixed path or a fixed marker in the decoys. The container's user

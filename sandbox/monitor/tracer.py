@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 
@@ -26,6 +27,10 @@ LOG_PATH = os.path.join(TRACE_DIR, "strace.log")
 STATUS_PATH = os.path.join(TRACE_DIR, "status.json")
 HARNESS = b"/opt/detonator/harness.py"
 FIND_TIMEOUT_S = 60
+# Stops tracing after this long, even if Detonator itself was killed. Because this script
+# is the first process of the shared process namespace, its exit also ends the plugin's
+# container, so nothing from a run can keep running.
+MAX_LIFETIME_S = 300
 SYSCALLS = ("open,openat,openat2,creat,execve,execveat,connect,sendto,sendmsg,bind,listen,"
             "clone,clone3,fork,vfork,unlink,unlinkat,rename,renameat,renameat2,memfd_create,"
             "ptrace,process_vm_readv,process_vm_writev,kill,tkill,tgkill")
@@ -89,6 +94,9 @@ def main():
     cmd = ["strace", "-f", "-q", "-tt", "-yy", "-s", "256", "-e", f"trace={SYSCALLS}",
            "-o", "/dev/stderr", "-p", str(pid)]
     proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    deadline = threading.Timer(MAX_LIFETIME_S, proc.kill)
+    deadline.daemon = True
+    deadline.start()
     keep, noise_tail = [], deque(maxlen=NOISE_TAIL)
     total = quiet = noise = important_seen = 0
     for raw in proc.stderr:

@@ -957,6 +957,14 @@ def _secret_hits(text: str, canary: str) -> bool:
 
 
 def _outside_findings(result: dict) -> list:
+    findings = _outside_findings_raw(result)
+    # Evidence quotes what the plugin sent or named; keep it on one line and out of Markdown code.
+    for f in findings:
+        f.evidence = [str(x).replace("`", "'").replace("\r", "\\r").replace("\n", "\\n") for x in f.evidence]
+    return findings
+
+
+def _outside_findings_raw(result: dict) -> list:
     out = result.get("outside") or {}
     if not isinstance(out, dict) or not out.get("ran"):
         return []

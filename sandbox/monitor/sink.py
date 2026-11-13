@@ -36,7 +36,9 @@ KEEP_BYTES = 4096
 KEEP_BYTES_LATER = 512   # after the first FULL_DETAIL entries, keep less of each payload
 FULL_DETAIL = 2000
 MAX_ENTRIES = 20000
-FAKE_NET = ipaddress.ip_network("198.18.0.0/15")  # RFC 2544 benchmarking range: never a real host
+FAKE_NET = ipaddress.ip_network("198.18.0.0/15")
+# Ends by itself after this long, so it never outlives a run even if Detonator is killed.
+MAX_LIFETIME_S = 300  # RFC 2544 benchmarking range: never a real host
 
 _lock = threading.Lock()
 _entries = 0
@@ -243,6 +245,20 @@ def serve_tcp(sock):
         threading.Thread(target=handle, args=(conn, peer), daemon=True).start()
 
 
+def drop_all_capabilities():
+    """Give up NET_ADMIN and NET_BIND_SERVICE once the route is set and the ports are bound.
+    From then on this process has no special rights at all (no-new-privileges stops it
+    getting them back)."""
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    header = (ctypes.c_uint32 * 2)(0x20080522, 0)   # _LINUX_CAPABILITY_VERSION_3, this process
+    data = (ctypes.c_uint32 * 6)()                   # effective, permitted, inheritable: all empty
+    if libc.capset(header, data) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+
+
 def main():
     global _log
     _log = open(LOG_PATH, "a", buffering=1)
@@ -270,11 +286,16 @@ def main():
         listeners.append(s)
         bound.append(port)
         threading.Thread(target=serve_tcp, args=(s,), daemon=True).start()
+    try:
+        drop_all_capabilities()
+        notes["capabilities"] = "none"
+    except OSError as exc:
+        notes["capabilities"] = f"kept ({exc})"
     log("ready", ports=bound, **notes)
     with open(READY_PATH, "w") as f:
         f.write("ok\n")
-    while True:
-        time.sleep(3600)
+    time.sleep(MAX_LIFETIME_S)
+    log("lifetime_over")
 
 
 if __name__ == "__main__":

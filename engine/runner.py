@@ -477,6 +477,9 @@ def detonate(target: Target, outside: bool | None = None) -> dict:
         plugin_copy = tmp / "plugin"
         shutil.copytree(target.path, plugin_copy, ignore=_skip_links)
         _make_world_readable(tmp)
+        # Docker mounts the folders inside directly, so the run folder itself can stay private
+        # to you: other users on this computer cannot read or plant files in it.
+        os.chmod(tmp, 0o700)
         in_dir = tmp / "in"
         in_dir.mkdir()
         (in_dir / "manifest.json").write_text(json.dumps(load_manifest(plugin_copy)), encoding="utf-8")
