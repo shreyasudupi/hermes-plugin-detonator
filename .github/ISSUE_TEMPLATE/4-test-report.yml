@@ -1,0 +1,59 @@
+name: Test report (Windows, macOS, Linux)
+description: Tell us Detonator worked (or didn't) on your machine. Reports from Windows and macOS help most.
+labels: [test-report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Our CI can't run the Linux sandbox on Windows, so runs on real machines are how we know it works there. Thank you!
+        Setup steps are in [docs/QUICKSTART.md](https://github.com/shreyasudupi/hermes-plugin-detonator/blob/main/docs/QUICKSTART.md).
+  - type: dropdown
+    id: result
+    attributes:
+      label: Did it work?
+      options: ["Yes, everything worked", "Partly", "No"]
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows 11, Windows 10, macOS (Apple Silicon), macOS (Intel), Linux, Other]
+    validations:
+      required: true
+  - type: input
+    id: docker
+    attributes:
+      label: Docker setup and version
+      placeholder: Docker Desktop 4.x with WSL 2
+    validations:
+      required: true
+  - type: input
+    id: hermes
+    attributes:
+      label: Hermes version
+      description: From `hermes --version`.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Detonator version
+      placeholder: v0.2.3
+    validations:
+      required: true
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: What did you try?
+      options:
+        - label: "`/detonate check` in the hermes terminal chat"
+        - label: "A `/detonate` run in the hermes terminal chat"
+        - label: "A `/detonate` run in the Hermes Desktop app"
+        - label: "Comparing two versions (`/detonate <repo> <old-sha> <new-sha>`)"
+        - label: "Asking the model to explain a report (detonator_report)"
+  - type: textarea
+    id: notes
+    attributes:
+      label: What happened?
+      description: Verdicts you got, anything confusing, any error message, and how long the first run took.

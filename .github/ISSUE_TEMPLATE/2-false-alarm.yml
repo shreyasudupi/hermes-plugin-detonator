@@ -1,0 +1,42 @@
+name: False alarm
+description: Detonator flagged something an honest plugin does normally.
+labels: [false-alarm]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        False alarms help us tune the rules. Please **don't put another person's plugin name in the title**: a public issue titled with a plugin's name reads like an accusation. Describe the plugin's kind instead ("a weather plugin").
+  - type: input
+    id: rule
+    attributes:
+      label: Which rule fired?
+      description: The rule name from the report, for example `undeclared_network`. All rules are listed in docs/RULES.md.
+    validations:
+      required: true
+  - type: textarea
+    id: finding
+    attributes:
+      label: The finding
+      description: Paste the finding line(s) and the verdict from the report.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: why-normal
+    attributes:
+      label: Why is this normal for this plugin?
+      description: What the plugin is for, and why it needs to do this.
+    validations:
+      required: true
+  - type: textarea
+    id: target
+    attributes:
+      label: Plugin and commit (optional)
+      description: The owner/repo and 40-character SHA you tested, if you're happy to share them publicly. Otherwise leave this empty and we'll ask privately if we need it.
+  - type: input
+    id: version
+    attributes:
+      label: Detonator version
+      placeholder: v0.2.3
+    validations:
+      required: true
