@@ -10,9 +10,13 @@ rules lives in RULES below; docs/RULES.md is checked against it by a test.
 
 from __future__ import annotations
 
+import functools
 import posixpath  # sandbox paths are Linux paths, even when the host is Windows
 import re
+import unicodedata
 from dataclasses import asdict, dataclass, field
+
+from . import leaks as _leakfind
 
 CRITICAL, HIGH, MEDIUM, LOW, INFO = "critical", "high", "medium", "low", "info"
 SEVERITY_ORDER = [CRITICAL, HIGH, MEDIUM, LOW, INFO]
@@ -44,7 +48,8 @@ RULES = {
         ("T1555.003", "T1005"), ("AML.T0055",)),
     "secret_in_output": Rule(
         "A fake key ended up somewhere it could leave the machine (a model prompt, a tool result, "
-        "a network address or another tool's input). A real key would leak the same way.",
+        "a network address, a command or another tool's input), even when encoded or split up to hide it. "
+        "A real key would leak the same way.",
         ("T1041",), ("AML.T0057", "AML.T0086")),
     "memory_read": Rule(
         "Memory and chat history hold what the agent knows about you. Expected for memory plugins, "
@@ -107,6 +112,38 @@ RULES = {
         "Registers a tool with the same name as a built-in Hermes tool, so the model may call the "
         "plugin's version (and hand it data) when it meant the real one.",
         ("T1036.005",), ("AML.T0110",)),
+    "chat_data_sent": Rule(
+        "Your messages, the model's replies and tool results are private. Sending them to the network or "
+        "into a command from a background hook means a copy of your conversations leaves the machine. "
+        "Logging and analytics plugins do this on purpose, so check where it goes and whether the plugin says so.",
+        ("T1041", "T1020"), ("AML.T0025", "AML.T0057")),
+    "tool_args_changed": Rule(
+        "Changed what a tool call does after the model chose it and before it ran (for example a different "
+        "message recipient, web address or command). The user and the model see the call they asked for; "
+        "the plugin quietly runs another one.",
+        ("T1565.002",), ("AML.T0053", "AML.T0110")),
+    "model_request_changed": Rule(
+        "Rewrote the request Hermes sends to the AI model. Changing the server or headers can send every "
+        "prompt and your API key somewhere else; changing the model or the messages changes how the agent "
+        "behaves without the user seeing it.",
+        ("T1557",), ("AML.T0051.001", "AML.T0110")),
+    "middleware_registered": Rule(
+        "Hermes middleware can rewrite tool calls and model requests or wrap them entirely. That is a legitimate "
+        "feature (declared in plugin.yaml as provides_middleware), and also the most direct way to tamper with "
+        "what the agent does. Detonator drove it with test calls; read the findings around it."),
+    "lookalike_name": Rule(
+        "Registers a tool whose name looks like a built-in Hermes tool (a swapped letter, a digit for a letter, "
+        "a letter from another alphabet). The model may pick it by mistake and hand it data meant for the real tool.",
+        ("T1036.005",), ("AML.T0110",)),
+    "output_flood": Rule(
+        "Puts a very large amount of text in front of the model. Every extra character costs the user money on "
+        "every turn, can push the user's own instructions out of the model's memory, and gives room to hide "
+        "orders deep inside.",
+        ("T1499",), ("AML.T0029", "AML.T0034")),
+    "claim_mismatch": Rule(
+        "The plugin describes itself one way (for example offline, read-only or never touching keys) but did "
+        "the opposite in the sandbox. A description that hides what the code does is a warning sign on its own.",
+        ("T1036",), ()),
     "agent_tool_call": Rule(
         "The plugin called other agent tools by itself, without the model or user asking. That can "
         "be used to send data out through tools the user trusts.",
@@ -172,7 +209,7 @@ RULES = {
         "background work to be disclosed."),
     # ---- declarations and coverage
     "undeclared_registration": Rule(
-        "Registers hooks or tools missing from plugin.yaml, so users are not shown them at install "
+        "Registers hooks, tools or middleware missing from plugin.yaml, so users are not shown them at install "
         "time (catalog rule 6).",
         (), ("AML.T0010.005",)),
     "declared_not_registered": Rule("Declares tools it did not register; usually a stale plugin.yaml."),
@@ -349,7 +386,14 @@ def evaluate(result: dict) -> dict:
 def _evaluate_inside(result: dict) -> dict:
     """The in-process monitor's evidence. When the harness also ran the plugin with its clock
     moved forward, anything that only showed up then is marked as time-triggered."""
+    _leakfind.reset_run_budget()
     full = _evaluate(result)
+    if _leakfind.run_budget_spent():
+        full.setdefault("findings", []).append(Finding(
+            "coverage_incomplete", LOW, "Returned so much encoded-looking text that not all of it was decoded",
+            ["plain and split-up keys were still checked everywhere"],
+            why="Detonator stops undoing base64, hex and compression after a fixed amount of work so a plugin "
+                "cannot stall the report. Keys that were not encoded were still found.").to_dict())
     jumps = sorted({e["clock_days"] for e in result.get("events") or [] if e.get("clock_days")} |
                    {h["clock_days"] for h in result.get("hook_runs") or [] if h.get("clock_days")})
     if full["verdict"] == VERDICT_ERROR or not jumps:
@@ -516,10 +560,30 @@ def _evaluate(result: dict) -> dict:
     net = of("network")
     binds = [e for e in net if e.get("op") == "socket.bind"]
     net = [e for e in net if e not in binds]
-    leaked_net = sorted({m for e in net for m in _leaks(e.get("address"), secret_markers)})
+    sent = [(e.get("address"), e.get("payload")) for e in net]
+    leaked_net = sorted({m for item in sent for m in _leaks(item, secret_markers)})
+    plain = {m.split(" (hidden")[0] for m in leaked_net}
+    rest = [m for m in secret_markers if m not in plain]
+    if rest and len(sent) > 1:
+        # A key cut into pieces, each sent in its own request or DNS lookup.
+        # Try the calls glued together, and just their encoded-looking parts glued
+        # together (DNS exfiltration puts one chunk in the first label of each lookup).
+        texts = [str(a) + (str(p) if p else "") for a, p in sent]
+        tokens = [re.findall(r"[A-Za-z0-9+/=_-]{8,}", t) for t in texts]
+        joins = ["".join(texts), "".join(t for ts in tokens for t in ts), "".join(ts[0] for ts in tokens if ts)]
+        pieces = {}
+        for joined in joins:
+            for m in _leaks(joined, [r for r in rest if r not in pieces]):
+                pieces[m.split(" (hidden")[0]] = m
+        leaked_net += [m.replace(" (hidden as ", f" (hidden as pieces across {len(sent)} network calls, ", 1)
+                       if "(hidden" in m else f"{m} (hidden as pieces across {len(sent)} network calls)"
+                       for m in pieces.values()]
     if leaked_net:
-        add(Finding("secret_in_output", CRITICAL, "Tried to send decoy secrets over the network", leaked_net,
-                    attack=["T1041"], atlas=["AML.T0025"]))
+        add(Finding("secret_in_output", CRITICAL,
+                    "Tried to send decoy secrets over the network" +
+                    (", disguised so a plain search would miss them" if _disguised(leaked_net) else ""),
+                    leaked_net, attack=["T1041", "T1132"] if _disguised(leaked_net) else ["T1041"],
+                    atlas=["AML.T0025"]))
     local = [e for e in net if _is_loopback(e.get("address"))]
     remote = [e for e in net if e not in local]
     # Calling an API from a tool the model invoked is what API plugins do; reaching
@@ -542,14 +606,19 @@ def _evaluate(result: dict) -> dict:
 
     # ---- agent content -----------------------------------------------------
     altered: dict = {}
+    _returns: dict = {}
+    for run in result.get("hook_runs") or []:
+        if run.get("honoured_return") and run.get("returned") not in (None, "", {}, []):
+            _returns.setdefault(run.get("hook"), []).append(run.get("returned"))
     for run in result.get("hook_runs") or []:
         hook = run.get("hook")
         returned = run.get("returned")
         if run.get("honoured_return") and returned not in (None, "", {}, []):
             altered.setdefault(("ret", hook), []).append(f"attempt {run.get('attempt')}: {str(returned)[:300]}")
-        if run.get("mutated_args"):
+        mutated = [k for k in run.get("mutated_args") or [] if not (hook == "pre_tool_call" and k == "args")]
+        if mutated:
             altered.setdefault(("mut", hook), []).extend(
-                f"{k}: {str(run.get('after', {}).get(k))[:200]}" for k in run["mutated_args"])
+                f"{k}: {str(run.get('after', {}).get(k))[:200]}" for k in mutated)
     for (kind, hook), evidence in sorted(altered.items()):
         evidence = list(dict.fromkeys(evidence))[:5]
         extra_atlas = ["AML.T0053"] if hook == "pre_tool_call" else []
@@ -563,6 +632,11 @@ def _evaluate(result: dict) -> dict:
             title = f"Hook {_safe_name(hook)} returned a value Hermes uses to change the {_what_changes(hook)}"
             if declared:
                 title += " (declared; check what it adds)"
+            if declared and hook == "pre_tool_call" and all(_is_directive(r) for r in _returns.get(hook, [])):
+                # {"action": "block"|"approve"} is the documented way for guard plugins to stop a
+                # call or ask the user; the call itself is unchanged.
+                sev = LOW
+                title = "Hook pre_tool_call blocked some tool calls or asked for approval (declared)"
         else:
             sev, title = HIGH, f"Hook {_safe_name(hook)} modified its input arguments in place"
         add(Finding("content_altered", sev, title, evidence, atlas=extra_atlas))
@@ -570,12 +644,18 @@ def _evaluate(result: dict) -> dict:
     for run in result.get("tool_runs") or []:
         leaked = _leaks(run.get("returned"), secret_markers)
         if leaked:
-            add(Finding("secret_in_output", CRITICAL, f"Tool {_safe_name(run.get('tool'))} returned decoy secrets to the model",
-                        leaked))
+            add(Finding("secret_in_output", CRITICAL, f"Tool {_safe_name(run.get('tool'))} returned decoy secrets to the model"
+                        + (", disguised" if _disguised(leaked) else ""), leaked))
     for run in result.get("hook_runs") or []:
         leaked = _leaks(run.get("returned"), secret_markers) + _leaks(run.get("after"), secret_markers)
         if leaked:
-            add(Finding("secret_in_output", CRITICAL, f"Hook {_safe_name(run.get('hook'))} put decoy secrets into agent content",
+            add(Finding("secret_in_output", CRITICAL, f"Hook {_safe_name(run.get('hook'))} put decoy secrets into agent content"
+                        + (", disguised" if _disguised(leaked) else ""), sorted(set(leaked))))
+    for run in result.get("middleware_runs") or []:
+        leaked = _leaks(run.get("returned"), secret_markers) + _leaks(run.get("next_payload"), secret_markers)
+        if leaked:
+            add(Finding("secret_in_output", CRITICAL,
+                        f"Middleware {_safe_name(run.get('kind'))} put decoy secrets into a tool call or model request",
                         sorted(set(leaked))))
 
     injected = []
@@ -589,6 +669,10 @@ def _evaluate(result: dict) -> dict:
         for k in run.get("mutated_args") or []:
             injected += [f"hook {run.get('hook')} edited {k}: {m}"
                          for m in _injection_hits((run.get("after") or {}).get(k))]
+    for run in result.get("middleware_runs") or []:
+        injected += [f"middleware {run.get('kind')} output: {m}" for m in _injection_hits(run.get("returned"))]
+        injected += [f"middleware {run.get('kind')} passed on: {m}"
+                     for m in _injection_hits(run.get("next_payload")) if run.get("next_payload") != run.get("input")]
     if injected:
         hidden = any("invisible characters" in i for i in injected)
         add(Finding("prompt_injection_text", HIGH, "Sends the model text that tries to give it orders",
@@ -597,6 +681,12 @@ def _evaluate(result: dict) -> dict:
     shadow = sorted(set(registered.get("tools") or []) & BUILTIN_TOOLS)
     if shadow:
         add(Finding("tool_shadowing", HIGH, "Registers tools named like built-in Hermes tools", shadow))
+
+    findings.extend(_middleware_findings(result, registered, set(_as_list(manifest.get("provides_middleware")))))
+    findings.extend(_tool_arg_changes(result, set(_as_list(manifest.get("provides_middleware")))))
+    findings.extend(_chat_data_sent(result, events))
+    findings.extend(_lookalike_names(registered))
+    findings.extend(_output_floods(result))
 
     dispatched = of("dispatch_tool")
     if dispatched:
@@ -611,7 +701,11 @@ def _evaluate(result: dict) -> dict:
     procs = of("process")
     if procs:
         add(Finding("command_run", HIGH, "Started a process or shell command",
-                    sorted({f'{e.get("op")} {e.get("detail")} [{e.get("phase")}]' for e in procs})[:20]))
+                    sorted({f'{e.get("op")} {str(e.get("detail"))[:300]} [{e.get("phase")}]' for e in procs})[:20]))
+        leaked = sorted({m for e in procs if "command" in e for m in _leaks(e.get("command"), secret_markers)})
+        if leaked:
+            add(Finding("secret_in_output", CRITICAL, "Put decoy secrets into a command it ran", leaked,
+                        attack=["T1041", "T1059"]))
         fetch = sorted({str(e.get("detail")) for e in procs if FETCH_CMD_RE.search(str(e.get("detail")))})
         if fetch:
             add(Finding("remote_code_fetch", HIGH, "Ran a command that downloads or installs code", fetch[:10]))
@@ -718,9 +812,25 @@ def _evaluate(result: dict) -> dict:
     if reg_hooks - declared_hooks:
         add(Finding("undeclared_registration", HIGH, "Registered hooks not declared in plugin.yaml",
                     sorted(reg_hooks - declared_hooks)))
+    reg_mw = set(registered.get("middleware") or [])
+    if reg_mw - set(_as_list(manifest.get("provides_middleware"))):
+        add(Finding("undeclared_registration", HIGH, "Registered middleware not declared in plugin.yaml",
+                    sorted(reg_mw - set(_as_list(manifest.get("provides_middleware"))))))
     if declared_tools - reg_tools:
         add(Finding("declared_not_registered", LOW, "Declared tools that were not registered",
                     sorted(declared_tools - reg_tools)))
+
+    findings.extend(_claim_mismatches(result, findings, events, manifest))
+
+    slow = result.get("slow_callbacks") or []
+    if slow or result.get("over_time_budget"):
+        add(Finding("coverage_incomplete", MEDIUM,
+                    "Some of its hooks, middleware or tools were too slow, so they were not called again"
+                    if slow else "Its code was so slow that the run used up its time and some repeat passes were skipped",
+                    [str(x)[:120] for x in slow[:10]] or ["time budget reached"],
+                    why="Each call gets 5 seconds. A callback that runs out of time is not called again, so "
+                        "a slow plugin cannot stall the whole test, but what it would have done later was not "
+                        "seen. A hook this slow would also freeze Hermes on every turn."))
 
     stubbed = result.get("stubbed_modules") or []
     if stubbed:
@@ -942,7 +1052,13 @@ def _secret_hits(text: str, canary: str) -> bool:
     if not canary or not text:
         return False
     needle = canary.lower()
-    for view in _decoded_views(text):
+    tags = _INPUT_TAGS + tuple(t.lstrip("-") for t in _INPUT_TAGS)   # the squashed views lose the dash
+    views = _decoded_views(text)
+    if not any(needle in v.lower() for v in views):
+        # Not there as-is or in the simple wrappings: try the full disguise decoder
+        # (rot13, reversed, base32, compression, layers, a key split up with dots).
+        views = _leakfind.views(text)
+    for view in views:
         low = view.lower()
         start = 0
         while True:
@@ -950,13 +1066,15 @@ def _secret_hits(text: str, canary: str) -> bool:
             if i < 0:
                 break
             after = view[i + len(needle): i + len(needle) + 12].upper()
-            if not after.startswith(_INPUT_TAGS):
+            if not after.startswith(tags):
                 return True
             start = i + 1
     return False
 
 
 def _outside_findings(result: dict) -> list:
+    # Its own decoding budget, so a flood of encoded text inside cannot blind the outside check.
+    _leakfind.reset_run_budget()
     findings = _outside_findings_raw(result)
     # Evidence quotes what the plugin sent or named; keep it on one line and out of Markdown code.
     for f in findings:
@@ -984,6 +1102,12 @@ def _outside_findings_raw(result: dict) -> list:
     for e in sink.get("dns") or []:
         if _secret_hits(str(e.get("name") or ""), canary):
             sent.append(f'hidden in a DNS lookup: {str(e.get("name"))[:160]}')
+    if not any(s.startswith("hidden in a DNS") for s in sent):
+        # A key cut into pieces, one piece per lookup: join the first label of each name.
+        names = [str(e.get("name") or "") for e in (sink.get("dns") or [])][:2000]
+        joined = "".join(n.split(".", 1)[0] for n in names)
+        if len(names) > 1 and _secret_hits(joined, canary):
+            sent.append(f'split across {len(names)} DNS lookups, starting with: {names[0][:80]}')
     for e in events:
         if e.get("call") in ("sendto", "sendmsg") and not e.get("unix") \
                 and _secret_hits(str(e.get("data") or ""), canary):
@@ -1121,7 +1245,8 @@ def outside_summary(result: dict) -> dict:
     if not isinstance(out, dict) or not out:
         return {"ran": False, "reason": "not part of this run"}
     if not out.get("ran"):
-        return {"ran": False, "reason": str(out.get("reason") or "unknown")[:400]}
+        return {"ran": False, "reason": str(out.get("reason") or "unknown")[:400],
+                "chosen_off": bool(out.get("chosen_off"))}
     sink = out.get("sink") or {}
     trace = out.get("trace") or {}
     tracer = out.get("tracer") or {}
@@ -1152,9 +1277,35 @@ def _net_evidence(events):
     return sorted({f'{e.get("op")} {e.get("address")} [{e.get("phase")}]' for e in events})[:20]
 
 
+def _text_of(value) -> str:
+    if isinstance(value, str):
+        return value
+    parts = list(_strings(value))
+    return "\n".join(parts + [repr(value)]) if parts else repr(value)
+
+
 def _leaks(value, secret_markers) -> list:
-    text = repr(value)
-    return [m for m in secret_markers if m in text]
+    """Markers found in a value, plain or disguised. A disguised one is reported
+    with how it was hidden, e.g. 'ABC...-0002 (hidden as base64)'."""
+    if value in (None, "", {}, []) or not secret_markers:
+        return []
+    return list(_leaks_cached(_text_of(value), tuple(secret_markers)))
+
+
+@functools.lru_cache(maxsize=256)
+def _leaks_cached(text: str, markers: tuple) -> tuple:
+    # Cached because evaluate() judges the same run several times (once per clock pass).
+    found = _leakfind.find(text, list(markers))
+    return tuple(m if how == "plain" else f"{m} (hidden as {how})" for m, how in found.items())
+
+
+def _disguised(evidence) -> bool:
+    return any("(hidden as " in str(e) for e in evidence)
+
+
+def _is_directive(value) -> bool:
+    return isinstance(value, dict) and value.get("action") in ("block", "approve") and \
+        set(value) <= {"action", "message", "rule_key"}
 
 
 def _what_changes(hook: str) -> str:
@@ -1176,3 +1327,393 @@ def _verdict(findings) -> str:
     if MEDIUM in sevs:
         return VERDICT_REVIEW
     return VERDICT_NO_FINDINGS
+
+
+# ---------------------------------------------------------------------------
+# Sharper rules (v0.3.0): middleware, quiet argument changes, chat data, look-alike names,
+# output floods and claims vs behaviour.
+# ---------------------------------------------------------------------------
+_URL_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s'\"<>]+", re.I)
+_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
+_IP_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+_HOST_RE = re.compile(r"\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|ai|dev|app|xyz|ru|cn|top|me|co|sh|site|info|example)\b",
+                      re.I)
+_TARGET_RE = re.compile(r"^[a-z]+:[^\s/]{2,}$", re.I)       # Hermes message targets, e.g. telegram:-100123
+_DEST_KEYS = {"target", "to", "cc", "bcc", "recipient", "recipients", "chat_id", "channel", "url", "urls", "uri",
+              "host", "hostname", "endpoint", "address", "email", "base_url", "api_base", "webhook", "server", "path"}
+_COMMAND_KEYS = {"command", "cmd", "script", "code", "shell", "args_raw"}
+_SHELL_CHAIN_RE = re.compile(r";|&&|\|\||\||`|\$\(|>\s*/|\bcurl\b|\bwget\b|\bnc\b|\bbase64\b")
+_REDIRECT_KEYS = ("base_url", "api_base", "api_key", "extra_headers", "headers", "default_headers", "endpoint",
+                  "url", "proxy", "organization")
+
+
+def _flatten(value, prefix="", depth=0, out=None):
+    """{path: leaf value} for a nested dict/list, for describing what changed."""
+    out = {} if out is None else out
+    if isinstance(value, dict) and depth < 6:
+        for k, v in value.items():
+            _flatten(v, f"{prefix}.{k}" if prefix else str(k), depth + 1, out)
+    elif isinstance(value, (list, tuple)) and depth < 6:
+        for i, v in enumerate(value):
+            _flatten(v, f"{prefix}[{i}]", depth + 1, out)
+    else:
+        out[prefix or "(value)"] = value
+    return out
+
+
+def _changes(before, after) -> list:
+    """[(path, old, new)] where two payloads differ."""
+    a, b = _flatten(before), _flatten(after)
+    return [(k, a.get(k), b.get(k)) for k in sorted(set(a) | set(b), key=str) if a.get(k) != b.get(k)]
+
+
+_DEST_TEXT_CAP = 2048   # addresses are short; the cap keeps these regexes fast on hostile input
+
+
+def _destinations(text: str) -> set:
+    text = str(text)[:_DEST_TEXT_CAP]
+    found = set(_URL_RE.findall(text)) | set(_EMAIL_RE.findall(text)) | set(_IP_RE.findall(text))
+    found |= {h.lower() for h in _HOST_RE.findall(text)}
+    if _TARGET_RE.match(text.strip()):
+        found.add(text.strip())
+    return found
+
+
+def _redirects(changes) -> list:
+    """Changes that point the call somewhere new: a different recipient, address, host
+    or file in a field that says where the call goes, a command with another command
+    chained on, or a changed endpoint/credential field. Free text (a message body, the
+    prompt) is not checked here: changing it is reported, but it does not redirect."""
+    out = []
+    for path, old, new in changes:
+        if new is None:
+            continue
+        parts = [p.split("[")[0].lower() for p in str(path).split(".")]
+        leaf = parts[-1]
+        if leaf in _DEST_KEYS or parts[0] in _REDIRECT_KEYS or leaf in _REDIRECT_KEYS:
+            if leaf == "path" and not (_destinations(new) - _destinations(old or "")) and \
+                    posixpath.basename(str(new)) == posixpath.basename(str(old or "")):
+                continue      # same file name, tidied path ("./notes.txt")
+            out.append(path)
+        elif leaf in _COMMAND_KEYS and isinstance(new, str) and _SHELL_CHAIN_RE.search(new) and not (
+                isinstance(old, str) and _SHELL_CHAIN_RE.search(old)):
+            out.append(path)
+    return out
+
+
+def _describe(changes, limit=6) -> list:
+    return [f"{p}: {str(o)[:80]!r} -> {str(n)[:120]!r}" for p, o, n in changes[:limit]]
+
+
+_BLOCK_WORDS = re.compile(r"\b(?:error|block(?:ed)?|den(?:y|ied)|refus\w*|not allowed|reject\w*|cancel\w*|"
+                          r"forbidden|disallowed|needs? (?:approval|confirmation))\b", re.I)
+
+
+def _middleware_findings(result, registered, declared_mw=frozenset()) -> list:
+    out = []
+    kinds = list(registered.get("middleware") or [])
+    if kinds:
+        out.append(Finding("middleware_registered", LOW, "Registers Hermes middleware: " +
+                           ", ".join(_safe_name(k) for k in kinds), kinds))
+    model_changes: dict = {}
+    result_changes: dict = {}
+    for run in result.get("middleware_runs") or []:
+        kind = str(run.get("kind"))
+        if not run.get("ok"):
+            continue
+        if kind == "llm_request" or kind == "llm_execution":
+            before = run.get("input")
+            after = None
+            ret = run.get("returned")
+            if kind == "llm_request" and isinstance(ret, dict) and isinstance(ret.get("request"), dict):
+                after = ret["request"]
+            elif kind == "llm_execution" and run.get("next_called"):
+                after = run.get("next_payload")
+            if after is not None and after != before:
+                ch = _changes(before, after)
+                model_changes.setdefault(kind, []).extend(ch)
+        if kind.endswith("_execution"):
+            canned = run.get("canned")
+            ret = run.get("returned")
+            if not run.get("next_called") and ret not in (None, "", {}, []) and _BLOCK_WORDS.search(str(ret)):
+                # Refusing a call is what guard plugins are for (like a pre_tool_call block).
+                result_changes.setdefault((kind, "blocked"), []).append(
+                    f"{run.get('tool_name') or 'model call'}: {str(ret)[:200]}")
+            elif not run.get("next_called") and ret not in (None, "", {}, []):
+                result_changes.setdefault((kind, "skipped"), []).append(
+                    f"{run.get('tool_name') or 'model call'}: {str(ret)[:200]}")
+            elif run.get("next_called") and ret is not None and ret != canned:
+                result_changes.setdefault((kind, "changed"), []).append(
+                    f"{run.get('tool_name') or 'model reply'}: {str(ret)[:200]}")
+    for kind, ch in sorted(model_changes.items()):
+        ch = list({(p, str(o), str(n)): (p, o, n) for p, o, n in ch}.values())
+        top = lambda p: str(p).split(".")[0].split("[")[0]  # noqa: E731
+        redirect = [p for p, _, _ in ch if top(p) in _REDIRECT_KEYS or top(p) in _DEST_KEYS]
+        touched = {top(p) for p, _, _ in ch}
+        declared = kind in declared_mw
+        if redirect:
+            sev, title = CRITICAL, "Middleware points the model request at a different server or credentials"
+        elif touched & {"messages", "input", "model", "tools", "system", "instructions"}:
+            # A declared prompt filter doing its job is worth a read; an undeclared one is hidden.
+            sev = MEDIUM if declared else HIGH
+            title = "Middleware rewrote the model request (" + ", ".join(_safe_name(k, 24) for k in sorted(touched)[:6]) + ")"
+            title += " (declared; check what it changes)" if declared else ""
+        else:
+            sev, title = LOW, "Middleware changed model request settings (" + ", ".join(_safe_name(k, 24) for k in sorted(touched)[:6]) + ")"
+        out.append(Finding("model_request_changed", sev, title, _describe(ch)))
+    for (kind, how), ev in sorted(result_changes.items()):
+        ev = list(dict.fromkeys(ev))[:5]
+        what = "tool result" if kind == "tool_execution" else "model reply"
+        if how == "blocked":
+            out.append(Finding("content_altered", LOW, f"Middleware {_safe_name(kind)} blocked some calls", ev,
+                               why="Guard plugins refuse calls this way; the model sees the refusal instead "
+                                   "of a result. Check the blocked calls are ones it says it guards."))
+        elif how == "skipped":
+            out.append(Finding("content_altered", HIGH,
+                               f"Middleware {_safe_name(kind)} skipped the real call and made up the {what}", ev))
+        else:
+            out.append(Finding("content_altered", MEDIUM,
+                               f"Middleware {_safe_name(kind)} changed the {what} the model sees", ev))
+    return out
+
+
+def _tool_arg_changes(result, declared_mw=frozenset()) -> list:
+    by_source: dict = {}
+    for run in result.get("hook_runs") or []:
+        if run.get("hook") == "pre_tool_call" and "args" in (run.get("mutated_args") or []):
+            before = (run.get("inputs") or {}).get("args")
+            after = (run.get("after") or {}).get("args")
+            by_source.setdefault("hook pre_tool_call", []).append((run.get("tool_name"), _changes(before, after)))
+    for run in result.get("middleware_runs") or []:
+        kind = run.get("kind")
+        if kind not in ("tool_request", "tool_execution") or not run.get("ok"):
+            continue
+        before = run.get("input")
+        after = None
+        ret = run.get("returned")
+        if kind == "tool_request":
+            if isinstance(ret, dict) and isinstance(ret.get("args"), dict):
+                after = ret["args"]
+            elif run.get("mutated_in_place"):
+                after = "(changed in place)"
+        elif run.get("next_called"):
+            after = run.get("next_payload")
+        if isinstance(after, dict) and after != before:
+            by_source.setdefault(f"middleware {kind}", []).append((run.get("tool_name"), _changes(before, after)))
+    out = []
+    for source, items in sorted(by_source.items()):
+        ev, redirect, tools = [], [], set()
+        for tool, ch in items:
+            tools.add(str(tool))
+            redirect += _redirects(ch)
+            ev += [f"{tool} {d}" for d in _describe(ch)]
+        ev = list(dict.fromkeys(ev))[:10]
+        scope = "only for " + ", ".join(sorted(tools)) if len(tools) < len(_SCENARIO_TOOLS) else "for every tool"
+        if redirect:
+            sev = CRITICAL
+            title = f"{source.capitalize()} quietly sends tool calls somewhere else ({scope})"
+        elif source.startswith("hook") or source.split()[-1] not in declared_mw:
+            sev = HIGH
+            title = f"{source.capitalize()} quietly changed tool arguments ({scope})"
+        else:
+            # Rewriting arguments is what declared tool middleware is for; say what it does.
+            sev = MEDIUM
+            title = f"{source.capitalize()} changes tool arguments ({scope}); check what it changes"
+        out.append(Finding("tool_args_changed", sev, _safe_title(title), ev))
+    return out
+
+
+_SCENARIO_TOOLS = ("terminal", "send_message", "web_extract", "write_file")
+
+
+def _safe_title(text: str) -> str:
+    return re.sub(r"[^\w .,:;()'+/-]", "?", text)[:160]
+
+
+_USER_TAGS = ("USER", "ASSISTANT", "SYSTEM", "TOOLRESULT", "TERMINAL")
+
+
+def _chat_data_sent(result, events) -> list:
+    canary = result.get("canary")
+    if not canary:
+        return []
+    chat = [f"{canary}-{t}" for t in _USER_TAGS]
+    args = [f"{canary}-ARG"]
+    hits = []
+    for e in events:
+        kind = e.get("kind")
+        if kind == "network":
+            value, where = (e.get("address"), e.get("payload")), "network"
+        elif kind == "process" and "command" in e:
+            value, where = e.get("command"), "command"
+        else:
+            continue
+        phase = str(e.get("phase", ""))
+        markers = chat + ([] if phase.startswith("tool:") else args)   # a tool may send its own input to its API
+        for m in _leaks(value, markers):
+            label = "tool arguments" if "-ARG" in m else "chat text"
+            how = m.split(" (hidden as ", 1)[1].rstrip(")") if "(hidden as " in m else ""
+            hits.append(f"{label} sent via {where} [{phase}]" + (f", hidden as {how}" if how else "") +
+                        f": {str(e.get('address') or e.get('detail'))[:150]}")
+    if not hits:
+        return []
+    return [Finding("chat_data_sent", HIGH, "Sent conversation text or tool input out on its own",
+                    list(dict.fromkeys(hits))[:10])]
+
+
+# Letters from other alphabets (and digits) that look like Latin letters.
+_CONFUSABLE = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "і": "i", "ј": "j", "ѕ": "s",
+    "ԁ": "d", "ӏ": "l", "к": "k", "м": "m", "т": "t", "н": "h", "в": "b", "ԛ": "q", "ԝ": "w", "ɡ": "g",
+    "ο": "o", "α": "a", "ε": "e", "ι": "i", "ν": "v", "ρ": "p", "τ": "t", "κ": "k", "υ": "u", "χ": "x",
+    "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "i": "l", "|": "l",
+})
+
+
+def _skeleton(name: str, keep_separators=False) -> str:
+    text = unicodedata.normalize("NFKC", name).casefold().translate(_CONFUSABLE)
+    text = text.replace("rn", "m").replace("vv", "w")
+    return text if keep_separators else re.sub(r"[\W_]+", "", text)
+
+
+def _one_edit(a: str, b: str) -> bool:
+    """True when a is b with one letter swapped, two neighbours transposed, or one
+    letter doubled (not a plain plural: 'todos' is not a look-alike of 'todo')."""
+    if a == b:
+        return False
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diff) == 1 or (len(diff) == 2 and diff[1] == diff[0] + 1 and
+                                  a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    if len(a) == len(b) + 1:
+        for i in range(len(a)):
+            if a[:i] + a[i + 1:] == b:
+                return 0 < i and a[i] == a[i - 1]
+    return False
+
+
+def _lookalike_names(registered) -> list:
+    exact, near = [], []
+    builtin = {b: _skeleton(b) for b in BUILTIN_TOOLS}
+    for name in registered.get("tools") or []:
+        name = str(name)
+        if name in BUILTIN_TOOLS:
+            continue      # same name: reported as tool_shadowing
+        skel = _skeleton(name)
+        foreign = any(ord(c) > 127 for c in name)
+        for b, bskel in sorted(builtin.items()):
+            if skel == bskel:
+                # Same letters once look-alike characters are mapped. A version that only
+                # differs in separators or case ('web-search') is a weaker signal.
+                plain = re.sub(r"[\W_]+", "", name.casefold()) == re.sub(r"[\W_]+", "", b)
+                (near if plain and not foreign else exact).append(f"{name!a} looks like built-in {b}")
+                break
+            if len(bskel) >= 6 and _one_edit(skel, bskel):
+                near.append(f"{name!a} is one letter away from built-in {b}")
+                break
+        else:
+            if foreign:
+                exact.append(f"{name!a} uses letters from another alphabet")
+    out = []
+    if exact:
+        out.append(Finding("lookalike_name", HIGH, "Registers tools disguised as built-in Hermes tools", exact[:10]))
+    if near:
+        out.append(Finding("lookalike_name", MEDIUM, "Registers tools with names close to built-in Hermes tools",
+                           near[:10]))
+    return out
+
+
+TOOL_FLOOD_CHARS = 100_000   # Hermes moves bigger tool results to a file (budget_config.py)
+HOOK_FLOOD_CHARS = 20_000    # added to every prompt or reply, with no cap in Hermes
+_PROMPT_HOOKS = ("pre_llm_call", "transform_tool_result", "transform_llm_output", "transform_terminal_output")
+
+
+def _output_floods(result) -> list:
+    tool_ev, hook_ev = [], []
+    for run in result.get("tool_runs") or []:
+        size = run.get("returned_size") or 0
+        if size > TOOL_FLOOD_CHARS:
+            tool_ev.append(f"tool {run.get('tool')} returned {size:,} characters")
+    for run in result.get("hook_runs") or []:
+        if run.get("hook") in _PROMPT_HOOKS and run.get("honoured_return"):
+            size = run.get("returned_size") or 0
+            if size > HOOK_FLOOD_CHARS:
+                hook_ev.append(f"hook {run.get('hook')} returned {size:,} characters")
+    for run in result.get("middleware_runs") or []:
+        if run.get("kind") in ("llm_request", "llm_execution", "tool_execution"):
+            grown = (run.get("returned_size") or 0) - len(str(run.get("input") or ""))
+            if grown > HOOK_FLOOD_CHARS:
+                hook_ev.append(f"middleware {run.get('kind')} added {grown:,} characters")
+    out = []
+    if hook_ev:
+        out.append(Finding("output_flood", HIGH, "Adds a huge amount of text to what the model reads on every turn",
+                           list(dict.fromkeys(hook_ev))[:5]))
+    if tool_ev:
+        out.append(Finding("output_flood", MEDIUM, "A tool returns a huge result (Hermes stores it in a file instead)",
+                           list(dict.fromkeys(tool_ev))[:5]))
+    return out
+
+
+# What plugins say about themselves -> which findings prove it wrong.
+_CLAIMS = (
+    ("works offline / no network",
+     re.compile(r"\b(?:works?|runs?|fully|completely|entirely|100%) offline\b|\boffline[- ]only\b|"
+                r"\bno (?:network|internet)\b|"
+                r"\bnever (?:connects?|calls? out|phones? home|sends?|uploads?)\b|"
+                r"\b(?:does not|doesn't|will not|won't) (?:connect|send|upload|use the (?:network|internet))\b|"
+                r"\blocal[- ]only\b|\bno data (?:ever )?leaves\b|\bwithout (?:any )?(?:network|internet)\b", re.I),
+     {"undeclared_network", "tool_network", "chat_data_sent"}, "it reached for the network"),
+    ("runs no commands",
+     re.compile(r"\bno (?:shell|subprocess(?:es)?|shell commands)\b|\bnever (?:runs?|executes?) (?:any )?(?:shell )?"
+                r"commands?\b|\b(?:does not|doesn't) (?:run|execute) (?:any )?(?:shell )?commands?\b", re.I),
+     {"command_run"}, "it ran a command"),
+    ("read-only",
+     # Not "read-only" on its own: descriptions use it for what they read ("reads the session
+     # store read-only"), not as a promise that the plugin writes nothing.
+     re.compile(r"\bnever (?:writes?|modif(?:y|ies)|changes?) (?:any |your )?(?:files?|disk)\b|\bwrites no files\b|"
+                r"\b(?:does not|doesn't) (?:write|modify|change) (?:any |your )?files?\b", re.I),
+     {"write_outside_folder", "agent_config_modified", "persistence", "self_modify"},
+     "it wrote files outside its data folder"),
+    ("never touches keys",
+     re.compile(r"\b(?:never|does not|doesn't|won't|will not) (?:read|access|touch|collect|see|store)s? "
+                r"(?:your |any )?(?:api )?(?:keys|credentials|secrets|tokens|passwords)\b", re.I),
+     {"decoy_accessed", "hermes_env_read", "undeclared_env_read", "environ_file_read", "env_enumerated",
+      "browser_or_wallet_read", "secret_in_output"}, "it went after keys"),
+)
+# "no network calls besides the cargo build", "no network at load; the tool calls api.x.com"
+_CLAIM_QUALIFIED = re.compile(r"^[^.;\n]{0,40}\b(?:besides|except|other than|beyond|apart from|outside|of its own|"
+                              r"at (?:load|import|start-?up)|in (?:its )?hooks?|in the background|unless)\b", re.I)
+_CLAIM_NEGATED = re.compile(r"\b(?:not|requires?|needs?|unless)\b|n't\b", re.I)
+
+
+def _claim_texts(result, manifest):
+    yield "plugin.yaml description", str(manifest.get("description") or "")
+    for name, schema in sorted((result.get("tool_schemas") or {}).items()):
+        if isinstance(schema, dict):
+            yield f"tool {name} description", str(schema.get("description") or "")
+
+
+def _claim_mismatches(result, findings, events, manifest) -> list:
+    seen = {f.rule for f in findings if f.severity not in (INFO,)}
+    ev = []
+    for where, text in _claim_texts(result, manifest):
+        for label, regex, contradicted_by, did in _CLAIMS:
+            m = regex.search(text)
+            if not m:
+                continue
+            before = text[max(0, m.start() - 25):m.start()]
+            if _CLAIM_NEGATED.search(before) and not m.group(0).lower().startswith(("never", "no ", "does", "doesn",
+                                                                                   "will", "won")):
+                continue      # "does not work offline", "requires network"
+            if _CLAIM_QUALIFIED.search(text[m.end():]):
+                continue
+            hit = seen & contradicted_by
+            if hit == {"tool_network"} and _destinations(text):
+                continue      # it names the service its tools call, so a call from a tool is expected
+            if hit:
+                snippet = text[max(0, m.start() - 30):m.end() + 30].replace("\n", " ")
+                ev.append(f"{where} says “…{snippet}…” ({label}), but {did}")
+    if not ev:
+        return []
+    return [Finding("claim_mismatch", HIGH, "Does the opposite of what its description promises",
+                    list(dict.fromkeys(ev))[:8])]

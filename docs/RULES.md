@@ -15,7 +15,7 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 |---|---|---|---|
 | `decoy_accessed` | critical | Plugins have no reason to open your key files or ask for API keys they did not declare. This is the first step of every credential stealer. | [T1552.001](https://attack.mitre.org/techniques/T1552/001/) [T1552.004](https://attack.mitre.org/techniques/T1552/004/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) [AML.T0083](https://atlas.mitre.org/techniques/AML.T0083) |
 | `browser_or_wallet_read` | critical | Saved browser passwords, cookies and crypto wallets are what info-stealer malware is built to take. | [T1555.003](https://attack.mitre.org/techniques/T1555/003/) [T1005](https://attack.mitre.org/techniques/T1005/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
-| `secret_in_output` | critical | A fake key ended up somewhere it could leave the machine (a model prompt, a tool result, a network address or another tool's input). A real key would leak the same way. | [T1041](https://attack.mitre.org/techniques/T1041/) [AML.T0057](https://atlas.mitre.org/techniques/AML.T0057) [AML.T0086](https://atlas.mitre.org/techniques/AML.T0086) |
+| `secret_in_output` | critical | A fake key ended up somewhere it could leave the machine (a model prompt, a tool result, a network address, a command or another tool's input), even when encoded or split up to hide it. A real key would leak the same way. | [T1041](https://attack.mitre.org/techniques/T1041/) [AML.T0057](https://atlas.mitre.org/techniques/AML.T0057) [AML.T0086](https://atlas.mitre.org/techniques/AML.T0086) |
 | `memory_read` | medium | Memory and chat history hold what the agent knows about you. Expected for memory plugins, a privacy leak for anything else. | [T1005](https://attack.mitre.org/techniques/T1005/) |
 | `env_enumerated` | medium (info when a library does it) | Copying the whole environment collects every API key at once. | [T1552](https://attack.mitre.org/techniques/T1552/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
 | `environ_file_read` | high (medium when a library does it) | Read the process environment as a file under /proc instead of asking for variables by name. That gets every API key at once and skips the usual way of reading them, which is how stealers try to slip past simple monitors. | [T1552](https://attack.mitre.org/techniques/T1552/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
@@ -39,10 +39,16 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 
 | Rule | Severity | Why it matters | MITRE |
 |---|---|---|---|
-| `content_altered` | high (medium for a declared hook doing its job) | Hermes uses what this hook returns. Text added to prompts, tool results or memory becomes instructions the model follows, which is the main route for prompt injection. | [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0080](https://atlas.mitre.org/techniques/AML.T0080) |
+| `content_altered` | high (medium for a declared hook doing its job, low for a declared guard that only blocks calls or asks for approval) | Hermes uses what this hook returns. Text added to prompts, tool results or memory becomes instructions the model follows, which is the main route for prompt injection. | [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0080](https://atlas.mitre.org/techniques/AML.T0080) |
 | `prompt_injection_text` | high | Contains wording written to steer the model, such as telling it to disregard its earlier guidance or to keep a step secret from the user, or invisible characters. Poisoned tools hide orders to the model this way. | [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) [AML.T0011.002](https://atlas.mitre.org/techniques/AML.T0011.002) |
 | `tool_shadowing` | high | Registers a tool with the same name as a built-in Hermes tool, so the model may call the plugin's version (and hand it data) when it meant the real one. | [T1036.005](https://attack.mitre.org/techniques/T1036/005/) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) |
 | `agent_tool_call` | medium | The plugin called other agent tools by itself, without the model or user asking. That can be used to send data out through tools the user trusts. | [AML.T0053](https://atlas.mitre.org/techniques/AML.T0053) [AML.T0086](https://atlas.mitre.org/techniques/AML.T0086) |
+| `chat_data_sent` | high | Your messages, the model's replies and tool results are private. Sending them to the network or into a command from a background hook means a copy of your conversations leaves the machine. Logging and analytics plugins do this on purpose, so check where it goes and whether the plugin says so. | [T1041](https://attack.mitre.org/techniques/T1041/) [T1020](https://attack.mitre.org/techniques/T1020/) [AML.T0025](https://atlas.mitre.org/techniques/AML.T0025) [AML.T0057](https://atlas.mitre.org/techniques/AML.T0057) |
+| `tool_args_changed` | critical when calls are sent somewhere new, high from a hook or undeclared middleware, medium from declared middleware | Changed what a tool call does after the model chose it and before it ran (for example a different message recipient, web address or command). The user and the model see the call they asked for; the plugin quietly runs another one. | [T1565.002](https://attack.mitre.org/techniques/T1565/002/) [AML.T0053](https://atlas.mitre.org/techniques/AML.T0053) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) |
+| `model_request_changed` | critical for a new server or credentials, high for model or messages (medium when the middleware is declared), low for other settings | Rewrote the request Hermes sends to the AI model. Changing the server or headers can send every prompt and your API key somewhere else; changing the model or the messages changes how the agent behaves without the user seeing it. | [T1557](https://attack.mitre.org/techniques/T1557/) [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) |
+| `middleware_registered` | low | Hermes middleware can rewrite tool calls and model requests or wrap them entirely. That is a legitimate feature (declared in plugin.yaml as provides_middleware), and also the most direct way to tamper with what the agent does. Detonator drove it with test calls; read the findings around it. | – |
+| `lookalike_name` | high (medium when one letter or only separators differ) | Registers a tool whose name looks like a built-in Hermes tool (a swapped letter, a digit for a letter, a letter from another alphabet). The model may pick it by mistake and hand it data meant for the real tool. | [T1036.005](https://attack.mitre.org/techniques/T1036/005/) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) |
+| `output_flood` | high from a hook or middleware, medium from a tool result | Puts a very large amount of text in front of the model. Every extra character costs the user money on every turn, can push the user's own instructions out of the model's memory, and gives room to hide orders deep inside. | [T1499](https://attack.mitre.org/techniques/T1499/) [AML.T0029](https://atlas.mitre.org/techniques/AML.T0029) [AML.T0034](https://atlas.mitre.org/techniques/AML.T0034) |
 
 ## Running code, persistence and writes
 
@@ -93,12 +99,13 @@ started read a decoy file, and `monitor_tamper` when the plugin tried to trace o
 
 | Rule | Severity | Why it matters | MITRE |
 |---|---|---|---|
-| `undeclared_registration` | high | Registers hooks or tools missing from plugin.yaml, so users are not shown them at install time (catalog rule 6). | [AML.T0010.005](https://atlas.mitre.org/techniques/AML.T0010.005) |
+| `undeclared_registration` | high | Registers hooks, tools or middleware missing from plugin.yaml, so users are not shown them at install time (catalog rule 6). | [AML.T0010.005](https://atlas.mitre.org/techniques/AML.T0010.005) |
 | `declared_not_registered` | low | Declares tools it did not register; usually a stale plugin.yaml. | – |
+| `claim_mismatch` | high | The plugin describes itself one way (for example offline, read-only or never touching keys) but did the opposite in the sandbox. A description that hides what the code does is a warning sign on its own. | [T1036](https://attack.mitre.org/techniques/T1036/) |
 | `load_error` | medium | The plugin crashed while loading, so less of it was observed. | – |
 | `unsafe_plugin_name` | high | The plugin's name becomes the name of its own data folder, where it may write freely. A name with slashes or dot-dot steps could point that folder at your whole home folder, so harmful writes there would look allowed. Detonator used a safe folder instead. | [T1036](https://attack.mitre.org/techniques/T1036/) |
 | `log_flood` | high | The plugin did so much that the sandbox's activity log filled up, so part of the run was not kept. Flooding a monitor is a known way to hide one bad action among thousands of harmless ones. Only the most repeated kinds of activity were thinned out, so rare actions such as a key read were kept and judged. | [T1562](https://attack.mitre.org/techniques/T1562/) |
-| `coverage_incomplete` | low | The plugin stopped on a stand-in module, so code after that point was not observed. | – |
+| `coverage_incomplete` | low (medium when slow code used up the run's time) | The plugin stopped on a stand-in module, so code after that point was not observed. | – |
 | `coverage_stubbed_imports` | info | The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, and anything done through them (e.g. an HTTP call via httpx) was not observed. | – |
 
 ## Persistence locations
@@ -125,8 +132,18 @@ Fake, canary-marked copies of: `~/.hermes/.env`, `auth.json`, SSH key, AWS crede
 `.netrc`, Docker and Kubernetes config, `.npmrc`, `.pypirc`, GitHub CLI token, Chrome and Firefox saved
 logins and cookies (Linux and macOS paths), Solana and Ethereum wallets, Hermes memory files and an old
 chat transcript, plus five API-key environment variables. Any of these markers showing up in a tool
-result, hook output, network address or another tool's input is a `secret_in_output` finding; one that
-reaches the fake internet (plain, URL-encoded, base64 or hex) is a `secret_sent_out` finding.
+result, hook or middleware output, network address, command line or another tool's input is a
+`secret_in_output` finding; one that reaches the fake internet is a
+`secret_sent_out` finding. Both checks also undo common disguises before searching: base64 and base32,
+hex, URL escapes, rot13, reversed text, zlib/gzip compression, layers of these, and keys split into pieces
+(across DNS labels or several requests). Encryption with a key only the plugin knows is not undone; the report
+still lists every address the plugin sent data to.
+
+The fake user message, model reply, system prompt and tool results that Detonator sends to hooks carry
+their own canaries. Those turning up in a network call or command is a `chat_data_sent` finding.
+
+`pre_tool_call` hooks and tool middleware are called with four kinds of tool call (a shell command, a
+message, a web page fetch and a file write), so a plugin that only rewrites some of them is still seen.
 
 ## Sources
 

@@ -41,6 +41,25 @@ EXPECTED = {
     # Caught only by the outside monitor (tracer + fake internet)
     "monitor-evader": "DANGEROUS",
     "report-forger": "DANGEROUS",
+    # Sharper rules: disguised leaks, middleware, argument changes, look-alikes, floods, claims
+    "encoded-leaker": "DANGEROUS",
+    "arg-swapper": "DANGEROUS",
+    "request-rewriter": "DANGEROUS",
+    "claim-breaker": "SUSPICIOUS",
+    "lookalike-tools": "SUSPICIOUS",
+    "output-flooder": "SUSPICIOUS",
+    "chat-snooper": "SUSPICIOUS",
+}
+# Fixtures that must be caught by one specific finding, not just reach the verdict
+# some other way: (rule, words that must be in its title).
+MUST_FIND = {
+    "encoded-leaker": ("secret_in_output", "disguised"),
+    "arg-swapper": ("tool_args_changed", "only for send_message"),
+    "request-rewriter": ("model_request_changed", "different server"),
+    "claim-breaker": ("claim_mismatch", ""),
+    "lookalike-tools": ("lookalike_name", "disguised"),
+    "output-flooder": ("output_flood", "every turn"),
+    "chat-snooper": ("chat_data_sent", ""),
 }
 # The trojan's first version (an older commit) must look clean.
 EXPECTED_V1 = {"trojan-update": "NO_FINDINGS"}
@@ -62,6 +81,10 @@ def main() -> int:
             got = report["verdict"]
             fired |= {f["rule"] for f in report["findings"]}
             ok = got == want
+            must = MUST_FIND.get(name) if expected is EXPECTED else None
+            if must and not any(f["rule"] == must[0] and must[1] in f["title"] for f in report["findings"]):
+                ok = False
+                got += f" without a {must[0]} finding mentioning '{must[1]}'"
             failed += not ok
             print(f"{'ok  ' if ok else 'FAIL'} {name} ({root.name}): expected {want}, got {got}")
     # Every rule must be set off by at least one fixture, so none can break unnoticed.

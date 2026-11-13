@@ -501,7 +501,8 @@ def detonate(target: Target, outside: bool | None = None) -> dict:
                 monitor = None
                 outside_note = {"ran": False, "reason": _one_line(exc)}
         else:
-            outside_note = {"ran": False, "reason": "quick test chosen (in-process monitor only)"
+            outside_note = {"ran": False, "chosen_off": True,
+                            "reason": "quick test chosen (in-process monitor only)"
                             if outside is False else "switched off (DETONATOR_OUTSIDE=0)"}
         canary = secrets.token_hex(10).upper()
         (in_dir / "run.json").write_text(json.dumps({"canary": canary, "traced": bool(monitor_args)}),

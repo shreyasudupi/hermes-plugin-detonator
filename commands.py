@@ -25,6 +25,11 @@ USAGE = ("Usage: /detonate <owner/repo> <40-char-sha> [subdir]\n"
          "   or: /detonate <owner/repo> <old-sha> <new-sha> [subdir]   (compare two versions)\n"
          "   or: /detonate check   (is Docker ready? runs nothing)")
 APPROVE, QUICK, CANCEL = "run", "run-quick", "cancel"
+# One line each, so people can choose for themselves (no option is pushed as "recommended").
+FULL_HELP = ("inside and outside monitors: also catches plugins that hide what they do or fake "
+             "a clean result; takes a second or two longer")
+QUICK_HELP = ("inside monitor only: a little faster, but a plugin that hides what it does or "
+              "fakes its own report can fool it")
 
 
 def parse_target(raw: str):
@@ -108,6 +113,7 @@ def _write_summary_json(path: Path, repo: str, sha: str, subdir: str | None, eva
             "repo": repo, "sha": sha, "subdir": subdir or None,
             "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "verdict": evaluation.get("verdict", "ERROR"),
+            "test_mode": report.test_mode(evaluation.get("outside")),
             "findings": evaluation.get("findings") or [],
             "report_path": str(path),
         }, default=str), encoding="utf-8")
@@ -123,12 +129,16 @@ def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None, ou
     label = repo + (f" ({subdir})" if subdir else "")
     path = _report_path(repo, f"{old_sha[:8]}-vs-{new_sha[:8]}", subdir)
     path.write_text(diff.render(label, old_sha, new_sha, changes), encoding="utf-8")
-    return diff.summary(changes, old_sha, new_sha, paths=[path, old_path, new_path])
+    mode = report.test_mode(new_eval.get("outside"))
+    out = diff.summary(changes, old_sha, new_sha, paths=[path, old_path, new_path])
+    return out.replace("\n", f"\n{mode}\n", 1)
 
 
 def summary(evaluation: dict, path: Path) -> str:
     verdict = evaluation.get("verdict", "ERROR")
-    lines = [report.VERDICT_TEXT.get(verdict, verdict)]
+    lines = [report.VERDICT_TEXT.get(verdict, verdict), report.test_mode(evaluation.get("outside"))]
+    if not (evaluation.get("outside") or {}).get("ran"):
+        lines.append(report.NOT_CHECKED)
     for f in (evaluation.get("findings") or [])[:6]:
         ids = ", ".join((f.get("attack") or []) + (f.get("atlas") or []))
         lines.append(f"- [{f['severity']}] {f['title']}" + (f" ({ids})" if ids else ""))
@@ -157,10 +167,8 @@ def make_slash_handler(ctx):
         choice = ctx.ask_choice(
             approval_question(repo, sha, subdir),
             [
-                {"value": APPROVE, "label": "Run full test (recommended)",
-                 "description": "uses Docker; also watched by the outside monitor"},
-                {"value": QUICK, "label": "Run quick test",
-                 "description": "uses Docker; in-process monitor only, a little faster"},
+                {"value": APPROVE, "label": "Run full test", "description": FULL_HELP},
+                {"value": QUICK, "label": "Run quick test", "description": QUICK_HELP},
                 {"value": CANCEL, "label": "Cancel"},
             ],
         )
@@ -188,7 +196,7 @@ def setup_cli(subparser):
     subparser.add_argument("--compare-to", dest="compare_to", metavar="NEW_SHA",
                            help="also run this newer commit and report what changed")
     subparser.add_argument("--quick", action="store_true",
-                           help="quick test: in-process monitor only, without the outside monitor")
+                           help="quick test: " + QUICK_HELP + " (default is the full test: " + FULL_HELP + ")")
 
 
 def cli_handler(args) -> int:
@@ -204,6 +212,10 @@ def cli_handler(args) -> int:
               file=sys.stderr)
         return 2
     print(approval_question(repo, sha, subdir))
+    if getattr(args, "quick", False):
+        print("Quick test: " + QUICK_HELP + ". Leave out --quick for the full test.")
+    else:
+        print("Full test: " + FULL_HELP + ". Add --quick for the quick test.")
     try:
         answer = input("Type 'yes' to run: ").strip().lower()
     except (EOFError, KeyboardInterrupt):

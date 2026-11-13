@@ -30,6 +30,13 @@ MANIFEST_PATH = "/in/manifest.json"
 HOME = os.environ.get("HOME", "/tmp/home")
 HERMES_HOME = os.path.join(HOME, ".hermes")
 CALL_TIMEOUT_S = 5
+# The host stops the whole container after 180 s. A plugin whose callbacks each sleep
+# up to the per-call limit could use that to turn the run into an ERROR with no
+# findings, so a callback that times out once is not called again, and the extra
+# passes stop when this much time has gone.
+RUN_BUDGET_S = 90
+_START = time.monotonic()
+SLOW_CALLBACKS = {}   # id(callback) -> what it was registered as
 HOOK_REPEATS = 3
 SETTLE_S = 2.0
 CLOCK_SETTLE_S = 0.5
@@ -254,13 +261,21 @@ def _audit(event, args):
             if not (real.startswith(_STD_PREFIXES) or real.startswith(PLUGIN_DIR)):
                 _record("dir_list", path=real)
         elif event in ("subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork", "os.forkpty", "pty.spawn"):
-            _record("process", op=event, detail=_short(args))
+            # The command without its environment: handing the environment on to a child is
+            # how processes normally inherit it, so keys in there are not a leak.
+            env_at = {"subprocess.Popen": 3, "os.exec": 2, "os.posix_spawn": 2, "os.spawn": 3}.get(event)
+            command = args[:env_at] if env_at is not None and len(args) > env_at else args
+            _record("process", op=event, detail=_short(command, 300), command=_short(command, 2000),
+                    env_given=env_at is not None and len(args) > env_at and args[env_at] is not None)
         elif event in ("socket.connect", "socket.sendto", "socket.bind"):
-            _record("network", op=event, address=_short(args[1] if len(args) > 1 else args))
+            _record("network", op=event, address=_short(args[1] if len(args) > 1 else args, 2000))
         elif event == "socket.getaddrinfo":
-            _record("network", op=event, address=_short(args[:2]))
+            _record("network", op=event, address=_short(args[:2], 2000))
         elif event == "urllib.Request":
-            _record("network", op=event, address=_short(args[0] if args else None))
+            # (url, data, headers, method): data and headers can carry what is sent
+            url, data, headers = (list(args) + [None, None, None])[:3]
+            _record("network", op=event, address=_short(url, 2000),
+                    **({"payload": _short((data, headers), 4000)} if data or headers else {}))
         elif event in ("ctypes.dlopen", "ctypes.dlsym"):
             _record("native", op=event, detail=_short(args))
         elif event == "compile":
@@ -603,6 +618,7 @@ class MockCtx:
         self.plugin_name = plugin_name
         self.tools = {}
         self.hooks = {}
+        self.middleware = {}
         self.cli_commands = []
         self.commands = []
         self.other_calls = []
@@ -614,6 +630,11 @@ class MockCtx:
 
     def register_hook(self, hook_name, callback, *args, **kwargs):
         self.hooks.setdefault(hook_name, []).append(callback)
+
+    def register_middleware(self, kind, callback, *args, **kwargs):
+        # Hermes 0.19+: middleware can rewrite tool arguments or model requests and
+        # wrap tool execution. There is no plugin.yaml field to declare it.
+        self.middleware.setdefault(str(kind), []).append(callback)
 
     def register_cli_command(self, *args, **kwargs):
         self.cli_commands.append(_short((args, sorted(kwargs))))
@@ -634,7 +655,7 @@ class MockCtx:
         return False
 
     def dispatch_tool(self, name, args=None, **kwargs):
-        _record("dispatch_tool", tool=name, args=_short(args))
+        _record("dispatch_tool", tool=name, args=_short(args, 2000))
         return json.dumps({"error": "dispatch disabled in sandbox"})
 
     def __getattr__(self, name):
@@ -698,6 +719,22 @@ def hook_kwargs(hook):
     return out
 
 
+# Tool calls fired at pre_tool_call hooks and tool middleware, one per kind of
+# action, so a plugin that only rewrites some calls (say, only messages) is seen.
+def tool_call_scenarios():
+    return [
+        ("terminal", {"command": "ls -la", "path": "notes.txt"}),
+        ("send_message", {"action": "send", "target": "telegram:det-chat",
+                          "message": f"Here are the meeting notes [{CANARY}-USER]"}),
+        ("web_extract", {"urls": ["https://example.com/docs"]}),
+        ("write_file", {"path": "notes.txt", "content": f"draft notes [{CANARY}-USER]"}),
+    ]
+
+
+def llm_request():
+    return {"model": "test/model", "messages": _history(), "max_tokens": 1024, "temperature": 0.7}
+
+
 # Hooks whose return value Hermes honours (see Hermes hook docs).
 MODIFYING_HOOKS = {
     "pre_tool_call", "transform_tool_result", "transform_terminal_output",
@@ -738,15 +775,22 @@ def _alarm(signum, frame):
     raise _Timeout()
 
 
+def over_budget():
+    return time.monotonic() - _START > RUN_BUDGET_S
+
+
 def call_plugin(fn, *args, **kwargs):
     """Call plugin code with the monitor on and a timeout. Never raises."""
     global _ACTIVE
+    if id(fn) in SLOW_CALLBACKS:
+        return {"ok": False, "error": "skipped: timed out before"}
     signal.signal(signal.SIGALRM, _alarm)
     signal.alarm(CALL_TIMEOUT_S)
     _ACTIVE = True
     try:
         return {"ok": True, "value": fn(*args, **kwargs)}
     except _Timeout:
+        SLOW_CALLBACKS[id(fn)] = _short(getattr(fn, "__qualname__", fn), 120)
         return {"ok": False, "error": "timeout"}
     except BaseException as exc:  # includes SystemExit from hostile plugins
         return {"ok": False, "error": f"{type(exc).__name__}: {_short(str(exc), 200)}"}
@@ -755,12 +799,22 @@ def call_plugin(fn, *args, **kwargs):
         signal.alarm(0)
 
 
-def _jsonable(value):
+def _jsonable(value, limit=200_000):
     try:
-        json.dumps(value)
-        return value
+        text = json.dumps(value)
     except Exception:
-        return _short(value)
+        return _short(value, limit)
+    return value if len(text) <= limit else _short(text, limit)
+
+
+def _size(value):
+    """How many characters a returned value would put in front of the model."""
+    if value is None:
+        return 0
+    try:
+        return len(value if isinstance(value, str) else json.dumps(value, default=str))
+    except Exception:
+        return len(_short(value, 10**9))
 
 
 # --------------------------------------------------------------------------
@@ -903,6 +957,108 @@ def load_manifest():
         return json.load(f) or {}
 
 
+def fire_hooks(ctx, hook_runs, repeats, days=None):
+    """Call every registered hook `repeats` times in a row (pre_tool_call that often
+    for each tool-call scenario). Repeats stay together, as plugins that act on their
+    second call (state saved by the first) depend on that order."""
+    global _PHASE
+    for hook, callbacks in sorted(ctx.hooks.items()):
+        calls = tool_call_scenarios() if hook == "pre_tool_call" else [None]
+        for idx, cb in enumerate(callbacks):
+            for call, attempt in ((c, a) for c in calls for a in range(repeats)):
+                if id(cb) in SLOW_CALLBACKS or ((days is not None or attempt) and over_budget()):
+                    continue
+                _PHASE = f"hook:{hook}"
+                kwargs = hook_kwargs(hook)
+                if call:
+                    kwargs.update(tool_name=call[0], args=call[1])
+                pristine = copy.deepcopy(kwargs)
+                r = call_plugin(cb, **kwargs)
+                mutated = sorted(k for k in pristine if kwargs.get(k) != pristine[k])
+                run = {
+                    "hook": hook, "callback": idx, "attempt": attempt,
+                    "ok": r["ok"], "error": r.get("error"),
+                    "returned": _jsonable(r.get("value")) if r["ok"] else None,
+                    "returned_size": _size(r.get("value")) if r["ok"] else 0,
+                    "honoured_return": hook in MODIFYING_HOOKS,
+                    "mutated_args": mutated,
+                    "inputs": {k: _jsonable(pristine[k]) for k in mutated},
+                    "after": {k: _jsonable(kwargs.get(k)) for k in mutated},
+                }
+                if call:
+                    run["tool_name"] = call[0]
+                if days is not None:
+                    run["clock_days"] = days
+                hook_runs.append(run)
+
+
+def _middleware_context():
+    return {"task_id": "det-task", "session_id": "det-session", "turn_id": "det-turn",
+            "tool_call_id": "det-call", "api_request_id": "det-req", "platform": "cli",
+            "telemetry_schema_version": "hermes.observer.v1",
+            "middleware_schema_version": "hermes.middleware.v1"}
+
+
+def fire_middleware(ctx, runs, repeats, days=None):
+    """Drive middleware the way Hermes 0.19 does. Request middleware may return a
+    replacement payload; execution middleware gets a next_call that returns a canned
+    result, so we can see whether it changed the arguments, the result, or skipped
+    the real call."""
+    global _PHASE
+    for kind, callbacks in sorted(ctx.middleware.items()):
+        if kind in ("tool_request", "tool_execution"):
+            payloads = [("args", name, args) for name, args in tool_call_scenarios()]
+        else:
+            payloads = [("request", None, llm_request())]
+        for idx, cb in enumerate(callbacks):
+            for (key, tool_name, payload), attempt in ((p, a) for p in payloads for a in range(repeats)):
+                if id(cb) in SLOW_CALLBACKS or ((days is not None or attempt) and over_budget()):
+                    continue
+                _PHASE = f"middleware:{kind}"
+                original = copy.deepcopy(payload)
+                live = copy.deepcopy(payload)
+                kwargs = _middleware_context()
+                kwargs[key] = live
+                kwargs["original_" + key] = copy.deepcopy(payload)
+                if tool_name:
+                    kwargs["tool_name"] = tool_name
+                else:
+                    kwargs.update(model="test/model", provider="openrouter",
+                                  base_url="https://openrouter.ai/api/v1", api_mode="chat_completions",
+                                  api_call_count=1)
+                downstream = {}
+                execution = kind.endswith("_execution")
+                if execution:
+                    canned = (f"file1\nfile2 [{CANARY}-TOOLRESULT]" if tool_name else
+                              {"choices": [{"message": {"role": "assistant",
+                                                        "content": f"Here is a summary. [{CANARY}-ASSISTANT]"}}]})
+                    downstream["canned"] = canned
+
+                    def next_call(next_payload=None, _live=live, _canned=canned, _d=downstream):
+                        _d["called"] = _d.get("called", 0) + 1
+                        _d["payload"] = copy.deepcopy(_live if next_payload is None else next_payload)
+                        return copy.deepcopy(_canned)
+                    kwargs["next_call"] = next_call
+                r = call_plugin(cb, **kwargs)
+                run = {
+                    "kind": kind, "callback": idx, "attempt": attempt,
+                    "ok": r["ok"], "error": r.get("error"),
+                    "input": _jsonable(original),
+                    "returned": _jsonable(r.get("value")) if r["ok"] else None,
+                    "returned_size": _size(r.get("value")) if r["ok"] else 0,
+                    "mutated_in_place": live != original,
+                }
+                if tool_name:
+                    run["tool_name"] = tool_name
+                if execution:
+                    run["next_called"] = downstream.get("called", 0)
+                    run["next_payload"] = _jsonable(downstream.get("payload"))
+                    run["canned"] = _jsonable(downstream["canned"])
+                if days is not None:
+                    run["clock_days"] = days
+                runs.append(run)
+
+
 def main():
     global _PHASE
     result = {"harness_version": 2, "errors": []}
@@ -973,31 +1129,18 @@ def main():
     result["registered"] = {
         "tools": sorted(t for t in ctx.tools if t),
         "hooks": sorted(ctx.hooks),
+        "middleware": sorted(ctx.middleware),
         "cli_commands": ctx.cli_commands,
         "commands": ctx.commands,
         "other_ctx_calls": sorted(set(ctx.other_calls)),
     }
 
-    # 3. synthetic hooks
-    hook_runs = []
-    for hook, callbacks in sorted(ctx.hooks.items()):
-        for idx, cb in enumerate(callbacks):
-            for attempt in range(HOOK_REPEATS):
-                _PHASE = f"hook:{hook}"
-                kwargs = hook_kwargs(hook)
-                pristine = copy.deepcopy(kwargs)
-                r = call_plugin(cb, **kwargs)
-                mutated = sorted(k for k in pristine if kwargs.get(k) != pristine[k])
-                hook_runs.append({
-                    "hook": hook, "callback": idx, "attempt": attempt,
-                    "ok": r["ok"], "error": r.get("error"),
-                    "returned": _jsonable(r.get("value")) if r["ok"] else None,
-                    "honoured_return": hook in MODIFYING_HOOKS,
-                    "mutated_args": mutated,
-                    "inputs": {k: _jsonable(pristine[k]) for k in mutated},
-                    "after": {k: _jsonable(kwargs.get(k)) for k in mutated},
-                })
+    # 3. synthetic hooks and middleware
+    hook_runs, middleware_runs = [], []
+    fire_hooks(ctx, hook_runs, HOOK_REPEATS)
+    fire_middleware(ctx, middleware_runs, HOOK_REPEATS)
     result["hook_runs"] = hook_runs
+    result["middleware_runs"] = middleware_runs
 
     # 4. synthetic tool calls
     tool_runs = []
@@ -1010,7 +1153,10 @@ def main():
         r = call_plugin(handler, args, task_id="det-task")
         tool_runs.append({
             "tool": tool, "args": args, "ok": r["ok"], "error": r.get("error"),
-            "returned": _short(r.get("value"), 2000) if r["ok"] else None,
+            # Kept long enough that a key hidden after a page of padding is still seen;
+            # anything longer is reported as an output flood by its size.
+            "returned": _short(r.get("value"), 200_000) if r["ok"] else None,
+            "returned_size": _size(r.get("value")) if r["ok"] else 0,
         })
     result["tool_runs"] = tool_runs
 
@@ -1034,25 +1180,11 @@ def main():
         if days and mid is None:
             mid = {p: _digest(p) for p in ALL_DECOY_PATHS}
         set_clock(days)
-        for hook, callbacks in sorted(ctx.hooks.items()):
-            for idx, cb in enumerate(callbacks):
-                _PHASE = f"hook:{hook}"
-                kwargs = hook_kwargs(hook)
-                pristine = copy.deepcopy(kwargs)
-                r = call_plugin(cb, **kwargs)
-                mutated = sorted(k for k in pristine if kwargs.get(k) != pristine[k])
-                hook_runs.append({
-                    "hook": hook, "callback": idx, "attempt": 0, "clock_days": days,
-                    "ok": r["ok"], "error": r.get("error"),
-                    "returned": _jsonable(r.get("value")) if r["ok"] else None,
-                    "honoured_return": hook in MODIFYING_HOOKS,
-                    "mutated_args": mutated,
-                    "inputs": {k: _jsonable(pristine[k]) for k in mutated},
-                    "after": {k: _jsonable(kwargs.get(k)) for k in mutated},
-                })
+        fire_hooks(ctx, hook_runs, 1, days)
+        fire_middleware(ctx, middleware_runs, 1, days)
         for tool, info in sorted((k, v) for k, v in ctx.tools.items() if k):
             handler = info.get("handler")
-            if callable(handler):
+            if callable(handler) and not over_budget():
                 _PHASE = f"tool:{tool}"
                 r = call_plugin(handler, sample_args(info.get("schema")), task_id="det-task")
                 clock_runs.append({"tool": tool, "clock_days": days, "ok": r["ok"]})
@@ -1064,6 +1196,8 @@ def main():
             pass
         _ACTIVE = False
     result["clock_jumps"] = list(CLOCK_JUMPS)
+    result["slow_callbacks"] = sorted(SLOW_CALLBACKS.values())
+    result["over_time_budget"] = over_budget()
     result["clock_runs"] = clock_runs
     _PHASE = "done"
     release_fd()

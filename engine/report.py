@@ -31,13 +31,31 @@ CAVEAT_NO_OUTSIDE = (
 )
 
 
+NOT_CHECKED = (
+    "Not checked without the outside monitor: a plugin that hides what it does from the inside "
+    "monitor (for example with C code), fakes a clean result, or sends keys out in ways the inside "
+    "monitor cannot see. A clean quick test is weaker evidence than a clean full test."
+)
+
+
+def test_mode(summary: dict | None) -> str:
+    """One line saying how strong this result is: full or quick test."""
+    s = summary or {}
+    if s.get("ran"):
+        return "Test mode: full (inside monitor and outside monitor)."
+    if s.get("chosen_off"):
+        return "Test mode: quick (inside monitor only; the outside monitor was not used)."
+    return ("Test mode: full was asked for, but the outside monitor could not start, "
+            "so only the inside monitor watched.")
+
+
 def outside_lines(summary: dict | None) -> list:
     """The report's "Outside monitor" section."""
     s = summary or {}
     lines = ["## Outside monitor", ""]
     if not s.get("ran"):
         lines += [f"Did not run: {s.get('reason') or 'unknown reason'}. Only the in-process monitor "
-                  "watched this plugin.", ""]
+                  "watched this plugin.", "", NOT_CHECKED, ""]
         return lines
     if s.get("traced"):
         lines.append("- Tracer: attached before the plugin loaded and followed every thread and program it started.")
@@ -73,6 +91,8 @@ def render(label: str, evaluation: dict, raw: dict | None = None) -> str:
         f"# Detonator report: {label}",
         "",
         f"**Verdict: {VERDICT_TEXT.get(verdict, verdict)}**",
+        "",
+        f"**{test_mode(evaluation.get('outside'))}**",
         "",
         f"_Generated {_dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}. "
         "Verdict decided by deterministic rules only._",
