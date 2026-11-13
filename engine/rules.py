@@ -198,6 +198,21 @@ RULES = {
         "waiting for a date, a keyword or a real key (a time bomb or trigger). Often it is just a path the "
         "test did not reach, so read that code before installing.",
         ("T1480", "T1497.003"), ()),
+    # ---- outside monitor (separate tracer and fake-internet containers)
+    "secret_sent_out": Rule(
+        "A fake key actually reached the fake internet: the plugin sent it over the network (in a web "
+        "request, a raw connection or a DNS lookup). With real keys, they would now be in someone "
+        "else's hands.",
+        ("T1041", "T1048"), ("AML.T0025", "AML.T0055")),
+    "monitor_blind_spot": Rule(
+        "The outside monitor, which the plugin cannot reach, saw the plugin's own process do this, but "
+        "Detonator's monitor inside the plugin's process recorded nothing. Honest code does not slip "
+        "past the inside monitor; code written to hide from it (or to switch it off) does.",
+        ("T1562.001", "T1106"), ()),
+    "result_forged": Rule(
+        "Something other than Detonator wrote the sandbox's result file. A plugin that writes its own "
+        "result is trying to hand in a fake clean report.",
+        ("T1565.001", "T1562.001"), ()),
     "coverage_stubbed_imports": Rule(
         "The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, "
         "and anything done through them (e.g. an HTTP call via httpx) was not observed."),
@@ -311,8 +326,29 @@ def _as_list(value):
 
 
 def evaluate(result: dict) -> dict:
-    """Judge one detonation. When the harness also ran the plugin with its clock moved
-    forward, anything that only showed up then is marked as time-triggered."""
+    """Judge one detonation: what the in-process monitor saw (with the clock jumps), then
+    what the outside monitor saw that the plugin could not hide or fake."""
+    full = _evaluate_inside(result or {})
+    extra = _outside_findings(result or {})
+    full["outside"] = outside_summary(result or {})
+    if not extra:
+        return full
+    errored = full["verdict"] == VERDICT_ERROR
+    full["findings"] = sorted((full.get("findings") or []) + [f.to_dict() for f in extra],
+                              key=lambda f: SEVERITY_ORDER.index(f["severity"]))
+    verdict = _verdict([Finding(**f) for f in full["findings"]])
+    if errored:
+        if verdict == VERDICT_NO_FINDINGS:
+            return full
+        full["summary"] = ("The sandbox harness did not finish, so the in-process record is missing, "
+                           "but the outside monitor saw what is listed below.")
+    full["verdict"] = verdict
+    return full
+
+
+def _evaluate_inside(result: dict) -> dict:
+    """The in-process monitor's evidence. When the harness also ran the plugin with its clock
+    moved forward, anything that only showed up then is marked as time-triggered."""
     full = _evaluate(result)
     jumps = sorted({e["clock_days"] for e in result.get("events") or [] if e.get("clock_days")} |
                    {h["clock_days"] for h in result.get("hook_runs") or [] if h.get("clock_days")})
@@ -493,7 +529,7 @@ def _evaluate(result: dict) -> dict:
     if passive:
         add(Finding("undeclared_network", HIGH,
                     "Reached for the network while loading or from a background hook "
-                    "(the sandbox has no network; nothing left the box)", _net_evidence(passive)))
+                    "(the sandbox has no real network; nothing left the box)", _net_evidence(passive)))
     if on_call:
         add(Finding("tool_network", MEDIUM,
                     "Its tools tried to reach these hosts when called; check they match what the "
@@ -855,6 +891,223 @@ def _common_home(decoy_dirs):
         if d.endswith("/.hermes"):
             return posixpath.dirname(d)
     return None
+
+
+# --------------------------------------------------------------------------
+# Outside monitor: evidence from containers the plugin cannot reach
+# --------------------------------------------------------------------------
+_ENVIRON_PATH = re.compile(r"^/pro" r"c/(?:self|thread-self|\d+)(?:/task/\d+)?/environ$")
+# Fake values Detonator puts in inputs (tool arguments, prompts), not secrets: they carry the
+# canary followed by one of these tags.
+_INPUT_TAGS = ("-ARG", "-USER", "-SYSTEM", "-TOOLRESULT", "-TERMINAL", "-ASSISTANT")
+_RESULT_FILE = "/out/result.json"
+_PHASE_PREFIX = "/detonator-phase/"
+# Credential files a well-known program reads for its own login. When a program the plugin
+# started reads its own one, that is the program working normally (still worth a look, since a
+# real key would be in reach); any other decoy read by a program is treated as theft.
+_OWN_CREDENTIALS = {
+    "pip": (".netrc", ".pypirc", ".config/pip"), "pip3": (".netrc", ".pypirc", ".config/pip"),
+    "uv": (".netrc", ".pypirc"), "poetry": (".netrc", ".pypirc"), "twine": (".netrc", ".pypirc"),
+    "git": (".git-credentials", ".netrc", ".gitconfig", ".config/git"), "curl": (".netrc",), "wget": (".netrc",),
+    "npm": (".npmrc",), "npx": (".npmrc",), "docker": (".docker/",), "kubectl": (".kube/",),
+    "aws": (".aws/",), "gh": (".config/gh/",), "ssh": (".ssh/",), "scp": (".ssh/",),
+}
+
+
+def _decoded_views(text: str) -> list:
+    """The text plus the common ways malware wraps a key before sending it (URL encoding,
+    base64, hex), so an encoded key is still recognised."""
+    import base64
+    import binascii
+    from urllib.parse import unquote_plus
+
+    views = [text, unquote_plus(text)]
+    for run in re.findall(r"[A-Za-z0-9+/_-]{16,}={0,2}", text)[:200]:
+        for decode in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                views.append(decode(run + "=" * (-len(run) % 4)).decode("latin-1"))
+                break
+            except (binascii.Error, ValueError):
+                continue
+    for run in re.findall(r"(?:[0-9a-fA-F]{2}){16,}", text)[:200]:
+        try:
+            views.append(bytes.fromhex(run).decode("latin-1"))
+        except ValueError:
+            pass
+    return views
+
+
+def _secret_hits(text: str, canary: str) -> bool:
+    """True when the text carries a fake key (the canary not followed by an input tag)."""
+    if not canary or not text:
+        return False
+    needle = canary.lower()
+    for view in _decoded_views(text):
+        low = view.lower()
+        start = 0
+        while True:
+            i = low.find(needle, start)
+            if i < 0:
+                break
+            after = view[i + len(needle): i + len(needle) + 12].upper()
+            if not after.startswith(_INPUT_TAGS):
+                return True
+            start = i + 1
+    return False
+
+
+def _outside_findings(result: dict) -> list:
+    out = result.get("outside") or {}
+    if not isinstance(out, dict) or not out.get("ran"):
+        return []
+    findings: list[Finding] = []
+    canary = str(out.get("canary") or "")
+    sink = out.get("sink") or {}
+    trace = out.get("trace") or {}
+    events = trace.get("events") or []
+    start = trace.get("start_index")
+
+    # ---- secrets that reached the fake internet (or left by any socket the tracer saw)
+    sent = []
+    for e in sink.get("tcp") or []:
+        if _secret_hits(str(e.get("data") or ""), canary):
+            sent.append(f'sent to {_safe_name(e.get("host"), 80)}:{e.get("port")} '
+                        f'({e.get("bytes")} bytes): {str(e.get("data"))[:160]!r}')
+    for e in sink.get("dns") or []:
+        if _secret_hits(str(e.get("name") or ""), canary):
+            sent.append(f'hidden in a DNS lookup: {str(e.get("name"))[:160]}')
+    for e in events:
+        if e.get("call") in ("sendto", "sendmsg") and e.get("ip") and _secret_hits(str(e.get("data") or ""), canary):
+            item = f'sent to {e.get("ip")}:{e.get("port")} by process {e.get("pid")}'
+            if not any(e.get("ip") in s for s in sent):
+                sent.append(item)
+    if sent:
+        findings.append(Finding("secret_sent_out", CRITICAL,
+                                "Sent a fake key over the network (caught by the fake internet)", sent[:10]))
+
+    if start is None:
+        return findings
+    plugin_events = events[start + 1:]
+    inside = result.get("events") or []
+    seen_paths = {str(e.get("path")) for e in inside
+                  if e.get("kind") in ("file_read", "file_write", "environ_file_read", "sandbox_probe",
+                                       "recon_read", "file_modify", "dir_list")}
+    inside_environ = any(e.get("kind") == "environ_file_read" for e in inside)
+    inside_procs = any(e.get("kind") == "process" for e in inside)
+    inside_net = " ".join(str(e.get("address")) for e in inside if e.get("kind") == "network")
+    decoy_paths = set(result.get("decoy_paths") or [])
+    home = str(out.get("home") or result.get("home") or "")
+    data_root = posixpath.join(home, ".hermes", "plugin-data") if home else None
+    fatal = bool(result.get("fatal"))
+
+    def sensitive(path: str) -> bool:
+        if path in decoy_paths or _ENVIRON_PATH.match(path):
+            return True
+        # Without the harness's own record (it was killed), anything in the home folder outside
+        # the plugin's data folder counts.
+        return fatal and bool(home) and _under(path, [home]) and not (data_root and _under(path, [data_root]))
+
+    hidden, child_reads, forged, tamper = [], [], [], []
+    programs = {e.get("proc", e.get("pid")): posixpath.basename(str((e.get("argv") or [e.get("path")])[0] or ""))
+                for e in plugin_events if e.get("call") in ("execve", "execveat") and e.get("ok")}
+    for j, e in enumerate(plugin_events, start + 1):
+        call, path = e.get("call"), str(e.get("path") or "")
+        if call in ("open", "openat", "openat2", "creat"):
+            if path.startswith(_PHASE_PREFIX):
+                continue
+            if path == _RESULT_FILE and e.get("write"):
+                forged.append((j, e))
+                continue
+            if not sensitive(path):
+                continue
+            if not e.get("in_harness"):
+                child_reads.append((programs.get(e.get("proc", e.get("pid"))) or "a program", path))
+            elif path not in seen_paths and not (_ENVIRON_PATH.match(path) and inside_environ):
+                hidden.append(f'{"wrote" if e.get("write") else "opened"} {path}')
+        elif call in ("connect", "sendto") and e.get("in_harness") and e.get("ip") and e.get("ok"):
+            ip, port = str(e.get("ip")), e.get("port")
+            if ip in ("127.0.0.1", "::1") and port == 53:
+                continue  # the system's own name lookups; the inside monitor logs getaddrinfo instead
+            if f"'{ip}', {port}" not in inside_net:
+                hidden.append(f"connected to {ip}:{port}")
+        elif call in ("execve", "execveat") and e.get("ok") and not inside_procs:
+            hidden.append("started " + " ".join(e.get("argv") or [path])[:160])
+        elif call in ("ptrace", "process_vm_readv", "process_vm_writev"):
+            tamper.append(f'{call}({str(e.get("detail"))[:80]})')
+    hidden = list(dict.fromkeys(hidden))
+    if hidden:
+        severe = any(h.startswith(("opened", "wrote")) for h in hidden)
+        findings.append(Finding("monitor_blind_spot", CRITICAL if severe else HIGH,
+                                "Did things the in-process monitor did not record (seen only from outside)",
+                                hidden[:12]))
+    own, stolen = set(), set()
+    for prog, path in child_reads:
+        rel = path[len(home) + 1:] if home and path.startswith(home + "/") else path
+        mine = _OWN_CREDENTIALS.get(prog, ())
+        (own if any(rel == m or rel.startswith(m.rstrip("/") + "/") for m in mine) else stolen).add(f"{prog}: {path}")
+    if stolen:
+        findings.append(Finding("decoy_accessed", CRITICAL,
+                                "A program it started read decoy secret files (seen by the outside monitor)",
+                                sorted(stolen)[:12]))
+    if own:
+        findings.append(Finding("decoy_accessed", HIGH,
+                                "A program it started read its own login file, so a real key would be in reach "
+                                "(seen by the outside monitor)", sorted(own)[:12],
+                                why="Tools such as pip, git and curl read their own credential files when they "
+                                    "connect. That is normal for the tool, but the plugin chose to run it, and "
+                                    "with real files the key would be loaded into a process the plugin controls."))
+    done = trace.get("done_index")
+    fatal_mark = next((i for i, e in enumerate(events)
+                       if e.get("in_harness") and e.get("path") == _PHASE_PREFIX + "harness-fatal"), None)
+    limit = min(i for i in (done, fatal_mark) if i is not None) if (done, fatal_mark) != (None, None) else None
+    early = {j for j, _ in forged if limit is None or j < limit}
+    if len(forged) > 1 or early:
+        findings.append(Finding("result_forged", CRITICAL,
+                                "Wrote Detonator's result file itself (a forged report)",
+                                [f'process {e.get("pid")} opened {_RESULT_FILE} for writing'
+                                 f'{" before the run finished" if j in early else ""}' for j, e in forged][:5]))
+    if tamper:
+        findings.append(Finding("monitor_tamper", HIGH,
+                                "Tried to trace or read the memory of another process (seen from outside)",
+                                sorted(set(tamper))[:8]))
+    return findings
+
+
+def _connection_lines(tcp: list) -> list:
+    groups: dict = {}
+    for e in tcp:
+        key = f'{_safe_name(e.get("host"), 80)}:{e.get("port")}'
+        n, sent = groups.get(key, (0, 0))
+        groups[key] = (n + 1, sent + int(e.get("bytes") or 0))
+    return [f"{k} ({n} time{'s' if n > 1 else ''}, {sent} bytes sent)" for k, (n, sent) in groups.items()][:20]
+
+
+def outside_summary(result: dict) -> dict:
+    """What the outside monitor ran and saw, for the report (not a judgement)."""
+    out = result.get("outside") or {}
+    if not isinstance(out, dict) or not out:
+        return {"ran": False, "reason": "not part of this run"}
+    if not out.get("ran"):
+        return {"ran": False, "reason": str(out.get("reason") or "unknown")[:400]}
+    sink = out.get("sink") or {}
+    trace = out.get("trace") or {}
+    tracer = out.get("tracer") or {}
+    events = trace.get("events") or []
+    start = trace.get("start_index")
+    after = events[start + 1:] if start is not None else []
+    programs = [" ".join(e.get("argv") or [str(e.get("path"))])[:120] for e in after
+                if e.get("call") in ("execve", "execveat") and e.get("ok")]
+    return {
+        "ran": True,
+        "traced": start is not None,
+        "tracer_problem": tracer.get("error") or (None if start is not None else
+                                                  "the tracer did not attach before the plugin loaded"),
+        "trace_truncated": bool(tracer.get("truncated")),
+        "fake_internet": bool(sink.get("ready")),
+        "lookups": sorted({_safe_name(e.get("name"), 80) for e in sink.get("dns") or []})[:20],
+        "connections": _connection_lines(sink.get("tcp") or []),
+        "programs": list(dict.fromkeys(programs))[:10],
+    }
 
 
 def _is_loopback(address) -> bool:

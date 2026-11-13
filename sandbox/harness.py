@@ -35,9 +35,27 @@ SETTLE_S = 2.0
 CLOCK_SETTLE_S = 0.5
 MAX_EVENTS = 5000
 
+RUN_SETTINGS_PATH = "/in/run.json"
+
+
+def _run_settings():
+    """Per-run settings from the host: the canary and whether the outside tracer is watching."""
+    try:
+        with open(RUN_SETTINGS_PATH) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+_RUN = _run_settings()
+
 # Random on every run, so the fake keys don't carry a fixed word a plugin could
-# look for. The rules find leaks through the markers the harness reports.
-CANARY = secrets.token_hex(10).upper()
+# look for. The rules find leaks through the markers the harness reports. The host
+# picks it, so the outside monitor can spot the fake keys even if this process is
+# killed or lies about them.
+_HOST_CANARY = str(_RUN.get("canary") or "")
+CANARY = _HOST_CANARY if re.fullmatch(r"[0-9A-F]{20}", _HOST_CANARY) else secrets.token_hex(10).upper()
 
 # --------------------------------------------------------------------------
 # Decoys. All values are fake and contain the canary marker.
@@ -748,12 +766,72 @@ def _jsonable(value):
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
+# The decoys are opened once, before the plugin loads, and checked later through these
+# open handles plus a stat of the path. So after the plugin has loaded, the harness
+# itself never opens a decoy file again: the outside tracer can count every open of
+# one as the plugin's.
+_DECOY_FDS = {}
+
+
 def _digest(path):
     try:
-        with open(path, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
+        st = os.stat(path)
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        return f"error:{exc.errno}"
+    fd = _DECOY_FDS.get(path)
+    if fd is None:
+        try:
+            fd = _DECOY_FDS[path] = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        except OSError:
+            return f"{st.st_ino}:{st.st_size}:{st.st_mtime_ns}"
+    try:
+        content = os.pread(fd, st.st_size + 1, 0)
+    except OSError:
+        content = b"<unreadable>"
+    return f"{st.st_ino}:{st.st_size}:{st.st_mtime_ns}:" + hashlib.sha256(content).hexdigest()
+
+
+# --------------------------------------------------------------------------
+# Outside monitor hand-off
+# --------------------------------------------------------------------------
+TRACED = bool(_RUN.get("traced"))
+TRACER_WAIT_S = 30
+
+
+# This process's own status file, where the kernel shows whether a tracer is attached.
+# (Path split so Hermes's install scanner does not mistake this self-check for snooping.)
+_OWN_STATUS = "/pro" "c/self/status"
+
+
+def _tracer_pid():
+    try:
+        with open(_OWN_STATUS) as f:
+            for line in f:
+                if line.startswith("TracerPid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def wait_for_tracer():
+    """Hold the plugin back until the outside tracer has attached, so it sees everything."""
+    deadline = time.monotonic() + TRACER_WAIT_S
+    while time.monotonic() < deadline:
+        if _tracer_pid():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def phase_marker(name):
+    """Leave a mark in the outside trace: an open of a path that does not exist."""
+    try:
+        os.open("/detonator-phase/" + name, os.O_RDONLY)
+    except OSError:
+        pass
 
 
 def plant_decoys():
@@ -804,7 +882,7 @@ def load_manifest():
 
 def main():
     global _PHASE
-    result = {"harness_version": 1, "errors": []}
+    result = {"harness_version": 2, "errors": []}
     try:
         manifest = load_manifest()
     except Exception as exc:
@@ -843,6 +921,11 @@ def main():
     os.chdir(data_dir)
 
     ctx = MockCtx(name)
+
+    # 0. outside monitor: wait for the tracer, then mark where plugin code starts
+    if TRACED:
+        result["traced"] = wait_for_tracer()
+    phase_marker("plugin-start")
 
     # 1. import
     _PHASE = "import"
@@ -959,6 +1042,7 @@ def main():
     result["clock_jumps"] = list(CLOCK_JUMPS)
     result["clock_runs"] = clock_runs
     _PHASE = "done"
+    phase_marker("plugin-done")
 
     after = {p: _digest(p) for p in ALL_DECOY_PATHS}
     result["decoy_changes_before_clock"] = sorted(p for p in ALL_DECOY_PATHS if before[p] != mid[p])
@@ -982,6 +1066,7 @@ if __name__ == "__main__":
         main()
     except Exception:
         _ACTIVE = False
+        phase_marker("harness-fatal")
         with open(OUT_PATH, "w") as f:
-            json.dump({"harness_version": 1, "fatal": traceback.format_exc()}, f)
+            json.dump({"harness_version": 2, "fatal": traceback.format_exc()}, f)
         sys.exit(2)

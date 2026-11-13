@@ -77,7 +77,8 @@ def test_check_reports_ready_and_missing_image(monkeypatch):
     monkeypatch.setattr(runner, "_run", fake_run)
     out = runner.docker_check()
     assert out.startswith("Docker: ready.") and "not built yet" in out
-    assert calls == ["info", "image"]  # read-only: no build, pull or run
+    assert "Outside monitor image: not built yet" in out
+    assert calls == ["info", "image", "image"]  # read-only: no build, pull or run
 
 
 def test_slash_check_runs_nothing_and_asks_nothing(monkeypatch):
