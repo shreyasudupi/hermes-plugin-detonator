@@ -52,8 +52,15 @@ In the Hermes chat:
 /detonate <owner/repo> <40-char-sha> [subdir]
 ```
 
-Detonator asks before it does anything. Pick **Run full test (recommended)**, or **Run quick
-test** to skip the outside monitor. The first run builds the sandbox images (a minute or two);
+Detonator asks before it does anything, and you choose the test:
+
+- **Run full test**: inside and outside monitors. It also catches plugins that hide what they do
+  or fake a clean result, and takes a second or two longer.
+- **Run quick test**: inside monitor only. A little faster, but a plugin that hides what it does or
+  fakes its own report can fool it.
+
+Every report starts with the test mode it used, and a quick test's report lists what it did not
+check, so a clean quick result is not mistaken for a clean full one. The first run builds the sandbox images (a minute or two);
 after that a run takes seconds:
 
 ```
@@ -181,8 +188,8 @@ The outside monitor is on by default and adds a second or two to a run. Its imag
 once, next to the sandbox image (it installs `strace` from Debian, so the first build needs
 the internet). If it cannot start, the plugin is still tested by the inside monitor and the
 report says plainly that the outside monitor did not run. To skip it on purpose, pick **Run
-quick test** when `/detonate` asks (or `hermes detonate --quick`); the report then says the
-outside monitor was not used. `DETONATOR_OUTSIDE=0` switches it off for every run.
+quick test** when `/detonate` asks (or `hermes detonate --quick`); the report then says at the
+top that it was a quick test and lists what that did not check. `DETONATOR_OUTSIDE=0` switches it off for every run.
 
 ### Clock jump and code that stayed quiet
 
@@ -311,8 +318,9 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   `secret_sent_out`, `monitor_blind_spot` and `result_forged`. Programs the plugin starts are
   now followed too, and a plugin that kills the sandbox is judged on the outside evidence.
   The report has a new "Outside monitor" section listing names looked up, connections and
-  programs started. The approval prompt now offers a full test (default) or a quick test
-  without the outside monitor.
+  programs started. The approval prompt lets you choose a full test or a quick test (without the
+  outside monitor), with one line on what each catches; every report starts with its test mode,
+  and a quick test's report lists what it did not check.
   - **Sharper rules.** Leaked decoy keys are now found, by both monitors, even when a plugin
   disguises them (base64, base32, hex, URL escapes, rot13, reversed, zlib/gzip, layers of these, or a
   key cut into pieces across DNS lookups or requests), and in command lines too. The sandbox now drives

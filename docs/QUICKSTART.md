@@ -78,9 +78,16 @@ In the Hermes chat:
 /detonate <owner/repo> <40-char-sha> [subdir]
 ```
 
-Detonator asks first. Choose the run option: **Run in sandbox** in v0.2.3; from v0.3.0 the
-prompt offers **Run full test (recommended)** or **Run quick test** (faster, but skips the outside
-monitor). The very first run builds the sandbox image, which
+Detonator asks first. Choose the run option: **Run in sandbox** in v0.2.3. From v0.3.0 you
+choose between two tests:
+
+- **Run full test**: the inside and outside monitors. It also catches plugins that hide what they
+  do or fake a clean result, and takes a second or two longer.
+- **Run quick test**: the inside monitor only. A little faster, but a plugin that hides what it does
+  or fakes its own report can fool it.
+
+Every report starts with the test mode it used, and a quick test's report lists what it did not
+check. The very first run builds the sandbox image, which
 takes a minute or two; after that a run takes seconds.
 
 > **Desktop app:** the very first run can say "request timed out after 30s" while the image builds,

@@ -34,6 +34,7 @@ class FakeCtx:
 
     def ask_choice(self, question, choices):
         self.asked.append(question)
+        self.choices = choices
         return self.choice
 
 
@@ -144,3 +145,35 @@ def test_report_tool_returns_saved_findings_as_untrusted_data(monkeypatch, tmp_p
     assert json.loads(handler({"sha": SHA[:8]}))["repo"] == "a/b"
     assert "error" in json.loads(handler({"repo": "other/repo"}))
     assert "error" in json.loads(handler({"sha": "not-hex"}))
+
+
+def test_choice_explains_both_tests_without_pushing_one(monkeypatch, tmp_path):
+    plugin = _load_plugin()
+    ctx = FakeCtx(choice="cancel")
+    plugin.register(ctx)
+    ctx.commands["detonate"](f"a/b {SHA}")
+    opts = {o["value"]: o for o in ctx.choices}
+    assert "recommended" not in (opts["run"]["label"] + opts["run-quick"]["label"]).lower()
+    assert "fake" in opts["run"]["description"] and "fool" in opts["run-quick"]["description"]
+
+
+def test_report_says_which_test_ran():
+    from engine import report
+    full = report.render("a/b", {"verdict": "NO_FINDINGS", "findings": [], "outside": {"ran": True}})
+    quick = report.render("a/b", {"verdict": "NO_FINDINGS", "findings": [],
+                                  "outside": {"ran": False, "chosen_off": True, "reason": "quick test chosen"}})
+    broken = report.render("a/b", {"verdict": "NO_FINDINGS", "findings": [],
+                                   "outside": {"ran": False, "reason": "docker said no"}})
+    assert "Test mode: full (" in full.split("##")[0] and report.NOT_CHECKED not in full
+    assert "Test mode: quick" in quick.split("##")[0] and report.NOT_CHECKED in quick
+    assert "could not start" in broken.split("##")[0] and report.NOT_CHECKED in broken
+
+
+def test_chat_summary_of_a_quick_test_says_what_was_not_checked(tmp_path):
+    plugin = _load_plugin()
+    out = plugin.commands.summary({"verdict": "NO_FINDINGS", "findings": [],
+                                   "outside": {"ran": False, "chosen_off": True}}, tmp_path / "r.md")
+    assert "Test mode: quick" in out and "Not checked without the outside monitor" in out
+    out = plugin.commands.summary({"verdict": "NO_FINDINGS", "findings": [], "outside": {"ran": True}},
+                                  tmp_path / "r.md")
+    assert "Test mode: full" in out and "Not checked" not in out

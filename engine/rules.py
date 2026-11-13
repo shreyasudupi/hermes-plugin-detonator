@@ -1245,7 +1245,8 @@ def outside_summary(result: dict) -> dict:
     if not isinstance(out, dict) or not out:
         return {"ran": False, "reason": "not part of this run"}
     if not out.get("ran"):
-        return {"ran": False, "reason": str(out.get("reason") or "unknown")[:400]}
+        return {"ran": False, "reason": str(out.get("reason") or "unknown")[:400],
+                "chosen_off": bool(out.get("chosen_off"))}
     sink = out.get("sink") or {}
     trace = out.get("trace") or {}
     tracer = out.get("tracer") or {}

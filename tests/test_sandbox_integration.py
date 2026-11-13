@@ -36,7 +36,7 @@ def test_run_falls_back_to_inside_only_when_the_outside_monitor_cannot_start(mon
     assert not raw.get("fatal"), raw.get("fatal")
     out = rules.evaluate(raw)
     assert out["verdict"] == "NO_FINDINGS"
-    assert out["outside"] == {"ran": False, "reason": "could not build the monitor image"}
+    assert out["outside"] == {"ran": False, "reason": "could not build the monitor image", "chosen_off": False}
 
 
 def test_sandbox_flags_are_locked_down(tmp_path):
