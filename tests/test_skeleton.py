@@ -189,3 +189,13 @@ def test_report_tool_handles_reports_from_before_test_modes(monkeypatch, tmp_pat
     plugin.register(ctx)
     out = json.loads(ctx.tools["detonator_report"][2]({}))
     assert out["test_mode"].startswith("unknown")
+
+
+def test_quick_comparison_says_what_was_not_checked(monkeypatch, tmp_path):
+    plugin = _load_plugin()
+    c = plugin.commands
+    quick = {"verdict": "NO_FINDINGS", "findings": [], "outside": {"ran": False, "chosen_off": True}}
+    monkeypatch.setattr(c, "run_detonation", lambda *a, **k: (quick, "", tmp_path / "r.md", {}))
+    monkeypatch.setattr(c, "_report_path", lambda *a: tmp_path / "d.md")
+    out = c.run_comparison("a/b", SHA, SHA, None, outside=False)
+    assert "Test mode: quick" in out and "Not checked without the outside monitor" in out

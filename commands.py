@@ -130,6 +130,8 @@ def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None, ou
     path = _report_path(repo, f"{old_sha[:8]}-vs-{new_sha[:8]}", subdir)
     path.write_text(diff.render(label, old_sha, new_sha, changes), encoding="utf-8")
     mode = report.test_mode(new_eval.get("outside"))
+    if not (new_eval.get("outside") or {}).get("ran"):
+        mode += "\n" + report.NOT_CHECKED
     out = diff.summary(changes, old_sha, new_sha, paths=[path, old_path, new_path])
     return out.replace("\n", f"\n{mode}\n", 1)
 
