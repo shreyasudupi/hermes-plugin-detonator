@@ -15,6 +15,7 @@ kernel still has to do the work, and that is what this sees.
 
 import json
 import os
+import posixpath  # trace paths are Linux paths, whatever machine runs the tests
 import re
 import subprocess
 import sys
@@ -62,7 +63,7 @@ def important(line):
     if not m:
         return True  # programs, connections, process calls, unfinished/resumed lines
     base, path = m.group(1) or "/", m.group(2)
-    full = os.path.normpath(path if path.startswith("/") else os.path.join(base, path))
+    full = posixpath.normpath(path if path.startswith("/") else posixpath.join(base, path))
     return bool(_IMPORTANT_PATH.match(full)) and "/.hermes/plugin-data/" not in full + "/"
 
 
