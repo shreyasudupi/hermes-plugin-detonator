@@ -4,7 +4,7 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-**Current version: v0.2.3** ([what's new](#versions))
+**Current version: v0.3.0** ([what's new](#versions))
 
 [![Watch the 82-second Plugin Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
@@ -16,6 +16,11 @@ loads that plugin inside a disposable Docker container with a fake Hermes home f
 of decoys, fires synthetic hooks and tool calls at it, and reports what the plugin
 actually did compared with what it declares. Each finding says, in plain words, why it
 matters and which MITRE ATT&CK / ATLAS technique it matches.
+
+Since v0.3 it watches each run from two sides: a monitor inside the plugin's Python process,
+and an **outside monitor** in separate containers the plugin cannot reach (a system-call
+tracer and a fake internet). A plugin that hides from or switches off the inside monitor,
+or writes a fake clean result, is still caught. See [Outside monitor](#outside-monitor).
 
 Tested on Linux (x86_64), macOS on Apple Silicon (Docker Desktop) and Windows (Docker
 Desktop with WSL 2, in both the `hermes` terminal chat and the Desktop app). Every change runs
@@ -44,14 +49,15 @@ In the Hermes chat:
 /detonate <owner/repo> <40-char-sha> [subdir]
 ```
 
-Detonator asks before it does anything. Pick **Run in sandbox**. The first run builds the
-sandbox image (a minute or two); after that a run takes seconds:
+Detonator asks before it does anything. Pick **Run full test (recommended)**, or **Run quick
+test** to skip the outside monitor. The first run builds the sandbox images (a minute or two);
+after that a run takes seconds:
 
 ```
 🔴 DANGEROUS: the plugin did something stealers and malware do (took or leaked decoy secrets, ...).
 - [critical] Read Hermes's .env file, where your API keys are kept, and also reached for the network or other secrets (T1552.001, AML.T0055)
   Why: It read your API keys and, in the same run, reached for the network or took other secrets. ...
-- [high] Reached for the network while loading or from a background hook (the sandbox has no network; nothing left the box) (T1071.001, T1041, AML.T0025)
+- [high] Reached for the network while loading or from a background hook (the sandbox has no real network; nothing left the box) (T1071.001, T1041, AML.T0025)
 Full report: ~/.hermes/plugin-data/detonator/reports/....md
 ```
 
@@ -137,6 +143,44 @@ documenting it there.
 Verdicts: `DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS`, `ERROR`. The verdict comes
 from deterministic rules only. No model decides anything.
 
+### Outside monitor
+
+The inside monitor (Python audit hooks) runs in the same process as the plugin, so a
+determined plugin could read files through C code it loads, or write its own "all clear"
+result. From v0.3 every run also starts two small containers next to the plugin's, which
+never run plugin code and which the plugin cannot reach:
+
+- **A tracer.** The plugin's container joins the tracer's process namespace. The tracer
+  attaches `strace` to the sandbox before the plugin is imported (the sandbox waits for it)
+  and records every file opened, program started and connection made, by every thread and
+  every program the plugin starts. The plugin runs as an ordinary user with no
+  capabilities, so it cannot stop the tracer, and the trace is stored where only the tracer
+  can write.
+- **A fake internet.** The plugin's container joins this container's network, which has no
+  real network at all: every address answers locally, every DNS lookup gets a made-up
+  address, plain HTTP gets a short "200 OK", and whatever the plugin sends is logged
+  (including the server name of an HTTPS hello).
+
+Detonator then compares the two records. Three rules come from this:
+
+| Rule | Severity | Catches |
+|---|---|---|
+| `secret_sent_out` | critical | A fake key reaching the fake internet, plain, URL-encoded, base64, hex or hidden in a DNS name |
+| `monitor_blind_spot` | critical | The plugin's own process opening a decoy file, connecting out or starting a program that the inside monitor never recorded |
+| `result_forged` | critical | Anything other than Detonator writing the result file |
+
+It also adds evidence to `decoy_accessed` when a program the plugin started reads a decoy
+file (high when it is that program's own login file, such as pip reading `.netrc`), and to
+`monitor_tamper` for attempts to trace or read another process. If the plugin kills the
+sandbox, the outside evidence is still judged instead of reporting a bare error.
+
+The outside monitor is on by default and adds a second or two to a run. Its image is built
+once, next to the sandbox image (it installs `strace` from Debian, so the first build needs
+the internet). If it cannot start, the plugin is still tested by the inside monitor and the
+report says plainly that the outside monitor did not run. To skip it on purpose, pick **Run
+quick test** when `/detonate` asks (or `hermes detonate --quick`); the report then says the
+outside monitor was not used. `DETONATOR_OUTSIDE=0` switches it off for every run.
+
 ### Clock jump and code that stayed quiet
 
 A short test only sees what a plugin does right away. Malware often waits: for a date,
@@ -156,9 +200,9 @@ plugins get a REVIEW verdict from this check alone (28 of them also check the da
 
 **The report is advisory evidence, not proof.** Sandbox-aware code, triggers other than
 time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still
-evade it, and the Python audit hooks run in the same process as the plugin, so a determined
-plugin could tamper with them or write a fake clean result. A clean report does not mean a
-plugin is safe.
+evade it. The outside monitor sees what the kernel does, not what the plugin meant: it cannot
+read inside HTTPS, a plugin can notice it is being traced, and reads through file handles the
+sandbox itself opened are not seen. A clean report does not mean a plugin is safe.
 
 The sandbox image has no Hermes and no third-party packages. When a plugin imports one
 (`tools.registry`, `httpx`, ...), Detonator gives it an inert stand-in so the rest of the
@@ -171,12 +215,14 @@ no Python code to run, and Detonator says so instead of guessing.
 
 - **Every change** runs over 100 tests in CI, including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
-- **Detection** is checked against 23 harmless test plugins (fake keys, reserved TEST-NET
+- **Detection** is checked against 25 harmless test plugins (fake keys, reserved TEST-NET
   addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,
   prompt injection, tool poisoning, a rug pull, a backdoor port, a config hijack, a log flood, a
-  trojan update, a date-triggered time bomb, a sleeper thread, plus honest and grey-area plugins
-  that must not be flagged as dangerous. All 23 get their expected verdict, together they set off
-  every one of the 45 rules, and CI re-checks them on every change. They live in a separate private
+  trojan update, a date-triggered time bomb, a sleeper thread, a plugin that reads keys through C
+  code to dodge the inside monitor and one that forges a clean result (both caught only from
+  outside), plus honest and grey-area plugins that must not be flagged as dangerous. All 25 get
+  their expected verdict, together they set off every one of the 48 rules, and CI re-checks them
+  on every change. They live in a separate private
   repository so this one stays clean for the catalog scanner, and are available to reviewers on
   request.
 - **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
@@ -195,23 +241,42 @@ Detonator does things a reviewer should know about:
 
 - **Requires Docker.** It runs `docker build` once to build the sandbox image from
   `sandbox/Dockerfile` (a digest-pinned `python:3.11-slim` with nothing extra
-  installed; this pulls the base image over the network), and `docker run` for each test.
+  installed; this pulls the base image over the network), and once more for the outside
+  monitor image from `sandbox/monitor/Dockerfile` (the same base plus Debian's `strace`).
+  Each test runs `docker run` for the plugin and for the two monitor containers, then
+  `docker wait`, `docker stop` and `docker rm` to clean them up.
 - **Clones code.** For a GitHub target it runs `git init` / `git fetch` / `git checkout`
   of the exact 40-character SHA you give it, with git hooks disabled, no submodules, and symlinks checked out as plain files
   (links are never copied into the sandbox, so a repo cannot pull in real files from your machine).
   No code from the target runs on your machine outside the container.
 - **Shell commands.** Only `git` and `docker`, as above, and only after you approve
-  the run. No background processes.
-- **Network.** Only for `git fetch` and the one-time image build. The sandbox
-  container runs with `--network none`.
+  the run. The two monitor containers run only while a test runs and are removed after it;
+  nothing keeps running on your machine.
+- **Network.** Only for `git fetch` and the one-time image builds. No container gets a real
+  network: the monitor containers run with `--network none`, and the plugin's container
+  shares the fake internet's network, which only answers locally.
 - **Credentials.** Detonator never reads your real Hermes home, `.env`, `auth.json`
   or any credential store. The sandbox gets its own fake home with fake keys.
   The `git` and `docker` commands it runs get only an allow-listed environment (PATH, HOME,
   locale, Docker and proxy settings), never the API keys Hermes has loaded.
-- **Sandbox settings.** `--network none --read-only --cap-drop ALL
+- **Sandbox settings.** `--read-only --cap-drop ALL
   --security-opt no-new-privileges --user 10001:10001 --pids-limit 128 --memory 512m --cpus 1`,
   a 64 MB `/tmp`, a 180-second timeout, and an activity log capped at 5,000 events (a flood is
   reported, and the most repeated actions are thinned first so rare ones such as a key read are kept).
+  With the outside monitor the plugin's container uses the fake internet's network and the tracer's
+  process namespace; without it, `--network none`.
+- **Monitor containers.** Both run `--network none --read-only --cap-drop ALL
+  --security-opt no-new-privileges` with small memory and process limits. The tracer adds only
+  `SYS_PTRACE` (to attach `strace`). The fake internet adds `NET_ADMIN` (to make every address
+  answer locally inside its own empty network) and `NET_BIND_SERVICE` (to listen on ports such
+  as 80 and 443), and gives both up once it is listening. Neither container is privileged, both
+  keep Docker's default seccomp and AppArmor profiles, neither can reach a real network, the
+  Docker socket or any of your files, and each only writes its own log folder (Detonator never
+  follows a link there). Docker removes them as soon as they stop, and they stop by themselves
+  after 5 minutes, so even a run you interrupt leaves nothing running: when the tracer stops,
+  the plugin's container stops with it.
+- **Private run folder.** Each run's temporary folder is readable only by you, so other users
+  on the same computer cannot read it or plant files in it.
 - **A different world every run.** Each run gets a random username, home folder
   (`/home/<name>`) and host name, and random fake-key values, so a plugin cannot spot
   the sandbox by a fixed path or a fixed marker in the decoys. The container's user
@@ -234,6 +299,16 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 ## Versions
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
+
+- **v0.3.0** (Nov 13, 2026): The outside monitor. Every run is now also watched from two
+  containers the plugin cannot reach: a `strace` tracer attached before the plugin loads, and a
+  fake internet that answers every address and logs what is sent. Three new rules:
+  `secret_sent_out`, `monitor_blind_spot` and `result_forged`. Programs the plugin starts are
+  now followed too, and a plugin that kills the sandbox is judged on the outside evidence.
+  The report has a new "Outside monitor" section listing names looked up, connections and
+  programs started. The approval prompt now offers a full test (default) or a quick test
+  without the outside monitor. Two new test plugins that only the outside monitor catches; 25 test
+  plugins now set off all 48 rules.
 
 - **v0.2.3** (Nov 11, 2026): Windows fixes, found by the new Windows CI job. Reports and
   plugin files are always read and written as UTF-8 (Windows' default code page crashed on the
@@ -266,6 +341,8 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   plugin (tool, `/detonate` slash command, `hermes detonate` CLI)
 - `engine/`: host side (fetch, run Docker, rules, report)
 - `sandbox/`: the container image and the in-container harness
+- `sandbox/monitor/`: the outside monitor image (strace tracer and fake internet)
+- `engine/outside.py`: starts the monitor containers and reads what they saw
 - `tests/`: rule tests, plus integration tests that run harmless plugins in real Docker
 - `ci/check_fixtures.py`: runs the private test plugins in CI and checks every rule fires
 - `ci/windows_smoke.py`: Windows host checks in CI (git fetch, Docker message, mount paths)

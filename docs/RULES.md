@@ -72,6 +72,23 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 | `time_triggered` | high | Did something only after its clock was moved forward. Malware waits for a date, or for days to pass after install, so it passes short tests and reviews (a time bomb). | [T1480](https://attack.mitre.org/techniques/T1480/) [T1497.003](https://attack.mitre.org/techniques/T1497/003/) |
 | `dormant_code` | medium | The code can do this, but it never did during the test. Code that stays quiet in a sandbox may be waiting for a date, a keyword or a real key (a time bomb or trigger). Often it is just a path the test did not reach, so read that code before installing. | [T1480](https://attack.mitre.org/techniques/T1480/) [T1497.003](https://attack.mitre.org/techniques/T1497/003/) |
 
+## Outside monitor
+
+These come from two containers that run next to the plugin's and that it cannot reach: a tracer
+(strace, attached before the plugin loads, following every thread and every program it starts) and a
+fake internet (every address answers locally, every DNS lookup gets a made-up address, and whatever is
+sent is logged). There is still no real network. The outside monitor runs by default; set
+`DETONATOR_OUTSIDE=0` to switch it off, and the report then says it did not run.
+
+| Rule | Severity | Why it matters | MITRE |
+|---|---|---|---|
+| `secret_sent_out` | critical | A fake key actually reached the fake internet: the plugin sent it over the network (in a web request, a raw connection or a DNS lookup). With real keys, they would now be in someone else's hands. | [T1041](https://attack.mitre.org/techniques/T1041/) [T1048](https://attack.mitre.org/techniques/T1048/) [AML.T0025](https://atlas.mitre.org/techniques/AML.T0025) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
+| `monitor_blind_spot` | critical (high when no file was involved) | The outside monitor, which the plugin cannot reach, saw the plugin's own process do this, but Detonator's monitor inside the plugin's process recorded nothing. Honest code does not slip past the inside monitor; code written to hide from it (or to switch it off) does. | [T1562.001](https://attack.mitre.org/techniques/T1562/001/) [T1106](https://attack.mitre.org/techniques/T1106/) |
+| `result_forged` | critical | Something other than Detonator wrote the sandbox's result file. A plugin that writes its own result is trying to hand in a fake clean report. | [T1565.001](https://attack.mitre.org/techniques/T1565/001/) [T1562.001](https://attack.mitre.org/techniques/T1562/001/) |
+
+The outside monitor also adds evidence to two rules above: `decoy_accessed` when a program the plugin
+started read a decoy file, and `monitor_tamper` when the plugin tried to trace or read another process.
+
 ## Declarations and coverage
 
 | Rule | Severity | Why it matters | MITRE |
@@ -108,7 +125,8 @@ Fake, canary-marked copies of: `~/.hermes/.env`, `auth.json`, SSH key, AWS crede
 `.netrc`, Docker and Kubernetes config, `.npmrc`, `.pypirc`, GitHub CLI token, Chrome and Firefox saved
 logins and cookies (Linux and macOS paths), Solana and Ethereum wallets, Hermes memory files and an old
 chat transcript, plus five API-key environment variables. Any of these markers showing up in a tool
-result, hook output, network address or another tool's input is a `secret_in_output` finding.
+result, hook output, network address or another tool's input is a `secret_in_output` finding; one that
+reaches the fake internet (plain, URL-encoded, base64 or hex) is a `secret_sent_out` finding.
 
 ## Sources
 

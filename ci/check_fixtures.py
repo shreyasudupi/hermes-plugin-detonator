@@ -38,6 +38,9 @@ EXPECTED = {
     "broken-loader": "REVIEW",
     "trigger-word": "REVIEW",
     "missing-deps": "NO_FINDINGS",
+    # Caught only by the outside monitor (tracer + fake internet)
+    "monitor-evader": "DANGEROUS",
+    "report-forger": "DANGEROUS",
 }
 # The trojan's first version (an older commit) must look clean.
 EXPECTED_V1 = {"trojan-update": "NO_FINDINGS"}

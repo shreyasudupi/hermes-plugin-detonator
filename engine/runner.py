@@ -2,7 +2,8 @@
 
 Disclosure (catalog rule 13): this module runs `git clone`/`git checkout`
 (network, to fetch the plugin under test), `docker build` (network, once, to
-build the sandbox image) and `docker run` (no network). It never reads the
+build the sandbox image) and `docker run` (no real network; see engine/outside.py
+for the two monitor containers). It never reads the
 user's real Hermes home, .env or auth.json: the sandbox gets its own fake home.
 """
 
@@ -20,6 +21,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import outside as outside_monitor
 from . import static
 
 SANDBOX_DIR = Path(__file__).resolve().parent.parent / "sandbox"
@@ -193,6 +195,13 @@ def docker_check() -> str:
     lines.append("Sandbox image: built." if have else
                  "Sandbox image: not built yet. The first /detonate builds it, which downloads "
                  "python:3.11-slim once and takes about a minute.")
+    try:
+        have_mon = _run(["docker", "image", "inspect", outside_monitor.image_tag()], timeout=30).returncode == 0
+    except Exception:
+        have_mon = False
+    lines.append("Outside monitor image: built." if have_mon else
+                 "Outside monitor image: not built yet. The first /detonate builds it too (it installs "
+                 "strace from Debian, so it needs the internet once).")
     return "\n".join(lines)
 
 
@@ -399,16 +408,19 @@ def write_accounts(etc_dir: Path, world: dict) -> None:
 
 
 def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, world: dict | None = None,
-                   etc_dir: Path | None = None) -> list[str]:
+                   etc_dir: Path | None = None, monitor_args: list[str] | None = None) -> list[str]:
+    """The plugin's `docker run`. With the outside monitor, `monitor_args` puts the plugin on the
+    fake internet's network (still no real network) and in the tracer's process namespace,
+    and the host name comes from the fake internet's container."""
     world = world or random_world()
     accounts = [a for f in _ACCOUNT_FILES for a in ("-v", f"{etc_dir / f}:{_ETC}/{f}:ro")] if etc_dir else []
+    network = list(monitor_args) if monitor_args else ["--network", "none", "--hostname", world["host"]]
     return [
         "docker", "run", "--rm",
-        "--network", "none",
+        *network,
         "--read-only",
         "--tmpfs", "/tmp:rw,size=64m,mode=1777",
         "--tmpfs", f"{world['home']}:rw,size=32m,uid=10001,gid=10001,mode=0700",
-        "--hostname", world["host"],
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges",
         "--pids-limit", "128",
@@ -442,17 +454,32 @@ def _make_world_readable(root: Path) -> None:
             os.chmod(os.path.join(dirpath, name), 0o644)
 
 
-def detonate(target: Target) -> dict:
-    """Run the plugin in a fresh container and return the raw harness result."""
+# The outside monitor runs by default. DETONATOR_OUTSIDE=0 switches it off (a quicker,
+# in-process-only run); the report then says the outside monitor did not run.
+def outside_enabled() -> bool:
+    return os.environ.get("DETONATOR_OUTSIDE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def detonate(target: Target, outside: bool | None = None) -> dict:
+    """Run the plugin in a fresh container and return the raw harness result.
+
+    By default the outside monitor (engine/outside.py) watches the run from two more
+    containers. If it cannot start (for example its image cannot be built offline), the
+    plugin is still tested by the in-process monitor and the result says why the outside
+    monitor did not run."""
     problem = docker_problem()
     if problem:
         raise DetonatorError(problem)
     tag = ensure_image()
+    use_outside = outside_enabled() if outside is None else outside
     with tempfile.TemporaryDirectory(prefix="detonator-") as tmp:
         tmp = Path(tmp)
         plugin_copy = tmp / "plugin"
         shutil.copytree(target.path, plugin_copy, ignore=_skip_links)
         _make_world_readable(tmp)
+        # Docker mounts the folders inside directly, so the run folder itself can stay private
+        # to you: other users on this computer cannot read or plant files in it.
+        os.chmod(tmp, 0o700)
         in_dir = tmp / "in"
         in_dir.mkdir()
         (in_dir / "manifest.json").write_text(json.dumps(load_manifest(plugin_copy)), encoding="utf-8")
@@ -464,26 +491,61 @@ def detonate(target: Target) -> dict:
         name = f"detonator-{os.getpid()}-{hashlib.sha1(str(tmp).encode()).hexdigest()[:8]}"
         world = random_world()
         write_accounts(tmp / "etc", world)
-        cmd = docker_run_cmd(tag, plugin_copy, in_dir, out_dir, world, tmp / "etc")
+        monitor, monitor_args, outside_note = None, None, None
+        if use_outside:
+            monitor = outside_monitor.Monitor(_run, tmp, name, world["host"])
+            try:
+                monitor_args = monitor.start()
+            except Exception as exc:
+                monitor.cleanup()
+                monitor = None
+                outside_note = {"ran": False, "reason": _one_line(exc)}
+        else:
+            outside_note = {"ran": False, "reason": "quick test chosen (in-process monitor only)"
+                            if outside is False else "switched off (DETONATOR_OUTSIDE=0)"}
+        canary = secrets.token_hex(10).upper()
+        (in_dir / "run.json").write_text(json.dumps({"canary": canary, "traced": bool(monitor_args)}),
+                                         encoding="utf-8")
+        os.chmod(in_dir / "run.json", 0o644)
+        if monitor:
+            seen_note = {"canary": canary, "home": world["home"]}
+        cmd = docker_run_cmd(tag, plugin_copy, in_dir, out_dir, world, tmp / "etc", monitor_args)
         cmd.insert(3, f"--name={name}")
         try:
-            proc = _run(cmd, timeout=RUN_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            _run(["docker", "rm", "-f", name], timeout=30)
-            return {"fatal": f"sandbox timed out after {RUN_TIMEOUT_S}s"}
+            try:
+                proc = _run(cmd, timeout=RUN_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                _run(["docker", "rm", "-f", name], timeout=30)
+                proc = None
+            seen_outside = {**monitor.finish(), **seen_note} if monitor else outside_note
+        finally:
+            if monitor:
+                monitor.cleanup()
+        if proc is None:
+            return {"fatal": f"sandbox timed out after {RUN_TIMEOUT_S}s", "outside": seen_outside}
         result_path = out_dir / "result.json"
         if not result_path.is_file():
             err = proc.stderr.strip()
             hint = explain_docker_error(err)
-            return {"fatal": (f"{hint} " if hint else "") + f"no result (exit {proc.returncode}): {err[-800:]}"}
+            return {"fatal": (f"{hint} " if hint else "") + f"no result (exit {proc.returncode}): {err[-800:]}",
+                    "outside": seen_outside}
         try:
             result = json.loads(result_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            return {"fatal": f"unreadable result: {exc}"}
+            return {"fatal": f"unreadable result: {exc}", "outside": seen_outside}
+        if not isinstance(result, dict):
+            return {"fatal": "unreadable result: not a JSON object", "outside": seen_outside}
         result["container_exit_code"] = proc.returncode
         result["image"] = tag
+        result["outside"] = seen_outside
         try:
             result["static"] = static.scan(target.path)
         except Exception as exc:  # the read is a coverage aid; never fail the run over it
             result["static"] = {"error": f"{type(exc).__name__}: {exc}"}
         return result
+
+
+def _one_line(exc: Exception) -> str:
+    text = " ".join(str(exc).split())
+    hint = explain_docker_error(text)
+    return (hint + " " if hint else "") + text[-400:]
