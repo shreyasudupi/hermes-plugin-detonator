@@ -114,6 +114,7 @@ def _write_summary_json(path: Path, repo: str, sha: str, subdir: str | None, eva
             "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "verdict": evaluation.get("verdict", "ERROR"),
             "test_mode": report.test_mode(evaluation.get("outside")),
+            "not_checked": None if (evaluation.get("outside") or {}).get("ran") else report.NOT_CHECKED,
             "findings": evaluation.get("findings") or [],
             "report_path": str(path),
         }, default=str), encoding="utf-8")
@@ -130,6 +131,8 @@ def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None, ou
     path = _report_path(repo, f"{old_sha[:8]}-vs-{new_sha[:8]}", subdir)
     path.write_text(diff.render(label, old_sha, new_sha, changes), encoding="utf-8")
     mode = report.test_mode(new_eval.get("outside"))
+    if not (new_eval.get("outside") or {}).get("ran"):
+        mode += "\n" + report.NOT_CHECKED
     out = diff.summary(changes, old_sha, new_sha, paths=[path, old_path, new_path])
     return out.replace("\n", f"\n{mode}\n", 1)
 
@@ -145,6 +148,9 @@ def summary(evaluation: dict, path: Path) -> str:
         if f["severity"] in ("critical", "high", "medium") and f.get("why"):
             lines.append(f"  Why: {f['why']}")
     lines.append(f"Full report: {path}")
+    # Hermes does not pass slash-command output to the model, so the model cannot know a report
+    # exists; naming the tool is the wording that works even with small free models.
+    lines.append('For a plain-words explanation, ask: "Use the detonator_report tool to explain my latest report"')
     if verdict == "NO_FINDINGS":
         lines.append("Advisory only: a clean run is evidence, not proof.")
     else:

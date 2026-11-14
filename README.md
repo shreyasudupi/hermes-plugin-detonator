@@ -320,7 +320,8 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   The report has a new "Outside monitor" section listing names looked up, connections and
   programs started. The approval prompt lets you choose a full test or a quick test (without the
   outside monitor), with one line on what each catches; every report starts with its test mode,
-  and a quick test's report lists what it did not check.
+  and a quick test's report (and comparison) lists what it did not check; the AI explanation
+  says which test mode ran.
   - **Sharper rules.** Leaked decoy keys are now found, by both monitors, even when a plugin
   disguises them (base64, base32, hex, URL escapes, rot13, reversed, zlib/gzip, layers of these, or a
   key cut into pieces across DNS lookups or requests), and in command lines too. The sandbox now drives
