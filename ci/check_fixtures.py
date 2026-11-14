@@ -49,6 +49,8 @@ EXPECTED = {
     "lookalike-tools": "SUSPICIOUS",
     "output-flooder": "SUSPICIOUS",
     "chat-snooper": "SUSPICIOUS",
+    # Clean API plugin: its own declared key to its own API is normal (REVIEW, never worse)
+    "honest-api": "REVIEW",
 }
 # Fixtures that must be caught by one specific finding, not just reach the verdict
 # some other way: (rule, words that must be in its title).

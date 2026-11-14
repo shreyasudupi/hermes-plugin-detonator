@@ -560,7 +560,13 @@ def _evaluate(result: dict) -> dict:
     net = of("network")
     binds = [e for e in net if e.get("op") == "socket.bind"]
     net = [e for e in net if e not in binds]
-    sent = [(e.get("address"), e.get("payload")) for e in net]
+    # An API plugin sends the key it declares in requires_env to its own API when a
+    # tool is called: normal, not a leak. Only when the key is sent as-is, from a tool
+    # call, and every such request goes to one host. A disguised key, a send while
+    # loading or from a hook, any other key, or the same key sent to a second host
+    # is still a leak.
+    own_sends = _own_key_sends(net, secret_markers, manifest)
+    sent = [(e.get("address"), e.get("payload")) for e in net if id(e) not in own_sends]
     leaked_net = sorted({m for item in sent for m in _leaks(item, secret_markers)})
     plain = {m.split(" (hidden")[0] for m in leaked_net}
     rest = [m for m in secret_markers if m not in plain]
@@ -595,9 +601,11 @@ def _evaluate(result: dict) -> dict:
                     "Reached for the network while loading or from a background hook "
                     "(the sandbox has no real network; nothing left the box)", _net_evidence(passive)))
     if on_call:
+        own_note = sorted({f"sent its own declared key {n} to {h} (normal for an API plugin; "
+                           f"check this host belongs to that service)" for n, h in own_sends.values()})
         add(Finding("tool_network", MEDIUM,
                     "Its tools tried to reach these hosts when called; check they match what the "
-                    "plugin says it connects to", _net_evidence(on_call)))
+                    "plugin says it connects to", own_note + _net_evidence(on_call)))
     if local:
         add(Finding("local_network", MEDIUM, "Tried to reach a service on this computer (localhost)",
                     _net_evidence(local)))
@@ -1095,8 +1103,26 @@ def _outside_findings_raw(result: dict) -> list:
 
     # ---- secrets that reached the fake internet (or left by any socket the tracer saw)
     sent = []
+    # The plugin's own declared key going to the one host its tool calls used (seen by
+    # the inside monitor too) is an honest API call; only that exact key, sent as-is.
+    inside_net = [e for e in (result.get("events") or []) if e.get("kind") == "network"]
+    own = _own_key_sends(inside_net, list(result.get("secret_markers") or []), result.get("manifest") or {})
+    own_hosts = {h for _, h in own.values()}
+    own_keys = [m for m in (result.get("secret_markers") or [])
+                if any(m.endswith(_ENV_MARKER_TAGS.get(n, "\0")) for n, _ in own.values())]
+    def strip_own(text):
+        for m in own_keys:
+            text = text.replace(m, "")
+        return text
+
+    accepted = []   # what the fake internet saw going to the plugin's own API host
     for e in sink.get("tcp") or []:
-        if _secret_hits(str(e.get("data") or ""), canary):
+        data = str(e.get("data") or "")
+        if own_hosts and str(e.get("host") or "").lower().split(":", 1)[0] in own_hosts:
+            data = strip_own(data)
+            if not _secret_hits(data, canary):
+                accepted.append(str(e.get("data") or "")[:120])
+        if _secret_hits(data, canary):
             sent.append(f'sent to {_safe_name(e.get("host"), 80)}:{e.get("port")} '
                         f'({e.get("bytes")} bytes): {str(e.get("data"))[:160]!r}')
     for e in sink.get("dns") or []:
@@ -1109,8 +1135,12 @@ def _outside_findings_raw(result: dict) -> list:
         if len(names) > 1 and _secret_hits(joined, canary):
             sent.append(f'split across {len(names)} DNS lookups, starting with: {names[0][:80]}')
     for e in events:
+        data = str(e.get("data") or "")
+        if accepted and not _secret_hits(strip_own(data), canary) and \
+                any(a[:60] in data or data[:60] in a for a in accepted):
+            continue    # the same honest API request the fake internet already accepted
         if e.get("call") in ("sendto", "sendmsg") and not e.get("unix") \
-                and _secret_hits(str(e.get("data") or ""), canary):
+                and _secret_hits(data, canary):
             where = f'{e.get("ip")}:{e.get("port")}' if e.get("ip") else "an open connection"
             item = f'sent to {where} by process {e.get("pid")} (seen by the tracer)'
             if item not in sent and not (e.get("ip") and any(str(e.get("ip")) in s for s in sent)):
@@ -1272,6 +1302,60 @@ def _is_loopback(address) -> bool:
     text = str(address)
     return any(h in text for h in ("127.0.0.1", "localhost", "'::1'", "[::1]", "//::1"))
 
+
+
+# Which marker each decoy API key carries (sandbox/harness.py DECOY_ENV).
+_ENV_MARKER_TAGS = {
+    "OPENROUTER_API_KEY": "-0001", "OPENAI_API_KEY": "-0002", "ANTHROPIC_API_KEY": "-0003",
+    "GITHUB_TOKEN": "0004", "AWS_SECRET_ACCESS_KEY": "-0005",
+}
+
+
+def _host_of(address) -> str:
+    text = str(address or "")
+    m = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#]+)", text)
+    host = m.group(1) if m else text.split("/", 1)[0]
+    host = host.rsplit("@", 1)[-1]
+    if host.startswith("("):            # socket calls report ('host', port)
+        m = re.match(r"^\(\s*'([^']*)'", host)
+        host = m.group(1) if m else host
+    return host.split(":", 1)[0].strip().lower()
+
+
+def _own_key_sends(net, secret_markers, manifest) -> dict:
+    """Network events that only carry the plugin's own declared API key, as-is, from a
+    tool call, all to one host. Returns {id(event): (key name, host)}."""
+    declared = set(_as_list((manifest or {}).get("requires_env")))
+    own = {}
+    for name in declared:
+        tag = _ENV_MARKER_TAGS.get(name)
+        if tag:
+            own.update({m: name for m in secret_markers if m.endswith(tag) and not m.endswith("-" + tag)})
+    if not own:
+        return {}
+    others = [m for m in secret_markers if m not in own]
+    hits = {}
+    for e in net:
+        if not str(e.get("phase", "")).startswith("tool:"):
+            continue
+        text = _text_of((e.get("address"), e.get("payload")))
+        found = [m for m in own if m in text]
+        if not found:
+            continue
+        rest = text
+        for m in found:
+            rest = rest.replace(m, "")
+        # Anything still found once the plain own key is taken out (a disguised copy,
+        # another key) means this request is not just an honest API call.
+        if _leaks(rest, list(own) + others):
+            continue
+        hits[id(e)] = (own[found[0]], _host_of(e.get("address")))
+    by_key = {}
+    for name, host in hits.values():
+        by_key.setdefault(name, set()).add(host)
+    # The same key going to two different hosts is not "its own API" any more.
+    spread = {n for n, hosts in by_key.items() if len(hosts) > 1 or "" in hosts}
+    return {k: v for k, v in hits.items() if v[0] not in spread}
 
 def _net_evidence(events):
     return sorted({f'{e.get("op")} {e.get("address")} [{e.get("phase")}]' for e in events})[:20]

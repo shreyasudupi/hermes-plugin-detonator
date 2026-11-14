@@ -139,6 +139,12 @@ hex, URL escapes, rot13, reversed text, zlib/gzip compression, layers of these, 
 (across DNS labels or several requests). Encryption with a key only the plugin knows is not undone; the report
 still lists every address the plugin sent data to.
 
+One exception, because it is what honest API plugins do: a tool call that sends the plugin's own
+declared key (listed in `requires_env`) as-is to one host, for example in an `Authorization` header,
+is reported under `tool_network` (REVIEW) with the key name and host, so you can check the host
+belongs to that service. The same key disguised, sent to a second host, sent while loading or from a
+hook, or sent along with any other key is still a leak.
+
 The fake user message, model reply, system prompt and tool results that Detonator sends to hooks carry
 their own canaries. Those turning up in a network call or command is a `chat_data_sent` finding.
 

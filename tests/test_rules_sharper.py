@@ -306,3 +306,69 @@ def test_outside_monitor_joins_a_key_split_across_dns_lookups():
     assert f and "split across" in f[0].evidence[0]
     res["outside"]["sink"]["dns"] = [{"name": "docs.example.com"}, {"name": "api.example.com"}]
     assert not rules._outside_findings(res)
+
+
+# ---- an API plugin sending its own declared key -----------------------------
+
+OWN = f"sk-or-v1-{CANARY}-0001"
+OWN_MARKERS = [f"{CANARY}-0001", f"{CANARY}-0002", f"{CANARY}-ssh-0007"]
+API_MANIFEST = {"name": "weather", "provides_tools": ["t"], "provides_hooks": [],
+                "requires_env": ["OPENROUTER_API_KEY"]}
+
+
+def api_call(url="https://api.example.com/v1/weather?city=Paris", key=OWN, phase="tool:t"):
+    return {"t": 0, "phase": phase, "kind": "network", "op": "urllib.Request", "address": url,
+            "payload": repr((None, {"Authorization": "Bearer " + key}))}
+
+
+def run_api(events, outside=None):
+    res = base(manifest=API_MANIFEST, registered={"tools": ["t"], "hooks": []},
+               secret_markers=OWN_MARKERS, canary=CANARY, events=events)
+    if outside:
+        res["outside"] = outside
+    return rules.evaluate(res)
+
+
+def test_own_declared_key_to_its_api_is_review_not_a_leak():
+    out = run_api([api_call(), api_call()])
+    assert out["verdict"] == "REVIEW" and not find(out, "secret_in_output")
+    assert "own declared key OPENROUTER_API_KEY to api.example.com" in find(out, "tool_network")[0]["evidence"][0]
+
+
+def test_own_key_still_a_leak_when_disguised_spread_loaded_or_not_declared():
+    b64 = base64.b64encode(OWN.encode()).decode()
+    cases = {
+        "disguised": [api_call(key=b64)],
+        "second host": [api_call(), api_call(url="https://collect.example.net/x")],
+        "while loading": [api_call(phase="register")],
+        "plus another key": [api_call(key=OWN + f" sk-{CANARY}-0002")],
+    }
+    for name, events in cases.items():
+        assert find(run_api(events), "secret_in_output"), name
+    undeclared = base(manifest={**API_MANIFEST, "requires_env": []}, registered={"tools": ["t"], "hooks": []},
+                      secret_markers=OWN_MARKERS, canary=CANARY, events=[api_call()])
+    assert find(rules.evaluate(undeclared), "secret_in_output")
+
+
+def test_outside_monitor_accepts_own_key_only_on_the_same_host():
+    def outside(host, data):
+        return {"ran": True, "canary": CANARY, "trace": {"events": []},
+                "sink": {"tcp": [{"host": host, "port": 80, "bytes": len(data), "data": data}], "dns": []}}
+    honest = run_api([api_call(url="http://api.example.com/v1")],
+                     outside("api.example.com", f"GET /v1 HTTP/1.1\r\nAuthorization: Bearer {OWN}\r\n"))
+    assert not find(honest, "secret_sent_out") and honest["verdict"] == "REVIEW"
+    elsewhere = run_api([api_call(url="http://api.example.com/v1")],
+                        outside("collect.example.net", f"k={OWN}"))
+    assert find(elsewhere, "secret_sent_out")
+    hidden = run_api([api_call(url="http://api.example.com/v1")],
+                     outside("api.example.com", "k=" + codecs.encode(OWN, "rot13")))
+    assert find(hidden, "secret_sent_out")
+
+
+def test_tracer_copy_of_an_accepted_api_request_is_not_a_leak():
+    req = f"GET /v1 HTTP/1.1\r\nHost: api.example.com\r\nAuthorization: Bearer {OWN}\r\n"
+    out = {"ran": True, "canary": CANARY, "trace": {"events": [{"call": "sendto", "pid": 6, "data": req}]},
+           "sink": {"tcp": [{"host": "api.example.com", "port": 80, "bytes": len(req), "data": req}], "dns": []}}
+    assert not find(run_api([api_call(url="http://api.example.com/v1")], out), "secret_sent_out")
+    out["trace"]["events"].append({"call": "sendto", "pid": 6, "data": f"x={OWN}&to=elsewhere"})
+    assert find(run_api([api_call(url="http://api.example.com/v1")], out), "secret_sent_out")

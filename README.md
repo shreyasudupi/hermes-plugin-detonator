@@ -225,7 +225,7 @@ no Python code to run, and Detonator says so instead of guessing.
 
 - **Every change** runs over 130 tests in CI, including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
-- **Detection** is checked against 32 harmless test plugins (fake keys, reserved TEST-NET
+- **Detection** is checked against 33 harmless test plugins (fake keys, reserved TEST-NET
   addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,
   prompt injection, tool poisoning, a rug pull, a backdoor port, a config hijack, a log flood, a
   trojan update, a date-triggered time bomb, a sleeper thread, a plugin that reads keys through C
@@ -324,7 +324,9 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   says which test mode ran.
   - **Sharper rules.** Leaked decoy keys are now found, by both monitors, even when a plugin
   disguises them (base64, base32, hex, URL escapes, rot13, reversed, zlib/gzip, layers of these, or a
-  key cut into pieces across DNS lookups or requests), and in command lines too. The sandbox now drives
+  key cut into pieces across DNS lookups or requests), and in command lines too. An API plugin
+  sending its own declared key as-is to its own API from a tool call is listed for review, not
+  flagged as a leak. The sandbox now drives
   Hermes middleware (`tool_request`, `tool_execution`, `llm_request`, `llm_execution`), which earlier
   versions did not watch at all, and calls `pre_tool_call` hooks with four kinds of tool call, so a
   plugin that only rewrites outgoing messages is caught. Seven new rules: `tool_args_changed`,
