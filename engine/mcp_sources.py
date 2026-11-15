@@ -71,8 +71,28 @@ def hermes_config_path() -> Path:
     return Path(home) / "config.yaml"
 
 
+def _hermes_raw_config():
+    """Inside Hermes: its own public config reader (hermes_cli.config, listed in Hermes's plugin
+    public API). It follows the active profile and returns the file as written, so `${VAR}`
+    references stay unexpanded and no value from your .env is ever read. None outside Hermes."""
+    try:
+        from hermes_cli.config import read_raw_config  # public Hermes surface
+    except Exception:
+        return None
+    try:
+        data = read_raw_config()
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def read_servers(path: Path | None = None) -> dict:
-    """The `mcp_servers` mapping from Hermes's config.yaml (read-only)."""
+    """The `mcp_servers` mapping from Hermes's config.yaml (read-only). Only this mapping is
+    used; env and header values are checked for written-in keys and then dropped."""
+    data = _hermes_raw_config() if path is None else None
+    if data is not None:
+        servers = data.get("mcp_servers")
+        return servers if isinstance(servers, dict) else {}
     path = path or hermes_config_path()
     try:
         text = path.read_text(encoding="utf-8")

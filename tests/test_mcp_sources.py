@@ -114,3 +114,22 @@ def test_binding_gyp_counts_as_install(tmp_path):
     (pkg / "binding.gyp").write_text("{}")
     found = {s["package"] for s in src.npm_install_scripts(tmp_path)}
     assert "native" in found
+
+
+def test_env_references_are_not_inline_secrets():
+    found = checks("m", {"command": "npx", "args": ["-y", "pkg@1.0.0"], "trust": "untrusted",
+                         "env": {"API_KEY": "${API_KEY}", "TOKEN": "$TOKEN"}})
+    assert "mcp_inline_secret" not in found
+
+
+def test_inside_hermes_its_own_config_reader_is_used(monkeypatch, tmp_path):
+    import sys, types
+    fake = types.ModuleType("hermes_cli.config")
+    fake.read_raw_config = lambda: {"mcp_servers": {"from-hermes": {"command": "npx", "args": ["pkg"]}}}
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", fake)
+    assert list(src.read_servers()) == ["from-hermes"]
+    # an explicit file (developer use) is read as a file
+    f = tmp_path / "config.yaml"
+    f.write_text("mcp_servers:\n  from-file:\n    command: npx\n    args: [pkg]\n")
+    assert list(src.read_servers(f)) == ["from-file"]

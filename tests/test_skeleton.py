@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import sys
+import types
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -200,3 +201,21 @@ def test_quick_comparison_says_what_was_not_checked(monkeypatch, tmp_path):
     monkeypatch.setattr(c, "_report_path", lambda *a: tmp_path / "d.md")
     out = c.run_comparison("a/b", SHA, SHA, None, outside=False)
     assert "Test mode: quick" in out and "Not checked without the outside monitor" in out
+
+
+def test_mcp_run_leaves_a_summary_the_report_tool_can_read(monkeypatch, tmp_path):
+    import json as _json
+    plugin = _load_plugin()
+    commands = plugin.commands
+    monkeypatch.setattr(commands, "reports_dir", lambda: tmp_path)
+    target = types.SimpleNamespace(label="weather (npm w@1.0.0)", entry={}, checks=[])
+    monkeypatch.setattr(commands, "_mcp_target", lambda spec: (target, None))
+    monkeypatch.setattr(commands.mcp, "detonate", lambda t, outside=None: {"mode": "mcp"})
+    monkeypatch.setattr(commands.mcp, "evaluate", lambda raw: {
+        "verdict": "SUSPICIOUS", "findings": [{"rule": "mcp_rug_pull", "severity": "high", "title": "t"}],
+        "outside": {"ran": True}})
+    monkeypatch.setattr(commands.mcp, "render", lambda *a: "# report")
+    out = commands.run_mcp_detonation("weather")
+    assert "what the server did" in out
+    saved = [_json.loads(p.read_text()) for p in tmp_path.glob("*.json")]
+    assert saved and saved[0]["repo"].startswith("MCP server weather") and saved[0]["verdict"] == "SUSPICIOUS"

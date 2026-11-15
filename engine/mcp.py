@@ -588,7 +588,16 @@ def evaluate(result: dict) -> dict:
                 f.title += ", and also reached for the network or other secrets"
     findings.sort(key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
     verdict = rules._verdict(findings)
+    detail = None
+    if not out.get("ran") and verdict in (rules.VERDICT_NO_FINDINGS, rules.VERDICT_REVIEW):
+        # The server is its own process: only the outside monitor sees what it does. Without
+        # it a clean verdict would only mean "its descriptions look fine", so say that instead.
+        verdict = rules.VERDICT_ERROR
+        detail = ("The outside monitor did not run (" + str(out.get("reason") or "unknown reason")[:300] +
+                  "), so what the server did was not watched. Only what it told the model was checked. "
+                  "Run /detonate check, fix what it reports, and try again.")
     return {"verdict": verdict, "findings": [f.to_dict() for f in findings], "outside": summary,
+            **({"detail": detail} if detail else {}),
             "tools": [{"name": rules._safe_name(t.get("name"), 80),
                        "read_only": bool((t.get("annotations") or {}).get("readOnlyHint"))
                        if isinstance(t.get("annotations"), dict) else False}

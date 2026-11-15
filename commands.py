@@ -204,6 +204,10 @@ def make_slash_handler(ctx):
 # --------------------------------------------------------------------------------------
 # MCP servers: /detonate-mcp
 # --------------------------------------------------------------------------------------
+MCP_HELP = ("inside the sandbox, watched by the outside monitor (a tracer and a fake internet); "
+            "takes under a minute for most servers")
+
+
 def mcp_approval_question(spec: str) -> str:
     return (
         f"Detonate the MCP server '{spec}'? Detonator will read the entry (from a local folder's "
@@ -233,11 +237,13 @@ def run_mcp_detonation(spec: str, outside: bool | None = None) -> str:
         tag = re.sub(r"[^A-Za-z0-9_.-]", "_", target.label)[:60]
         path = reports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-mcp-{tag}.md"
         path.write_text(markdown, encoding="utf-8")
+        # The detonator_report tool reads the newest summary, so MCP runs write one too.
+        _write_summary_json(path, f"MCP server {target.label}"[:300], None, None, evaluation)
     finally:
         if work:
             import shutil
             shutil.rmtree(work, ignore_errors=True)
-    return summary(evaluation, path)
+    return summary(evaluation, path).replace("what the plugin did", "what the server did")
 
 
 def make_mcp_slash_handler(ctx):
@@ -252,17 +258,17 @@ def make_mcp_slash_handler(ctx):
         choice = ctx.ask_choice(
             mcp_approval_question(spec),
             [
-                {"value": APPROVE, "label": "Run full test", "description": FULL_HELP},
-                {"value": QUICK, "label": "Run quick test", "description": QUICK_HELP},
+                # No quick test here: the server is its own process, so only the outside monitor
+                # sees what it does; without it a key stealer would come out clean.
+                {"value": APPROVE, "label": "Run test", "description": MCP_HELP},
                 {"value": CANCEL, "label": "Cancel"},
             ],
         )
-        if choice not in (APPROVE, QUICK):
+        if choice != APPROVE:
             return ("Not run: Detonator needs your explicit approval, and none was given "
                     "(cancelled, timed out, or no one could be asked).")
-        outside = False if choice == QUICK else None
         try:
-            return run_mcp_detonation(spec, outside=outside)
+            return run_mcp_detonation(spec)
         except mcp.McpError as exc:
             return f"Detonator could not run: {exc}"
         except (runner.DetonatorError, LookupError) as exc:
@@ -276,8 +282,6 @@ def make_mcp_slash_handler(ctx):
 def setup_mcp_cli(subparser):
     subparser.add_argument("server", metavar="folder-or-name",
                            help="a folder with mcp-server.yaml, or a server name from ~/.hermes/config.yaml")
-    subparser.add_argument("--quick", action="store_true",
-                           help="quick test: " + QUICK_HELP + " (default is the full test: " + FULL_HELP + ")")
 
 
 def mcp_cli_handler(args) -> int:
@@ -287,7 +291,7 @@ def mcp_cli_handler(args) -> int:
               file=sys.stderr)
         return 2
     print(mcp_approval_question(spec))
-    print(("Quick test: " + QUICK_HELP) if getattr(args, "quick", False) else ("Full test: " + FULL_HELP))
+    print("Test: " + MCP_HELP)
     try:
         answer = input("Type 'yes' to run: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -295,9 +299,8 @@ def mcp_cli_handler(args) -> int:
     if answer not in ("yes", "y"):
         print("Cancelled.")
         return 1
-    outside = False if getattr(args, "quick", False) else None
     try:
-        print(run_mcp_detonation(spec, outside=outside))
+        print(run_mcp_detonation(spec))
     except mcp.McpError as exc:
         print(f"Detonator could not run: {exc}", file=sys.stderr)
         return 2

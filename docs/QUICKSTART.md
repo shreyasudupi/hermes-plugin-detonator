@@ -125,6 +125,20 @@ Detonator reads which commit you have installed, runs it and the version an upda
 and shows what the new version does that the old one didn't. (Comparing two commits of your own
 choice also works: `/detonate <owner/repo> <old-sha> <new-sha>`.)
 
+## 7. Test an MCP server
+
+MCP servers you add under `mcp_servers:` in Hermes's config give the agent new tools. To test one
+before you trust it, use its name from the config:
+
+```
+/detonate-mcp <server-name>
+```
+
+Detonator downloads its npm or PyPI package (install scripts off), starts it in the sandbox with fake
+keys, calls every tool the way Hermes would, and reports what the server told the model and what it
+did. A server whose code is in a folder works too: `/detonate-mcp <folder>`, with an
+`mcp-server.yaml` next to it (see the README).
+
 ## Next
 
 - What every finding means: [docs/RULES.md](RULES.md)
