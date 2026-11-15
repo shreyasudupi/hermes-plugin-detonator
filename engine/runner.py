@@ -464,13 +464,16 @@ def outside_enabled() -> bool:
     return os.environ.get("DETONATOR_OUTSIDE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def detonate(target: Target, outside: bool | None = None) -> dict:
+def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None = None) -> dict:
     """Run the plugin in a fresh container and return the raw harness result.
 
     By default the outside monitor (engine/outside.py) watches the run from two more
     containers. If it cannot start (for example its image cannot be built offline), the
     plugin is still tested by the in-process monitor and the result says why the outside
-    monitor did not run."""
+    monitor did not run.
+
+    With `mcp_entry` ({"command", "args", "env"}, env values already fake), the folder is an MCP
+    server instead of a plugin: the harness starts it and speaks MCP to it (engine/mcp.py)."""
     problem = docker_problem()
     if problem:
         raise DetonatorError(problem)
@@ -486,7 +489,11 @@ def detonate(target: Target, outside: bool | None = None) -> dict:
         os.chmod(tmp, 0o700)
         in_dir = tmp / "in"
         in_dir.mkdir()
-        (in_dir / "manifest.json").write_text(json.dumps(load_manifest(plugin_copy)), encoding="utf-8")
+        manifest = {} if mcp_entry is not None else load_manifest(plugin_copy)
+        (in_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        if mcp_entry is not None:
+            (in_dir / "mcp.json").write_text(json.dumps(mcp_entry), encoding="utf-8")
+            os.chmod(in_dir / "mcp.json", 0o644)
         os.chmod(in_dir, 0o755)
         os.chmod(in_dir / "manifest.json", 0o644)
         out_dir = tmp / "out"
@@ -509,7 +516,8 @@ def detonate(target: Target, outside: bool | None = None) -> dict:
                             "reason": "quick test chosen (in-process monitor only)"
                             if outside is False else "switched off (DETONATOR_OUTSIDE=0)"}
         canary = secrets.token_hex(10).upper()
-        (in_dir / "run.json").write_text(json.dumps({"canary": canary, "traced": bool(monitor_args)}),
+        (in_dir / "run.json").write_text(json.dumps({"canary": canary, "traced": bool(monitor_args),
+                                                    **({"mode": "mcp"} if mcp_entry is not None else {})}),
                                          encoding="utf-8")
         os.chmod(in_dir / "run.json", 0o644)
         if monitor:

@@ -1220,9 +1220,16 @@ def main():
     os._exit(0)
 
 
+def main_mcp():
+    """MCP mode: run one MCP server instead of a plugin (sandbox/mcp_harness.py)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import mcp_harness
+    mcp_harness.run(sys.modules[__name__])
+
+
 if __name__ == "__main__":
     try:
-        main()
+        main_mcp() if _RUN.get("mode") == "mcp" else main()
     except Exception:
         _ACTIVE = False
         release_fd()

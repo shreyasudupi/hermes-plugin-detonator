@@ -95,6 +95,25 @@ sent is logged). There is still no real network. The outside monitor runs by def
 The outside monitor also adds evidence to two rules above: `decoy_accessed` when a program the plugin
 started read a decoy file, and `monitor_tamper` when the plugin tried to trace or read another process.
 
+## MCP servers
+
+Rules for `/detonate-mcp`, which runs one MCP server (an entry from `mcp_servers:` in Hermes's
+`config.yaml`) in the same sandbox with the outside monitor. A stand-in for Hermes lists the server's
+tools, resources and prompts, calls every tool with test input, answers sampling and form requests,
+and lists everything again. Every `env` value is replaced with a fake key. What the server does on the
+computer is judged by the rules above that the outside monitor can see (key files, `.env`, network,
+programs, writes, persistence, leaks); the rules below cover what only MCP servers can do.
+
+| Rule | Severity | Why it matters | MITRE |
+|---|---|---|---|
+| `mcp_tool_poisoning` | critical (high when it asks for nothing secret and hides nothing) | MCP tool descriptions and parameter text go straight into the model's instructions. Text that tells the model to read secrets, call other tools or keep steps from the user turns every conversation that loads this server into an attack (tool poisoning). | [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) [AML.T0011.002](https://atlas.mitre.org/techniques/AML.T0011.002) |
+| `mcp_cross_tool_instructions` | high | A tool's description gives orders about OTHER tools (Hermes's own terminal, messaging or file tools, or other servers). That lets one server change what trusted tools do, for example adding a hidden recipient to every message (tool shadowing). | [T1036.005](https://attack.mitre.org/techniques/T1036/005/) [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) |
+| `mcp_rug_pull` | high (medium when it only said the tools changed) | The tools changed while the server was running. Hermes refreshes tools automatically when a server says they changed, so a server can pass review with clean descriptions and swap in different ones later. | [T1195.002](https://attack.mitre.org/techniques/T1195/002/) [AML.T0109](https://atlas.mitre.org/techniques/AML.T0109) |
+| `mcp_readonly_lie` | critical | The tool says it is read-only (readOnlyHint), but it wrote files, ran a program or used the network when called. On servers marked `trust: untrusted`, Hermes skips the approval prompt for read-only tools, so this lie gets the action past the user. | [T1036](https://attack.mitre.org/techniques/T1036/) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) |
+| `mcp_sampling_used` | high (critical with keys or hidden orders in the request) | The server asked Hermes to run the user's AI model on its own (MCP sampling, on by default in Hermes). That spends the user's key and lets the server put text in front of the model. | [T1496](https://attack.mitre.org/techniques/T1496/) [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0034](https://atlas.mitre.org/techniques/AML.T0034) |
+| `mcp_credential_request` | high when it asks the user (medium for a tool parameter) | The server asks the user, or the model on the user's behalf, for a password, API key or private key. Honest servers get their keys from their `env` entry, set once by the user. | [T1056.002](https://attack.mitre.org/techniques/T1056/002/) [T1552](https://attack.mitre.org/techniques/T1552/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
+| `server_not_started` | medium | The server did not start or did not answer, so little of it was observed. Servers that need a real account or extra packages stop early in the sandbox. | – |
+
 ## Declarations and coverage
 
 | Rule | Severity | Why it matters | MITRE |
