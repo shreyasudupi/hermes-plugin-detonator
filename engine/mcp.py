@@ -236,7 +236,8 @@ def _rug_pull(first: dict, later: dict, notifications: list) -> list:
     def index(listing):
         return {str(t.get("name")): json.dumps(_metadata(t), sort_keys=True, default=str)
                 for t in listing.get("tools") or []}
-    a, b = index(first), index(later)
+    # The second listing failed (a tool hung, the server died): no answer is not a change.
+    a, b = index(first), index(first if later.get("errors") else later)
     changes = [f"added {rules._safe_name(n)}" for n in sorted(set(b) - set(a))]
     changes += [f"removed {rules._safe_name(n)}" for n in sorted(set(a) - set(b))]
     changes += [f"changed {rules._safe_name(n)}" for n in sorted(set(a) & set(b)) if a[n] != b[n]]
@@ -287,10 +288,18 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     reads: dict = {}
     writes, programs, nets, local, listen, probes, recon, environ = [], [], [], [], [], [], [], []
     own_exec_seen = False
+    exe_of: dict = {}    # process (thread group) -> program it last started, from execve
     for phase, e in _phases(events, trace.get("start_index")):
         if e.get("in_harness"):
             continue
         call, path = e.get("call"), str(e.get("path") or "")
+        if call in ("execve", "execveat") and e.get("ok"):
+            words = [posixpath.basename(str(w)) for w in (e.get("argv") or [path])[:2]]
+            # npm starts as /usr/local/bin/npm, then its #! line re-runs it as `node .../npm`
+            exe_of[e.get("proc") or e.get("pid")] = "npm" if {"npm", "npm-cli.js"} & set(words) else words[0]
+        if phase == "install" and exe_of.get(e.get("proc") or e.get("pid")) == "npm" and posixpath.basename(path) == ".npmrc" \
+                and not e.get("write"):
+            continue    # npm itself reads its settings file on every run; a script reading it is still caught
         label = _phase_label(phase, calls)
         hit = False
         if call in ("open", "openat", "openat2", "creat") and e.get("ok"):
@@ -462,6 +471,9 @@ def _content_findings(result: dict, canary: str, declared: list) -> list:
                 leaked.append(f"{kind[:-6]} {rules._safe_name(r.get('uri') or r.get('name'), 60)}")
     if leaked:
         out.append(Finding("secret_in_output", CRITICAL, "Put a fake key in what the model sees", leaked[:8]))
+    for o in result.get("oversized") or []:
+        floods.append(f'a {int(o.get("bytes") or 0) // 1_000_000} MB message {_phase_label(str(o.get("phase") or ""), calls)} '
+                      "(too big to read; Hermes would try to)")
     if floods:
         out.append(Finding("output_flood", MEDIUM, "Returned a very large amount of text to the model", floods[:5]))
     sampling = [r for r in result.get("from_server") or [] if r.get("method") == "sampling/createMessage"]
@@ -533,6 +545,17 @@ def evaluate(result: dict) -> dict:
         # A forged result file, or the server tracing or killing Detonator's own process.
         findings += [f for f in rules._outside_findings({**result, "events": []})
                      if f.rule in ("result_forged", "monitor_tamper", "log_flood")]
+        # The server is its own process here, so signals it sends to the stand-in for Hermes are
+        # checked directly (in plugin mode the plugin runs inside the harness instead).
+        trace = out.get("trace") or {}
+        hp = str(trace.get("harness_pid") or "")
+        killed = [f'{e.get("call")}({str(e.get("detail")).split(")")[0][:40]}): stopped the stand-in for Hermes'
+                  for e in trace.get("events") or []
+                  if e.get("call") in ("kill", "tkill", "tgkill") and not e.get("in_harness") and hp
+                  and not e.get("error") and str(e.get("detail") or "").split(",")[0].strip() == hp
+                  and rules._kill_signal(e) not in ("0", "SIGCHLD", "")]
+        if killed and not any(f.rule == "monitor_tamper" for f in findings):
+            findings.append(Finding("monitor_tamper", HIGH, "Tried to interfere with runtime monitoring", killed[:3]))
         own = [str(e.get("host")) for e in (out.get("sink") or {}).get("tcp") or []
                if any(v in str(e.get("data") or "") for v in declared)]
         if own:

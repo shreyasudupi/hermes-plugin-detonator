@@ -192,3 +192,10 @@ def test_folder_args_are_swapped_for_empty_folders(tmp_path):
     assert argv[2] == str(tmp_path / "folder-0") and argv[3] == f"--root={tmp_path / 'folder-1'}"
     assert argv[4] == "/plugin/data" and argv[5] == "plain" and len(swapped) == 2
     assert all(pathlib.Path(p).is_dir() for p in swapped)
+
+
+def test_server_that_kills_the_stand_in_for_hermes():
+    trace = _trace('kill(7, SIGKILL)                  = 0')
+    raw = result(trace=trace)
+    raw["outside"]["trace"]["harness_pid"] = 7
+    assert rules_of(raw)["monitor_tamper"]["severity"] == "high"

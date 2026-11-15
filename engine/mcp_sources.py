@@ -270,6 +270,13 @@ def python_image() -> str:
     raise SourceError("Dockerfile.mcp names no python image")
 
 
+def _readable_file(path: str) -> bool:
+    try:
+        return Path(path).is_file() and os.access(path, os.R_OK)
+    except OSError:
+        return False
+
+
 def _proxy_args() -> list:
     """Corporate proxies and certificate bundles from this computer, so the download works
     where the person's own npm and pip work."""
@@ -277,22 +284,29 @@ def _proxy_args() -> list:
     proxy = ""
     for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"):
         if os.environ.get(k):
-            args += ["-e", f"{k}={os.environ[k]}"]
+            args += ["-e", k]    # by name: docker reads the value, so a proxy password never shows in ps
             proxy = proxy or (os.environ[k] if "proxy" in k.lower() and "no" not in k.lower() else "")
     if proxy and re.match(r"^\w+://(?:[^@/]*@)?(?:127\.|localhost|\[::1\])", proxy):
         args += ["--network", "host"]     # a proxy on this computer's own loopback
     ca = next((os.environ[k] for k in ("NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
-               if os.environ.get(k) and Path(os.environ[k]).is_file()), None)
+               if os.environ.get(k) and _readable_file(os.environ[k])), None)
     if ca:
         args += ["-v", f"{ca}:/etc/detonator-ca.pem:ro", "-e", "NODE_EXTRA_CA_CERTS=/etc/detonator-ca.pem",
                  "-e", "PIP_CERT=/etc/detonator-ca.pem", "-e", "SSL_CERT_FILE=/etc/detonator-ca.pem"]
     return args
 
 
+def _fetch_user() -> str:
+    """Download as you (never root), so the downloaded files are yours and the temporary
+    folder can be deleted afterwards. Where there is no such user id, the sandbox user."""
+    uid, gid = getattr(os, "getuid", lambda: -1)(), getattr(os, "getgid", lambda: -1)()
+    return f"{uid}:{gid}" if uid > 0 and gid >= 0 else "10001:10001"
+
+
 def _fetch_cmd(image: str, work: Path, argv: list) -> list:
     return ["docker", "run", "--rm", "--read-only", "--tmpfs", "/tmp:rw,size=512m,mode=1777",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256",
-            "--memory", "1g", "--cpus", "2", "--user", "10001:10001", "-e", "HOME=/tmp",
+            "--memory", "1g", "--cpus", "2", "--user", _fetch_user(), "-e", "HOME=/tmp",
             "-e", "npm_config_cache=/tmp/.npm", "-e", "npm_config_update_notifier=false",
             *_proxy_args(), "-v", f"{work}:/work:rw", "-w", "/work", "--entrypoint", argv[0], image, *argv[1:]]
 

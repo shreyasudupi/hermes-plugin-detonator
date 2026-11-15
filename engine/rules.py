@@ -1133,6 +1133,13 @@ def _secret_hits(text: str, canary: str) -> bool:
     return False
 
 
+def _kill_signal(e: dict) -> str:
+    """The signal in a traced kill(pid, SIG) call. The trace keeps the return value too
+    ('7, SIGKILL)  = 0'), so read the second argument, not the end of the text."""
+    parts = str(e.get("detail") or "").split(")")[0].split(",")
+    return parts[-1].strip() if len(parts) >= 2 else ""
+
+
 def _outside_findings(result: dict) -> list:
     # Its own decoding budget, so a flood of encoded text inside cannot blind the outside check.
     _leakfind.reset_run_budget()
@@ -1253,7 +1260,7 @@ def _outside_findings_raw(result: dict) -> list:
             tamper.append(f'{call}({str(e.get("detail"))[:80]})')
         elif call in ("kill", "tkill", "tgkill") and not e.get("error") and e.get("in_harness") \
                 and str(e.get("detail") or "").split(",")[0].strip() == str(trace.get("harness_pid")) \
-                and not str(e.get("detail") or "").rstrip(") ").endswith(("0", "SIGALRM")):
+                and _kill_signal(e) not in ("0", "SIGALRM", ""):
             # The harness never signals itself (its timeouts use alarms), so this is the plugin
             # ending the whole test early, which leaves no in-process record to judge.
             tamper.append(f'{call}({str(e.get("detail")).split(")")[0][:40]}): ended its own sandbox')

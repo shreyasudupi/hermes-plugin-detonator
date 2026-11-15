@@ -61,6 +61,7 @@ class Server:
         self.from_server = []      # requests the server sent to us
         self.notifications = []
         self.bad_lines = 0
+        self.oversized = []        # messages over MAX_LINE, skipped unread
         self.stderr = b""
         self.started = started
         threading.Thread(target=self._read_out, daemon=True).start()
@@ -74,6 +75,20 @@ class Server:
                 break
             if not line:
                 break
+            if len(line) >= MAX_LINE and not line.endswith(b"\n"):
+                # Too big to read as one message: skip the rest of it and remember that it happened.
+                size = len(line)
+                while True:
+                    try:
+                        more = self.proc.stdout.readline(MAX_LINE)
+                    except (OSError, ValueError):
+                        more = b""
+                    size += len(more)
+                    if not more or more.endswith(b"\n") or size > 2_000_000_000:
+                        break
+                if len(self.oversized) < MAX_RECORDS:
+                    self.oversized.append({"phase": self.h._PHASE, "bytes": size})
+                continue
             try:
                 msg = json.loads(line)
             except ValueError:
@@ -394,6 +409,7 @@ def _finish(h, result, server):
         result["from_server"] = server.from_server
         result["notifications"] = server.notifications
         result["bad_lines"] = server.bad_lines
+        result["oversized"] = server.oversized
         result["server_exit"] = server.proc.poll()
         result["server_stopped"] = server.stop()
         result["stderr_tail"] = server.stderr.decode("utf-8", "replace")
