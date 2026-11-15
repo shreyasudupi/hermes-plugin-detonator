@@ -244,7 +244,8 @@ def _rug_pull(first: dict, later: dict, notifications: list) -> list:
     if not changes and not told:
         return []
     evidence = changes[:10] + ([f"sent tools/list_changed {len(told)} time(s)"] if told else [])
-    return [Finding("mcp_rug_pull", HIGH if changes else MEDIUM,
+    # Saying "my tools changed" with nothing changed is noise (test servers do it), not a rug pull.
+    return [Finding("mcp_rug_pull", HIGH if changes else LOW,
                     "Changed its tools after being listed (a rug pull)" if changes else
                     "Told Hermes its tools changed, but the new list looked the same", evidence)]
 
@@ -467,7 +468,9 @@ def _content_findings(result: dict, canary: str, declared: list) -> list:
     if sampling:
         text = " ".join(str(r.get("params")) for r in sampling)
         bad = rules._secret_hits(_strip(text, declared), canary) or rules._injection_hits(text)
-        out.append(Finding("mcp_sampling_used", CRITICAL if bad else HIGH,
+        # Sampling is a normal MCP feature (on by default in Hermes), so a plain request is worth a
+        # look, not an alarm; keys or hidden orders in it make it critical.
+        out.append(Finding("mcp_sampling_used", CRITICAL if bad else MEDIUM,
                            "Asked Hermes to run your AI model" + (" with keys or hidden orders in the request"
                                                                   if bad else ""),
                            [f'{len(sampling)} request(s), first {_phase_label(sampling[0].get("phase") or "", calls)}: '
@@ -594,6 +597,9 @@ def render(label: str, evaluation: dict, raw: dict | None = None) -> str:
            "The server was started there with fake values for every env entry, and a stand-in for Hermes "
            "listed its tools, resources and prompts, called every tool with test input, and listed everything "
            "again to catch changes.")
+    if raw and raw.get("path_args"):
+        how += (f" Its {len(raw['path_args'])} folder argument(s) from the config were swapped for empty test "
+                "folders, so it never saw your real files.")
     if marker in text:
         head, tail = text.split(marker, 1)
         tail = tail.split("\n\n", 2)

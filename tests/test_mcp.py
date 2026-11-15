@@ -164,3 +164,31 @@ def test_cache_writes_are_low():
 def test_server_writing_the_result_file_is_forgery():
     trace = _trace('openat(AT_FDCWD</>, "/out/result.json", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3')
     assert rules_of(result(trace=trace))["result_forged"]["severity"] == "critical"
+
+
+# ---- honest-server calibration (official servers) ---------------------------------------
+def test_plain_sampling_is_only_a_look():
+    raw = result(from_server=[{"method": "sampling/createMessage", "phase": "call:0",
+                               "params": "Summarise this note for the user"}],
+                 calls=[{"index": 0, "tool": "add"}])
+    assert rules_of(raw)["mcp_sampling_used"]["severity"] == "medium"
+    assert mcp.evaluate(raw)["verdict"] == "REVIEW"
+
+
+def test_list_changed_with_nothing_changed_is_low():
+    raw = result(notifications=[{"method": "notifications/tools/list_changed"}])
+    assert rules_of(raw)["mcp_rug_pull"]["severity"] == "low"
+
+
+def test_folder_args_are_swapped_for_empty_folders(tmp_path):
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location(
+        "mcp_harness", pathlib.Path(__file__).parent.parent / "sandbox" / "mcp_harness.py")
+    h = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(h)
+    argv, swapped = h.swap_path_args(
+        ["node", "node_modules/x/index.js", "/Users/sam/Documents", "--root=~/code", "/plugin/data", "plain"],
+        str(tmp_path), "/plugin")
+    assert argv[2] == str(tmp_path / "folder-0") and argv[3] == f"--root={tmp_path / 'folder-1'}"
+    assert argv[4] == "/plugin/data" and argv[5] == "plain" and len(swapped) == 2
+    assert all(pathlib.Path(p).is_dir() for p in swapped)

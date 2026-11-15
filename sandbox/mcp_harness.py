@@ -225,6 +225,24 @@ def load_entry(canary):
     return argv, {k: fake_value(canary, i) for i, k in enumerate(names)}, extra, install[:1]
 
 
+def swap_path_args(argv, data_dir, plugin_dir):
+    """Folders from the person's computer (like a filesystem server's allowed folder) do not exist
+    here. Each absolute or ~ path argument becomes its own empty folder under mcp-data, so the
+    server starts and works on a harmless copy. The program and its script are left alone."""
+    out, swapped = list(argv[:1]), []
+    for a in argv[1:]:
+        flag, sep, val = a.partition("=") if a.startswith("--") else ("", "", a)
+        if not (val.startswith("/") or val.startswith("~")) or val.startswith(plugin_dir) \
+                or val.startswith("/usr/") or val.startswith("/opt/") or len(swapped) >= 8:
+            out.append(a)
+            continue
+        new = os.path.join(data_dir, f"folder-{len(swapped)}")
+        os.makedirs(new, exist_ok=True)
+        swapped.append(new)
+        out.append(flag + sep + new if sep else new)
+    return out, swapped
+
+
 INSTALL_TIMEOUT_S = 45
 
 
@@ -263,6 +281,8 @@ def run(h):
     })
     h.plant_decoys()
     os.makedirs(result["allowed_write_dirs"][0], exist_ok=True)
+    argv, result["path_args"] = swap_path_args(argv, result["allowed_write_dirs"][0], h.PLUGIN_DIR)
+    result["argv"] = argv
     # What Hermes hands a stdio server: its own env entries plus a small safe baseline.
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "TERM": "xterm-256color",
            "USER": os.environ.get("USER", ""), "LANG": "C.UTF-8", **extra_env, **declared}
