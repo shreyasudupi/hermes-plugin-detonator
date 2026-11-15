@@ -64,7 +64,9 @@ script you haven't read. These are Hermes's own commands.
 
 ## 4. Check Docker is ready
 
-Start the chat with `hermes`, then type:
+Start the chat with `hermes`. (The chat needs an AI provider set up first; `hermes model` does
+that. `/detonate` itself never uses the model. No provider? Every command below also works from the
+terminal as `hermes detonate ...`, without one.) Then type:
 
 ```
 /detonate check
