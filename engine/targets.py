@@ -190,8 +190,10 @@ def parse(raw: str) -> Plan:
             raise ValueError(USAGE)
         entry = catalog_entry(name)
         if entry is None:
-            raise ValueError(f"No plugin called {name} in the Hermes catalog. `hermes plugins search <word>` "
-                             "finds catalog names; for a plugin outside the catalog use /detonate <owner/repo>.")
+            raise ValueError(f"Your Hermes catalog has no plugin called {name}. If it was added recently, "
+                             "run `hermes update` (Hermes from before Nov 9, 2026 cannot read the online "
+                             "catalog, so it misses newer plugins). `hermes plugins search <word>` finds "
+                             "catalog names. Or test it by its GitHub page: /detonate <owner/repo>.")
         repo, sha, subdir = _entry_target(entry)
         return Plan(repo, sha, subdir, source=f"{name} from the Hermes catalog, the exact commit "
                                                 f"`hermes plugins install {name}` installs")

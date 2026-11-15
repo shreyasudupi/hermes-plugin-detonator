@@ -37,6 +37,9 @@ hermes plugins install detonator && hermes plugins enable detonator && hermes ga
 hermes plugins install detonator; hermes plugins enable detonator; hermes gateway stop
 ```
 
+If it says `'detonator' is not in the Hermes plugin catalog`, run `hermes update` and try again:
+Hermes from before Nov 9, 2026 cannot read the online catalog, so it misses newer plugins.
+
 What the three parts do:
 
 1. `hermes plugins install detonator` downloads Detonator from the Hermes plugin catalog into your

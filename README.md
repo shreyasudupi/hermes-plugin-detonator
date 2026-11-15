@@ -44,6 +44,10 @@ hermes plugins install detonator && hermes plugins enable detonator && hermes ga
 hermes
 ```
 
+If Hermes says `'detonator' is not in the Hermes plugin catalog`, run `hermes update` first:
+Hermes from before Nov 9, 2026 cannot read the online catalog, so it misses plugins added since
+its release.
+
 Use the catalog name `detonator`, not `shreyasudupi/hermes-plugin-detonator`: Hermes blocks
 installs straight from a GitHub repo when its install scan finds security words, and
 Detonator's docs and tests are full of them (they describe what it catches).
