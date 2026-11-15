@@ -52,7 +52,7 @@ def test_unknown_or_non_github_catalog_name_is_explained(catalog):
 
 def test_no_catalog_available_is_explained(monkeypatch):
     monkeypatch.setitem(sys.modules, "hermes_cli", None)
-    with pytest.raises(ValueError, match="catalog"):
+    with pytest.raises(ValueError, match="could not read the Hermes plugin catalog"):
         targets.parse("weather")
 
 

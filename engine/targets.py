@@ -88,6 +88,14 @@ def catalog_entry(name: str):
     return None
 
 
+def catalog_readable() -> bool:
+    try:
+        from hermes_cli import plugin_catalog
+    except Exception:
+        return False
+    return any(hasattr(plugin_catalog, f) for f in ("get_live_catalog_entry", "get_catalog_entry"))
+
+
 def _entry_target(entry) -> tuple[str, str, Optional[str]]:
     repo = github_repo(getattr(entry, "repo", ""))
     sha = str(getattr(entry, "sha", "")).lower()
@@ -191,6 +199,10 @@ def parse(raw: str) -> Plan:
         if len(parts) > 1 or not NAME_RE.match(name):
             raise ValueError(USAGE)
         entry = catalog_entry(name)
+        if entry is None and not catalog_readable():
+            raise ValueError("Detonator could not read the Hermes plugin catalog in this Hermes version, so "
+                             "it cannot look up names. Test the plugin by its GitHub page instead: "
+                             "/detonate <owner/repo>. (`hermes plugins info <name>` shows its repo.)")
         if entry is None:
             raise ValueError(f"Your Hermes catalog has no plugin called {name}. If it was added recently, "
                              "run `hermes update` (Hermes from before Nov 9, 2026 cannot read the online "
