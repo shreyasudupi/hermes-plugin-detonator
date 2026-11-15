@@ -329,7 +329,7 @@ no Python code to run, and Detonator says so instead of guessing.
   servers from the MCP project (memory, filesystem, sequential thinking, everything, fetch, time)
   and 16 popular third-party ones (Playwright, Puppeteer, GitHub, Notion, Sentry, Supabase,
   Context7, Firecrawl, Exa, Tavily, Brave Search, DuckDuckGo, AWS Documentation, Atlassian, SQLite,
-  git), which must come out clean or review: 4 no findings, 18 review, none worse. Stress tests cover servers that hang, flood output, list
+  git), which must come out clean or review: 8 no findings and 14 review across all 22, none worse. Stress tests cover servers that hang, flood output, list
   5,000 tools, start hundreds of programs, kill the stand-in for Hermes, or hang in an install script.
 - **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
   their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
