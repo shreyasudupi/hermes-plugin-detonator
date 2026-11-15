@@ -4,14 +4,14 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-**Current version: v0.3.0** ([what's new](#versions))
+**Current version: v0.4.0** ([what's new](#versions))
 
 [![Watch the 82-second Plugin Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
 ▶️ **[Watch the 82-second demo](https://x.com/shreyasudupi/status/2120289870908465286)**: a real run catching a fake key-stealer plugin, comparing two versions, the clock jump, and the plain-words AI explanation.
 
 Detonator is a security sandbox for [Hermes Agent](https://hermes-agent.nousresearch.com/)
-plugins. You point it at a plugin at an exact commit and approve the run. It then
+plugins. You name a plugin (its catalog name, or its GitHub page) and approve the run. It then
 loads that plugin inside a disposable Docker container with a fake Hermes home full
 of decoys, fires synthetic hooks and tool calls at it, and reports what the plugin
 actually did compared with what it declares. Each finding says, in plain words, why it
@@ -36,21 +36,32 @@ You need [Docker](https://docs.docker.com/get-docker/) running and Hermes instal
 Not sure Docker is ready? Type `/detonate check` in Hermes: it only asks Docker for its
 status, runs nothing, and tells you what to fix (see [Docker problems](#docker-problems)).
 
-One command installs it, switches it on and restarts Hermes's plugin host so it loads:
+One command installs it from the Hermes plugin catalog, switches it on and restarts Hermes's
+plugin host so it loads:
 
 ```bash
-hermes plugins install shreyasudupi/hermes-plugin-detonator && hermes plugins enable detonator && hermes gateway stop
+hermes plugins install detonator && hermes plugins enable detonator && hermes gateway stop
 hermes
 ```
+
+Use the catalog name `detonator`, not `shreyasudupi/hermes-plugin-detonator`: Hermes blocks
+installs straight from a GitHub repo when its install scan finds security words, and
+Detonator's docs and tests are full of them (they describe what it catches).
 
 On Windows PowerShell 5, use `;` instead of `&&`. New to Hermes or Docker? The
 [step-by-step quickstart](docs/QUICKSTART.md) starts from nothing, on macOS, Windows and Linux.
 
-In the Hermes chat:
+In the Hermes chat, name the plugin you want to test. You don't need a commit SHA:
 
 ```
-/detonate <owner/repo> <40-char-sha> [subdir]
+/detonate <name>                               # a plugin from the Hermes catalog, by name
+/detonate https://github.com/owner/repo        # any plugin on GitHub: its newest commit
+/detonate update <name>                        # before updating: your installed copy vs. the update
 ```
+
+`<name>` is a plugin's name as `hermes plugins search <word>` or `hermes plugins list` shows it. A catalog name
+tests exactly the commit and folder that `hermes plugins install <name>` would install. Every
+report names the full commit it tested.
 
 Detonator asks before it does anything, and you choose the test:
 
@@ -73,17 +84,26 @@ Full report: ~/.hermes/plugin-data/detonator/reports/....md
 
 ## Using it in Hermes
 
-```
-/detonate <owner/repo> <40-char-sha> [subdir]
-```
+| You want to test | Type |
+|---|---|
+| A plugin from the Hermes catalog, before installing it | `/detonate <catalog-name>` |
+| Any plugin on GitHub | `/detonate <owner/repo or GitHub link> [folder]` (its newest commit) |
+| An update, before you apply it | `/detonate update <installed-name>` |
+| One exact commit, or two to compare | `/detonate <owner/repo> <40-char-sha> [<newer-sha>] [folder]` |
 
-or from a terminal: `hermes detonate <owner/repo> <40-char-sha> [--subdir path] [--compare-to new-sha]`.
+`[folder]` is only for repos that keep the plugin in a subfolder; catalog names fill it in for
+you. The newest commit is looked up (with `git ls-remote`) only after you approve the run.
+`update` reads which commit you have installed from the plugin's own folder and compares it with
+what `hermes plugins update` would install: the catalog's pin, or for a plugin installed from
+GitHub, its newest commit.
+
+From a terminal: `hermes detonate <catalog-name | owner/repo | update name> [sha] [--subdir path] [--compare-to new-sha]`.
 `/detonate check` only tells you whether Docker is ready; it runs nothing.
 
 Detonator always asks you before it runs anything. If no one can answer (a cron
 job, a hook, a non-interactive or unattended run), it refuses instead of running.
 There is no flag that skips the question. The `detonate_plugin` tool lets the
-agent suggest a run, but it only returns the `/detonate` command for you to run.
+agent suggest a run (by catalog name or repo), but it only returns the `/detonate` command for you to run.
 Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
 
 ### Docker problems
@@ -117,8 +137,10 @@ produced is passed to the model as untrusted data with hidden characters removed
 
 ## Compare two versions (rug-pull check)
 
-A plugin can be clean when you install it and turn bad in an update. Give two commits
-and Detonator runs both, then shows what the newer one does that the older one did not:
+A plugin can be clean when you install it and turn bad in an update. Before you update an
+installed plugin, run `/detonate update <installed-name>`: Detonator runs the version you have and
+the version an update would install, then shows what the newer one does that the older one did not.
+Or give any two commits yourself:
 
 ```
 /detonate <owner/repo> <old-sha> <new-sha> [subdir]
@@ -232,7 +254,7 @@ no Python code to run, and Detonator says so instead of guessing.
   code to dodge the inside monitor and one that forges a clean result (both caught only from
   outside), an encoded key leak, an argument swapper, a model-request redirector, look-alike tool
   names, an output flood, a chat snooper and a plugin whose description lies, plus honest and
-  grey-area plugins that must not be flagged as dangerous. All 32 get their expected verdict,
+  grey-area plugins that must not be flagged as dangerous. All 33 get their expected verdict,
   together they set off every one of the 55 rules, and CI re-checks them on every change. They live in a separate private
   repository so this one stays clean for the catalog scanner, and are available to reviewers on
   request.
@@ -257,17 +279,21 @@ Detonator does things a reviewer should know about:
   Each test runs `docker run` for the plugin and for the two monitor containers, then
   `docker wait`, `docker stop` and `docker rm` to clean them up.
 - **Clones code.** For a GitHub target it runs `git init` / `git fetch` / `git checkout`
-  of the exact 40-character SHA you give it, with git hooks disabled, no submodules, and symlinks checked out as plain files
+  of one exact 40-character commit: the one you give, the one the Hermes catalog pins, or the
+  newest one, found with `git ls-remote` (reads the repo's branch list only) after you approve, with git hooks disabled, no submodules, and symlinks checked out as plain files
   (links are never copied into the sandbox, so a repo cannot pull in real files from your machine).
   No code from the target runs on your machine outside the container.
 - **Shell commands.** Only `git` and `docker`, as above, and only after you approve
   the run. The two monitor containers run only while a test runs and are removed after it;
   nothing keeps running on your machine.
-- **Network.** Only for `git fetch` and the one-time image builds. No container gets a real
+- **Network.** Only for `git ls-remote`, `git fetch` and the one-time image builds. A catalog name
+  is looked up with Hermes's own catalog reader, which may refresh Hermes's cached catalog. No container gets a real
   network: the monitor containers run with `--network none`, and the plugin's container
   shares the fake internet's network, which only answers locally.
 - **Credentials.** Detonator never reads your real Hermes home, `.env`, `auth.json`
-  or any credential store. The sandbox gets its own fake home with fake keys.
+  or any credential store. For `/detonate update <name>` it reads only that plugin's own commit
+  records (`.git/HEAD`, its branch ref, the remote URL in `.git/config`, and Hermes's
+  `.hermes-catalog.json`), as files, without running git there. The sandbox gets its own fake home with fake keys.
   The `git` and `docker` commands it runs get only an allow-listed environment (PATH, HOME,
   locale, Docker and proxy settings), never the API keys Hermes has loaded.
 - **Sandbox settings.** `--read-only --cap-drop ALL
@@ -310,6 +336,17 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 ## Versions
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
+
+- **v0.4.0** (Nov 15, 2026): No SHA needed.
+  - `/detonate <catalog-name>` tests exactly what `hermes plugins install <name>` would install
+  (repo, commit and folder from the Hermes catalog). `/detonate <owner/repo>` or a GitHub link
+  tests the newest commit, looked up only after you approve. `/detonate update <installed-name>`
+  compares the version you have with the one an update would install. Exact SHAs still work, and
+  every summary names the full commit it tested.
+  - Install with the catalog name (`hermes plugins install detonator`): installing straight from
+  the GitHub repo is blocked by Hermes's install scan.
+  - Clearer messages: a short SHA or a folder that does not exist says what to type instead; the
+  terminal prompt also accepts `y`.
 
 - **v0.3.0** (Nov 13, 2026): The outside monitor and sharper rules.
   - **Outside monitor.** Every run is now also watched from two

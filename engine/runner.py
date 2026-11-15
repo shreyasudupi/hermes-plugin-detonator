@@ -259,6 +259,10 @@ def fetch_github(repo: str, sha: str, workdir: Path, subdir: str | None = None) 
     path = dest / subdir if subdir else dest
     if subdir and not path.resolve().is_relative_to(dest.resolve()):
         raise DetonatorError("subdir must stay inside the repository")
+    if subdir and not path.is_dir():
+        raise DetonatorError(f"that commit has no folder called {subdir}. The word after the repo is the "
+                             "plugin's folder inside it (branch names are not accepted; leave it out to "
+                             "test the newest commit)")
     check_runnable(path, "that commit" + (f" in {subdir}" if subdir else ""))
     return Target(path=path, label=f"{repo}@{sha[:12]}", repo=repo, sha=sha)
 

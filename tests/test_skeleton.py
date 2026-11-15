@@ -100,7 +100,7 @@ def test_slash_command_validates_input():
     ctx = FakeCtx(choice="run")
     plugin.register(ctx)
     assert "Usage" in ctx.commands["detonate"]("")
-    assert "40-character" in ctx.commands["detonate"]("a/b main")
+    assert "40-character" in ctx.commands["detonate"]("a/b abc1234")
     assert "relative" in ctx.commands["detonate"](f"a/b {SHA} ../etc")
     assert ctx.asked == []
 
