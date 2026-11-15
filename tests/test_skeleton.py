@@ -46,8 +46,8 @@ def test_register_matches_manifest():
     ctx = FakeCtx()
     plugin.register(ctx)
     assert set(ctx.tools) == {"detonate_plugin", "detonator_report"}
-    assert set(ctx.commands) == {"detonate"}
-    assert set(ctx.cli) == {"detonate"}
+    assert set(ctx.commands) == {"detonate", "detonate-mcp"}
+    assert set(ctx.cli) == {"detonate", "detonate-mcp"}
     text = (ROOT / "plugin.yaml").read_text(encoding="utf-8")
     assert "- detonate_plugin" in text and "- detonator_report" in text
 

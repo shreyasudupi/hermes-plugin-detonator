@@ -21,6 +21,7 @@ import posixpath
 import re
 from pathlib import Path
 
+from . import mcp_sources as sources
 from . import report, rules, runner
 from .rules import CRITICAL, HIGH, INFO, LOW, MEDIUM, Finding
 
@@ -47,6 +48,11 @@ _SANDBOX_PROBES = ("/.dockerenv", "/run/.containerenv", "/proc/1/cgroup", "/proc
                    "/sys/hypervisor")
 _RECON = ("/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/machine-id")
 _CACHE_DIRS = (".cache", ".npm")
+_BUILD_TOOLS = {"npm", "npm-cli.js", "node", "sh", "dash", "bash", "node-gyp", "node-gyp.js", "make", "cc", "gcc",
+                "g++", "c++", "python3", "python", "uname"}
+_RISKY_RULES = {"decoy_accessed", "hermes_env_read", "browser_or_wallet_read", "environ_file_read", "memory_read",
+                "persistence", "agent_config_modified", "write_outside_folder", "command_run", "remote_code_fetch",
+                "undeclared_network", "listener", "secret_sent_out", "sandbox_check", "recon"}
 
 
 class McpError(Exception):
@@ -80,6 +86,20 @@ def check_entry(entry, where: str) -> dict:
             "env": {n: "" for n in names[:32]}}
 
 
+INSTALL_CMD = ["npm", "rebuild", "--foreground-scripts"]
+
+
+def _finish_target(target: runner.Target, entry: dict, checks: list) -> runner.Target:
+    """Add the install step (when packages have npm install scripts) and the entry checks."""
+    scripts = sources.npm_install_scripts(target.path)
+    if scripts:
+        entry["install"] = [INSTALL_CMD]
+    target.entry = entry
+    target.install_scripts = scripts
+    target.checks = checks
+    return target
+
+
 def load_folder_entry(path: str) -> runner.Target:
     """A local folder holding an MCP server and its Hermes-style entry in mcp-server.yaml."""
     p = Path(path).expanduser().resolve()
@@ -91,8 +111,56 @@ def load_folder_entry(path: str) -> runner.Target:
         data = runner._yaml_safe_load(f.read_text(encoding="utf-8")) or {}
     except Exception as exc:
         raise McpError(f"cannot parse {ENTRY_FILE}: {exc}")
+    cfg = data.get("_detonator_config") if isinstance(data, dict) else None
+    if cfg:    # a config.yaml plus a server name: check that entry only, run nothing
+        name = str(data.get("_detonator_server") or "")
+        raw = sources.read_servers(p / str(cfg)).get(name)
+        if raw is None:
+            raise McpError(f"no server named '{name}' in {cfg}")
+        try:
+            plan = sources.plan_entry(name, raw)
+        except sources.SourceError:
+            plan = None
+        target = runner.Target(path=p, label=f"{name} (config only)")
+        target.entry, target.plan, target.install_scripts = None, plan, []
+        target.checks = sources.config_checks(name, raw, plan)
+        target.config_only = True
+        return target
     target = runner.Target(path=p, label=str(p))
-    target.entry = check_entry(data, ENTRY_FILE)
+    return _finish_target(target, check_entry(data, ENTRY_FILE), sources.config_checks(p.name, data, None))
+
+
+def load_config_target(name: str, work: Path, config: Path | None = None) -> runner.Target:
+    """One server from Hermes's config.yaml, by name: plan it, check its entry, and get its code
+    (downloaded in the fetch container, or copied from its folder). Nothing runs here."""
+    try:
+        servers = sources.read_servers(config)
+        if name not in servers:
+            known = ", ".join(sorted(str(k) for k in servers)[:20]) or "none"
+            raise McpError(f"no MCP server named '{name}' in Hermes's config.yaml (servers there: {known})")
+        raw = servers[name]
+        plan = sources.plan_entry(name, raw)
+        checks = sources.config_checks(name, raw, plan)
+        if plan.kind == "remote":
+            target = runner.Target(path=work, label=f"{name} (remote: {plan.url})")
+            target.entry, target.checks, target.plan, target.install_scripts = None, checks, plan, []
+            return target
+        if plan.kind == "npm":
+            folder = sources.fetch_npm(plan, work / "pkg")
+            entry = sources.npm_entry(plan, folder)
+            label = f"{name} (npm {plan.package}@{plan.version})"
+        elif plan.kind == "pypi":
+            folder = sources.fetch_pypi(plan, work / "pkg")
+            entry = sources.pypi_entry(plan, folder)
+            label = f"{name} (PyPI {plan.package}=={plan.version})"
+        else:
+            folder, entry = sources.local_folder(plan, work)
+            label = f"{name} ({plan.script})"
+    except sources.SourceError as exc:
+        raise McpError(str(exc))
+    target = _finish_target(runner.Target(path=folder, label=label), check_entry(entry, name) | {
+        k: entry[k] for k in ("extra_env",) if k in entry}, checks)
+    target.plan = plan
     return target
 
 
@@ -102,7 +170,18 @@ def fake_value(canary: str, i: int) -> str:
 
 
 def detonate(target: runner.Target, outside: bool | None = True) -> dict:
-    return runner.detonate(target, outside=outside, mcp_entry=target.entry)
+    """Run the server in the sandbox. A remote server is not run: only its entry is checked."""
+    checks = [list(c) for c in getattr(target, "checks", [])]
+    if getattr(target, "config_only", False):
+        return {"mode": "mcp", "config_only": True, "config_checks": checks, "outside": {"ran": False,
+                "reason": "config only: the entry's settings were checked; the server was not downloaded or run"}}
+    if target.entry is None:
+        return {"mode": "mcp", "remote": True, "config_checks": checks, "outside": {"ran": False,
+                "reason": "remote server: it runs on someone else's computer, so only its entry was checked"}}
+    raw = runner.detonate(target, outside=outside, mcp_entry=target.entry)
+    raw["config_checks"] = checks
+    raw["install_scripts"] = getattr(target, "install_scripts", [])
+    return raw
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +267,7 @@ def _phase_label(phase: str, calls: dict) -> str:
     phase = phase.replace(":", "-")
     if phase.startswith("call-"):
         return f"while running tool {rules._safe_name(calls.get(phase, '?'), 60)}"
-    return {"start": "while starting", "initialize": "while starting", "list": "while being listed",
+    return {"install": "while installing", "start": "while starting", "initialize": "while starting", "list": "while being listed",
             "relist": "while being listed again"}.get(phase.split("-")[0], f"during {rules._safe_name(phase)}")
 
 
@@ -217,6 +296,9 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
             if path.startswith(rules._PHASE_PREFIX) or path == rules._RESULT_FILE:
                 continue
             if e.get("write"):
+                if phase == "install" and (rules._under(path, ["/plugin"]) or rules._under(path, [
+                        posixpath.join(home, ".npm"), posixpath.join(home, ".cache")])):
+                    continue    # npm building into the package's own folder, or its cache
                 if not rules._under(path, allowed) and not path.startswith(("/dev/", "/proc/")):
                     writes.append((phase, label, path))
                     hit = True
@@ -239,6 +321,8 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
             if e.get("pid") == server_pid and not own_exec_seen:
                 own_exec_seen = True
                 continue
+            if phase == "install" and posixpath.basename(path) in _BUILD_TOOLS:
+                continue    # npm running the package's scripts, and the usual build tools
             programs.append((phase, label, " ".join(e.get("argv") or [path])[:200]))
             hit = True
         elif call in ("connect", "sendto") and e.get("ip") and e.get("ok") is not None:
@@ -412,7 +496,13 @@ def evaluate(result: dict) -> dict:
     if result.get("fatal") and not out.get("ran"):
         return {"verdict": rules.VERDICT_ERROR, "findings": [], "detail": str(result["fatal"])[:2000],
                 "outside": summary}
-    findings: list[Finding] = []
+    findings: list[Finding] = [Finding(rule, sev, title, list(ev))
+                               for rule, sev, title, ev in (result.get("config_checks") or [])]
+    if result.get("remote") or result.get("config_only"):
+        findings.sort(key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
+        extra = {"remote": True} if result.get("remote") else {"config_only": True}
+        return {"verdict": rules._verdict(findings), "findings": [f.to_dict() for f in findings],
+                "outside": summary, "tools": [], **extra}
     listing = result.get("listing") or {}
     findings += _description_findings(listing, "")
     relisting = result.get("relisting") or {}
@@ -447,6 +537,18 @@ def evaluate(result: dict) -> dict:
                                     sorted(set(own))[:5],
                                     why="The server got this key from its env entry and sent it where its "
                                         "tool calls went. Check that the host is the service the server is for."))
+    scripts = result.get("install_scripts") or []
+    if scripts:
+        during = [str(ev) for f in findings if f.rule in _RISKY_RULES for ev in f.evidence if "while installing" in str(ev)]
+        names = [f'{s.get("package")}: {", ".join(sorted(s.get("scripts") or {}))}' for s in scripts[:6]]
+        runs = result.get("install_runs") or []
+        if during:
+            findings.append(Finding("mcp_install_script", HIGH, "Its install scripts did risky things",
+                                    during[:6] + names[:3]))
+        else:
+            findings.append(Finding("mcp_install_script", INFO,
+                                    "Has install scripts; they ran in the sandbox and did nothing risky"
+                                    if runs else "Has install scripts (they did not run)", names))
     if not result.get("initialize") or (result.get("initialize") or {}).get("error") or result.get("start_error"):
         findings.append(Finding("server_not_started", MEDIUM, "The server did not start or did not answer",
                                 [str(result.get("start_error") or (result.get("initialize") or {}).get("error")
@@ -504,13 +606,22 @@ def main(argv=None) -> int:
     import sys
 
     ap = argparse.ArgumentParser(prog="python -m engine.mcp")
-    ap.add_argument("path", help=f"folder with an MCP server and its {ENTRY_FILE}")
+    ap.add_argument("path", nargs="?", help=f"folder with an MCP server and its {ENTRY_FILE}")
+    ap.add_argument("--server", help="a server name from Hermes's config.yaml (mcp_servers)")
+    ap.add_argument("--config", help="config.yaml to read (default: $HERMES_HOME/config.yaml)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--raw", help="write the raw harness result to this file")
     args = ap.parse_args(argv)
+    import tempfile
     try:
-        target = load_folder_entry(args.path)
-        raw = detonate(target)
+        with tempfile.TemporaryDirectory(prefix="detonator-mcp-") as work:
+            if args.server:
+                target = load_config_target(args.server, Path(work), Path(args.config) if args.config else None)
+            elif args.path:
+                target = load_folder_entry(args.path)
+            else:
+                ap.error("give a folder or --server <name>")
+            raw = detonate(target)
     except (McpError, runner.DetonatorError) as exc:
         print(f"detonator: {exc}", file=sys.stderr)
         return 2

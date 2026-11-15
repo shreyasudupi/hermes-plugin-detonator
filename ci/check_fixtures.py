@@ -75,6 +75,9 @@ EXPECTED_MCP = {
     "key-stealer": "DANGEROUS",
     "sampling-abuser": "DANGEROUS",
     "phisher": "SUSPICIOUS",
+    "key-stealer-node": "DANGEROUS",
+    "postinstall-dropper": "DANGEROUS",
+    "config-risks": "REVIEW",
 }
 MUST_FIND_MCP = {
     "poisoned-description": ("mcp_tool_poisoning", ""),
@@ -85,6 +88,9 @@ MUST_FIND_MCP = {
     "sampling-abuser": ("mcp_sampling_used", ""),
     "phisher": ("mcp_credential_request", ""),
     "missing-sdk": ("server_not_started", ""),
+    "key-stealer-node": ("secret_sent_out", ""),
+    "postinstall-dropper": ("mcp_install_script", "install scripts"),
+    "config-risks": ("mcp_unpinned_launch", ""),
 }
 # The trojan's first version (an older commit) must look clean.
 EXPECTED_V1 = {"trojan-update": "NO_FINDINGS"}

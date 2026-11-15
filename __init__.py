@@ -37,3 +37,18 @@ def register(ctx):
         description="Runs another plugin in a no-network Docker container with decoy secrets "
                     "and reports what it did. Asks for confirmation before running.",
     )
+    ctx.register_command(
+        "detonate-mcp",
+        commands.make_mcp_slash_handler(ctx),
+        description="Test an MCP server (a folder, or a name from your config.yaml) in a disposable "
+                    "Docker sandbox (asks first)",
+        args_hint="<folder> | <server-name>",
+    )
+    ctx.register_cli_command(
+        name="detonate-mcp",
+        help="Test an MCP server in a disposable Docker sandbox",
+        setup_fn=commands.setup_mcp_cli,
+        handler_fn=commands.mcp_cli_handler,
+        description="Starts an MCP server in a no-network Docker container with decoy secrets, acts as "
+                    "Hermes and calls its tools, and reports what it did. Asks for confirmation first.",
+    )

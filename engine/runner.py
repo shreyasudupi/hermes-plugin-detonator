@@ -26,7 +26,9 @@ from . import static
 
 SANDBOX_DIR = Path(__file__).resolve().parent.parent / "sandbox"
 IMAGE_REPO = "detonator-sandbox"
+MCP_IMAGE_REPO = "detonator-mcp-sandbox"   # the same sandbox plus Node.js (sandbox/Dockerfile.mcp)
 RUN_TIMEOUT_S = 180
+MCP_RUN_TIMEOUT_S = 240   # an MCP run may first spend up to 45 s on install scripts
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -205,21 +207,22 @@ def docker_check() -> str:
     return "\n".join(lines)
 
 
-def image_tag() -> str:
+def image_tag(mcp: bool = False) -> str:
     h = hashlib.sha256()
     for name in sorted(os.listdir(SANDBOX_DIR)):
         p = SANDBOX_DIR / name
         if p.is_file():
             h.update(name.encode())
             h.update(p.read_bytes())
-    return f"{IMAGE_REPO}:{h.hexdigest()[:12]}"
+    return f"{MCP_IMAGE_REPO if mcp else IMAGE_REPO}:{h.hexdigest()[:12]}"
 
 
-def ensure_image() -> str:
-    tag = image_tag()
+def ensure_image(mcp: bool = False) -> str:
+    tag = image_tag(mcp)
     if _run(["docker", "image", "inspect", tag], timeout=30).returncode == 0:
         return tag
-    proc = _run(["docker", "build", "-q", "-t", tag, str(SANDBOX_DIR)], timeout=900)
+    dockerfile = ["-f", str(SANDBOX_DIR / "Dockerfile.mcp")] if mcp else []
+    proc = _run(["docker", "build", "-q", *dockerfile, "-t", tag, str(SANDBOX_DIR)], timeout=900)
     if proc.returncode != 0:
         err = proc.stderr.strip()
         hint = explain_docker_error(err)
@@ -477,7 +480,7 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
     problem = docker_problem()
     if problem:
         raise DetonatorError(problem)
-    tag = ensure_image()
+    tag = ensure_image(mcp=mcp_entry is not None)
     use_outside = outside_enabled() if outside is None else outside
     with tempfile.TemporaryDirectory(prefix="detonator-") as tmp:
         tmp = Path(tmp)
@@ -523,10 +526,19 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
         if monitor:
             seen_note = {"canary": canary, "home": world["home"]}
         cmd = docker_run_cmd(tag, plugin_copy, in_dir, out_dir, world, tmp / "etc", monitor_args)
+        if mcp_entry is not None and mcp_entry.get("install"):
+            # npm install scripts build into the package's own folder, so this throwaway copy is
+            # writable for that run. Writes there after the install phase still count as the
+            # server changing its own files (engine/mcp.py).
+            cmd = [f"{plugin_copy}:/plugin:rw" if a == f"{plugin_copy}:/plugin:ro" else a for a in cmd]
+            for dirpath, dirnames, filenames in os.walk(plugin_copy):
+                os.chmod(dirpath, 0o777)
+                for n in filenames:
+                    os.chmod(os.path.join(dirpath, n), 0o666 | (os.stat(os.path.join(dirpath, n)).st_mode & 0o111))
         cmd.insert(3, f"--name={name}")
         try:
             try:
-                proc = _run(cmd, timeout=RUN_TIMEOUT_S)
+                proc = _run(cmd, timeout=MCP_RUN_TIMEOUT_S if mcp_entry is not None else RUN_TIMEOUT_S)
             except subprocess.TimeoutExpired:
                 _run(["docker", "rm", "-f", name], timeout=30)
                 proc = None
@@ -535,7 +547,8 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
             if monitor:
                 monitor.cleanup()
         if proc is None:
-            return {"fatal": f"sandbox timed out after {RUN_TIMEOUT_S}s", "outside": seen_outside}
+            limit = MCP_RUN_TIMEOUT_S if mcp_entry is not None else RUN_TIMEOUT_S
+            return {"fatal": f"sandbox timed out after {limit}s", "outside": seen_outside}
         result_path = out_dir / "result.json"
         if not result_path.is_file():
             err = proc.stderr.strip()

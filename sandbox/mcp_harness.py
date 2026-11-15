@@ -27,7 +27,7 @@ MCP_PATH = "/in/mcp.json"
 PROTOCOL_VERSION = "2025-06-18"
 REQUEST_TIMEOUT_S = 10
 START_TIMEOUT_S = 20
-RUN_BUDGET_S = 120          # the host stops the container after 180 s
+RUN_BUDGET_S = 120          # the host stops an MCP container after 240 s (45 s install + this + start)
 MAX_TOOLS = 40
 MAX_ITEMS = 10              # resources and prompts read
 MAX_PAGES = 5
@@ -220,13 +220,38 @@ def load_entry(canary):
         entry = json.load(f)
     argv = [str(entry["command"])] + [str(a) for a in entry.get("args") or []]
     names = sorted(str(k) for k in (entry.get("env") or {}))
-    return argv, {k: fake_value(canary, i) for i, k in enumerate(names)}
+    extra = {str(k): str(v) for k, v in (entry.get("extra_env") or {}).items()}   # set by Detonator, no secrets
+    install = [[str(a) for a in cmd] for cmd in entry.get("install") or [] if isinstance(cmd, list)]
+    return argv, {k: fake_value(canary, i) for i, k in enumerate(names)}, extra, install[:1]
+
+
+INSTALL_TIMEOUT_S = 45
+
+
+def run_install(h, commands, result):
+    """Run the package's install scripts (npm lifecycle scripts) offline, watched by the tracer.
+    They get the environment of a person's shell, decoy API keys included, as a real install would."""
+    runs = []
+    env = dict(os.environ)
+    env.update({"npm_config_offline": "true", "npm_config_update_notifier": "false",
+                "npm_config_fund": "false", "npm_config_audit": "false"})
+    for argv in commands:
+        try:
+            p = subprocess.run(argv, cwd=h.PLUGIN_DIR, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                               timeout=INSTALL_TIMEOUT_S, start_new_session=True)
+            runs.append({"argv": argv, "exit": p.returncode,
+                         "output": (p.stdout + p.stderr).decode("utf-8", "replace")[-STDERR_KEEP:]})
+        except subprocess.TimeoutExpired:
+            runs.append({"argv": argv, "exit": None, "output": f"stopped after {INSTALL_TIMEOUT_S}s"})
+        except OSError as exc:
+            runs.append({"argv": argv, "exit": None, "output": f"{type(exc).__name__}: {exc}"[:300]})
+    result["install_runs"] = runs
 
 
 def run(h):
     """Called by harness.py with itself as `h`, after the tracer is attached."""
     result = {"harness_version": 2, "mode": "mcp", "errors": []}
-    argv, declared = load_entry(h.CANARY)
+    argv, declared, extra_env, install = load_entry(h.CANARY)
     home = h.HOME
     result.update({
         "home": home, "plugin_dir": h.PLUGIN_DIR,
@@ -240,12 +265,18 @@ def run(h):
     os.makedirs(result["allowed_write_dirs"][0], exist_ok=True)
     # What Hermes hands a stdio server: its own env entries plus a small safe baseline.
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "TERM": "xterm-256color",
-           "USER": os.environ.get("USER", ""), "LANG": "C.UTF-8", **declared}
+           "USER": os.environ.get("USER", ""), "LANG": "C.UTF-8", **extra_env, **declared}
     if h.TRACED:
         result["traced"] = h.wait_for_tracer()
     h.reserve_fd()
     h.phase_marker("plugin-start")
     started = time.monotonic()
+
+    if install:
+        h._PHASE = "install"
+        h.phase_marker("mcp-install")
+        run_install(h, install, result)
+        started = time.monotonic()   # the run budget below is for the server itself
 
     h._PHASE = "start"
     h.phase_marker("mcp-start")

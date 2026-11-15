@@ -287,6 +287,22 @@ RULES.update({
         "The server asks the user, or the model on the user's behalf, for a password, API key or private "
         "key. Honest servers get their keys from their `env` entry, set once by the user.",
         ("T1056.002", "T1552"), ("AML.T0055",)),
+    "mcp_install_script": Rule(
+        "npm runs a package's install scripts the moment it is installed, before any tool is used and "
+        "with all of the person's keys in reach. Detonator downloads with scripts switched off and runs "
+        "them only in the sandbox; the finding says what they did there.",
+        ("T1195.002", "T1059.007"), ("AML.T0010.005",)),
+    "mcp_unpinned_launch": Rule(
+        "The config starts a package without an exact version, so Hermes runs whatever was published "
+        "last. A clean test today says nothing about tomorrow's version, and a hijacked package reaches "
+        "you on the next start.",
+        ("T1195.002",), ("AML.T0010.005",)),
+    "mcp_inline_secret": Rule(
+        "A key is written in plain text in config.yaml (or sent without encryption), where any plugin, "
+        "backup or screen share can read it. Hermes can take it from its .env file instead."),
+    "mcp_full_trust_third_party": Rule(
+        "Hermes trusts MCP servers fully by default and runs their tools without asking. For code you "
+        "did not write, `trust: untrusted` makes Hermes ask before each tool that is not read-only."),
     "server_not_started": Rule(
         "The server did not start or did not answer, so little of it was observed. Servers that need a "
         "real account or extra packages stop early in the sandbox."),
