@@ -3,7 +3,10 @@
 DETONATE_PLUGIN = {
     "name": "detonate_plugin",
     "description": (
-        "Prepare a Detonator run for a third-party Hermes plugin at an exact commit. "
+        "Prepare a Detonator run for a third-party Hermes plugin. Give a Hermes catalog name "
+        "(tests exactly what `hermes plugins install <name>` would install), or a GitHub owner/name "
+        "(newest commit unless sha is given), or name with update=true to compare an installed "
+        "plugin with what an update would install. "
         "Detonator runs the plugin in a disposable, no-network Docker sandbox with decoy "
         "secrets and reports what it actually did versus what it declares. This tool does "
         "not run anything: it returns the /detonate command for the user to run and approve."
@@ -11,13 +14,22 @@ DETONATE_PLUGIN = {
     "parameters": {
         "type": "object",
         "properties": {
+            "name": {
+                "type": "string",
+                "description": "Hermes catalog name of the plugin (as `hermes plugins search` shows it), "
+                               "or with update=true the installed plugin's name.",
+            },
+            "update": {
+                "type": "boolean",
+                "description": "Optional: with name, compare the installed copy with what an update would install.",
+            },
             "repo": {
                 "type": "string",
-                "description": "GitHub repository of the plugin, as owner/name.",
+                "description": "GitHub repository of the plugin, as owner/name, for plugins outside the catalog.",
             },
             "sha": {
                 "type": "string",
-                "description": "Full 40-character commit SHA to test.",
+                "description": "Optional full 40-character commit SHA. Leave out to test the newest commit.",
             },
             "new_sha": {
                 "type": "string",
@@ -29,7 +41,7 @@ DETONATE_PLUGIN = {
                 "description": "Optional plugin folder inside the repository.",
             },
         },
-        "required": ["repo", "sha"],
+        "required": [],
     },
 }
 

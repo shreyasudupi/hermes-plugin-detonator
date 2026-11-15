@@ -19,11 +19,9 @@ import time
 from pathlib import Path
 
 if __package__:
-    from .engine import diff, report, rules, runner
+    from .engine import diff, report, rules, runner, targets
 
-USAGE = ("Usage: /detonate <owner/repo> <40-char-sha> [subdir]\n"
-         "   or: /detonate <owner/repo> <old-sha> <new-sha> [subdir]   (compare two versions)\n"
-         "   or: /detonate check   (is Docker ready? runs nothing)")
+USAGE = targets.USAGE if __package__ else ""
 APPROVE, QUICK, CANCEL = "run", "run-quick", "cancel"
 # One line each, so people can choose for themselves (no option is pushed as "recommended").
 FULL_HELP = ("inside and outside monitors: also catches plugins that hide what they do or fake "
@@ -33,43 +31,45 @@ QUICK_HELP = ("inside monitor only: a little faster, but a plugin that hides wha
 
 
 def parse_target(raw: str):
-    """(repo, sha, subdir) for one run, or (repo, (old_sha, new_sha), subdir) to compare."""
-    parts = shlex.split(raw or "")
-    if len(parts) < 2:
-        raise ValueError(USAGE)
-    repo, sha = parts[0], parts[1].lower()
-    rest = parts[2:]
-    new_sha = None
-    if rest and runner.SHA_RE.match(rest[0].lower()):
-        new_sha = rest.pop(0).lower()
-    if len(rest) > 1:
-        raise ValueError(USAGE)
-    subdir = rest[0] if rest else None
-    if not runner.REPO_RE.match(repo):
-        raise ValueError("The repo must look like owner/name.")
-    if not runner.SHA_RE.match(sha):
-        raise ValueError("Give the full 40-character commit SHA (branches and short SHAs are not accepted).")
-    if new_sha == sha:
-        raise ValueError("The two commits are the same; give an older and a newer SHA to compare.")
-    if subdir and (subdir.startswith("/") or ".." in Path(subdir).parts):
-        raise ValueError("subdir must be a relative path inside the repo.")
-    return repo, ((sha, new_sha) if new_sha else sha), subdir
+    """(repo, sha, subdir) for one run, or (repo, (old_sha, new_sha), subdir) to compare.
+    A sha of None means "the newest commit", looked up only after approval."""
+    plan = targets.parse(raw)
+    return plan.repo, plan.sha, plan.subdir
 
 
-def approval_question(repo: str, sha, subdir: str | None) -> str:
+def _short(sha) -> str:
+    return sha[:12] if sha else "newest commit"
+
+
+def approval_question(repo: str, sha, subdir: str | None, source: str = "") -> str:
+    folder = f" ({subdir})" if subdir else ""
     if isinstance(sha, tuple):
-        where = f"{repo}@{sha[0][:12]} and @{sha[1][:12]}" + (f" ({subdir})" if subdir else "")
+        what = source or f"{repo}@{_short(sha[0])} and @{_short(sha[1])}"
         return (
-            f"Detonate and compare {where}? Detonator will git-fetch both exact commits and run each "
-            "plugin version inside its own disposable Docker container with fake secrets and no real network. "
-            "Your real Hermes home and keys are never mounted."
+            f"Detonate and compare {what}{folder}? Detonator will git-fetch both exact commits"
+            + (" (looking up the newest one first)" if None in sha else "")
+            + " and run each plugin version inside its own disposable Docker container with fake "
+            "secrets and no real network. Your real Hermes home and keys are never mounted."
         )
-    where = f"{repo}@{sha[:12]}" + (f" ({subdir})" if subdir else "")
+    where = repo + (f"@{sha[:12]}" if sha else "") + folder
+    if sha is None:
+        what = f"the newest commit of {repo}{folder} (on its default branch)"
+    else:
+        what = f"{where}: {source}" if source else where
     return (
-        f"Detonate {where}? Detonator will git-fetch that exact commit and run the plugin's code "
+        f"Detonate {what}? Detonator will "
+        + ("look up that commit, then " if sha is None else "")
+        + "git-fetch that exact commit and run the plugin's code "
         "inside a disposable Docker container with fake secrets and no real network. "
         "Your real Hermes home and keys are never mounted."
     )
+
+
+def resolve(repo: str, sha):
+    """Fill in "newest commit" (None) with a real 40-character SHA. Runs after approval only."""
+    if isinstance(sha, tuple):
+        return tuple(targets.resolve_latest(repo, runner._run) if s is None else s for s in sha)
+    return targets.resolve_latest(repo, runner._run) if sha is None else sha
 
 
 def reports_dir() -> Path:
@@ -137,9 +137,11 @@ def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None, ou
     return out.replace("\n", f"\n{mode}\n", 1)
 
 
-def summary(evaluation: dict, path: Path) -> str:
+def summary(evaluation: dict, path: Path, commit: str | None = None) -> str:
     verdict = evaluation.get("verdict", "ERROR")
     lines = [report.VERDICT_TEXT.get(verdict, verdict), report.test_mode(evaluation.get("outside"))]
+    if commit:
+        lines.append(f"Tested commit: {commit}")
     if not (evaluation.get("outside") or {}).get("ran"):
         lines.append(report.NOT_CHECKED)
     for f in (evaluation.get("findings") or [])[:6]:
@@ -167,11 +169,12 @@ def make_slash_handler(ctx):
             except Exception as exc:  # never crash the session
                 return f"Detonator could not check Docker: {type(exc).__name__}: {exc}"
         try:
-            repo, sha, subdir = parse_target(raw_args)
+            plan = targets.parse(raw_args)
         except ValueError as exc:
             return str(exc)
+        repo, sha, subdir = plan.repo, plan.sha, plan.subdir
         choice = ctx.ask_choice(
-            approval_question(repo, sha, subdir),
+            approval_question(repo, sha, subdir, plan.source),
             [
                 {"value": APPROVE, "label": "Run full test", "description": FULL_HELP},
                 {"value": QUICK, "label": "Run quick test", "description": QUICK_HELP},
@@ -183,21 +186,27 @@ def make_slash_handler(ctx):
                     "(cancelled, timed out, or no one could be asked).")
         outside = False if choice == QUICK else None
         try:
+            sha = resolve(repo, sha)
             if isinstance(sha, tuple):
+                if sha[0] == sha[1]:
+                    return f"Nothing to compare: the newest commit of {repo} is the one you have ({sha[0][:12]})."
                 return run_comparison(repo, sha[0], sha[1], subdir, outside=outside)
             evaluation, _md, path = run_detonation(repo, sha, subdir, outside=outside)
-        except runner.DetonatorError as exc:
+        except (runner.DetonatorError, LookupError) as exc:
             return f"Detonator could not run: {exc}"
         except Exception as exc:  # never crash the session
             return f"Detonator failed unexpectedly: {type(exc).__name__}: {exc}"
-        return summary(evaluation, path)
+        return summary(evaluation, path, sha)
 
     return handle
 
 
 def setup_cli(subparser):
-    subparser.add_argument("repo", help="GitHub owner/name of the plugin to test")
-    subparser.add_argument("sha", help="full 40-character commit SHA")
+    subparser.add_argument("repo", metavar="target",
+                           help="a catalog name, GitHub owner/name or link, or `update <installed-name>`")
+    subparser.add_argument("sha", nargs="?", default=None,
+                           help="optional full 40-character commit SHA (default: what the catalog pins, "
+                                "or the newest commit); after `update`, the installed plugin's name")
     subparser.add_argument("--subdir", help="plugin folder inside the repo")
     subparser.add_argument("--compare-to", dest="compare_to", metavar="NEW_SHA",
                            help="also run this newer commit and report what changed")
@@ -206,18 +215,19 @@ def setup_cli(subparser):
 
 
 def cli_handler(args) -> int:
-    parts = [args.repo, args.sha] + ([args.compare_to] if getattr(args, "compare_to", None) else [])
+    parts = [args.repo] + ([args.sha] if getattr(args, "sha", None) else []) + ([args.compare_to] if getattr(args, "compare_to", None) else [])
     raw = " ".join(shlex.quote(x) for x in parts + ([args.subdir] if args.subdir else []))
     try:
-        repo, sha, subdir = parse_target(raw)
+        plan = targets.parse(raw)
     except ValueError as exc:
         print(str(exc).replace("/detonate", "hermes detonate"), file=sys.stderr)
         return 2
+    repo, sha, subdir = plan.repo, plan.sha, plan.subdir
     if not sys.stdin.isatty():
         print("Refusing to run: Detonator needs an interactive yes from you, and stdin is not a terminal.",
               file=sys.stderr)
         return 2
-    print(approval_question(repo, sha, subdir))
+    print(approval_question(repo, sha, subdir, plan.source))
     if getattr(args, "quick", False):
         print("Quick test: " + QUICK_HELP + ". Leave out --quick for the full test.")
     else:
@@ -226,18 +236,22 @@ def cli_handler(args) -> int:
         answer = input("Type 'yes' to run: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         answer = ""
-    if answer != "yes":
+    if answer not in ("yes", "y"):
         print("Cancelled.")
         return 1
     outside = False if getattr(args, "quick", False) else None
     try:
+        sha = resolve(repo, sha)
         if isinstance(sha, tuple):
+            if sha[0] == sha[1]:
+                print(f"Nothing to compare: the newest commit of {repo} is the one you have ({sha[0][:12]}).")
+                return 0
             print(run_comparison(repo, sha[0], sha[1], subdir, outside=outside))
             return 0
         evaluation, markdown, path = run_detonation(repo, sha, subdir, outside=outside)
-    except runner.DetonatorError as exc:
+    except (runner.DetonatorError, LookupError) as exc:
         print(f"Detonator could not run: {exc}", file=sys.stderr)
         return 2
     print(markdown)
-    print(f"\nSaved to {path}")
+    print(f"\nTested commit: {sha}\nSaved to {path}")
     return {"DANGEROUS": 3, "SUSPICIOUS": 3, "ERROR": 2}.get(evaluation["verdict"], 0)

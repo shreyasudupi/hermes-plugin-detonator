@@ -3,7 +3,7 @@
 From nothing to your first sandbox run, step by step. If you already have Hermes and Docker
 running, skip to [step 3](#3-install-detonator-one-command).
 
-**What Detonator does:** you give it a Hermes plugin at an exact commit. It runs that plugin inside
+**What Detonator does:** you name a Hermes plugin (by its catalog name or GitHub link). It runs that plugin inside
 a throwaway Docker container with no network and fake secrets, then tells you what the plugin
 actually did (read keys, reached for the network, ran commands, planted start-up files...).
 It always asks before running anything.
@@ -28,24 +28,29 @@ Check it worked with `hermes --version`. Detonator needs Hermes 0.23.0 or newer.
 **macOS, Linux, or Windows PowerShell 7:**
 
 ```bash
-hermes plugins install shreyasudupi/hermes-plugin-detonator && hermes plugins enable detonator && hermes gateway stop
+hermes plugins install detonator && hermes plugins enable detonator && hermes gateway stop
 ```
 
 **Windows PowerShell 5** (the one built into Windows, which doesn't understand `&&`):
 
 ```powershell
-hermes plugins install shreyasudupi/hermes-plugin-detonator; hermes plugins enable detonator; hermes gateway stop
+hermes plugins install detonator; hermes plugins enable detonator; hermes gateway stop
 ```
+
+If it says `'detonator' is not in the Hermes plugin catalog`, run `hermes update` and try again:
+Hermes from before Nov 9, 2026 cannot read the online catalog, so it misses newer plugins.
 
 What the three parts do:
 
-1. `hermes plugins install` downloads Detonator into your Hermes plugins folder.
+1. `hermes plugins install detonator` downloads Detonator from the Hermes plugin catalog into your
+   Hermes plugins folder. Use the name `detonator`, not the GitHub repo: Hermes's install scan
+   blocks Detonator's repo because its docs and tests are full of the security words it scans for.
 2. `hermes plugins enable detonator` switches it on. Hermes plugins are off until you enable them.
 3. `hermes gateway stop` stops Hermes's background plugin host, so it loads Detonator next time
    you start Hermes. Nothing is lost; it starts again on its own.
 
-`hermes plugins install` takes the latest code on the `main` branch, which only changes through
-reviewed pull requests with CI. **Want one exact version instead?** Pick a tag on the
+`hermes plugins install detonator` installs the version the Hermes catalog has reviewed and pinned
+(Nous reviews every update). **Want a different tagged version?** Pick a tag on the
 [Releases page](https://github.com/shreyasudupi/hermes-plugin-detonator/releases) and install that
 copy yourself (macOS or Linux; replace `<tag>`):
 
@@ -59,7 +64,9 @@ script you haven't read. These are Hermes's own commands.
 
 ## 4. Check Docker is ready
 
-Start the chat with `hermes`, then type:
+Start the chat with `hermes`. (The chat needs an AI provider set up first; `hermes model` does
+that. `/detonate` itself never uses the model. No provider? Every command below also works from the
+terminal as `hermes detonate ...`, without one.) Then type:
 
 ```
 /detonate check
@@ -70,16 +77,19 @@ the [Docker problems](../README.md#docker-problems) table in the README has the 
 
 ## 5. Your first run
 
-Pick any Hermes plugin on GitHub and copy the full 40-character commit SHA you want to test
-(on GitHub: open the repository, click the commits link, then the copy button next to a commit).
-In the Hermes chat:
+Find a plugin you are thinking of installing, for example with `hermes plugins search weather`.
+Then, in the Hermes chat, test it by its name:
 
 ```
-/detonate <owner/repo> <40-char-sha> [subdir]
+/detonate <name>
 ```
 
-Detonator asks first. Choose the run option: **Run in sandbox** in v0.2.3. From v0.3.0 you
-choose between two tests:
+This tests exactly what `hermes plugins install <name>` would install: the same repo, commit and
+folder. You don't need to know any commit SHA. For a plugin that is not in the catalog, give its
+GitHub page instead: `/detonate https://github.com/owner/repo` tests its newest commit (add the
+folder after it if the plugin lives in a subfolder of the repo).
+
+Detonator asks first, and you choose between two tests:
 
 - **Run full test**: the inside and outside monitors. It also catches plugins that hide what they
   do or fake a clean result, and takes a second or two longer.
@@ -94,8 +104,8 @@ takes a minute or two; after that a run takes seconds.
 > because Desktop gives a command 30 seconds. Just run the same command again. Or do the first run in
 > the `hermes` terminal chat, which has no limit.
 
-You get a verdict (`DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS` or `ERROR`) and a list of
-findings, each with why it matters. The full report is saved under
+You get a verdict (`DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS` or `ERROR`), the full commit
+it tested, and a list of findings, each with why it matters. The full report is saved under
 `~/.hermes/plugin-data/detonator/reports/`.
 
 To have your model explain the report in plain words, ask Hermes:
@@ -104,12 +114,16 @@ changes the verdict.
 
 ## 6. Before you update a plugin
 
-Compare the version you have with the new one. Detonator shows what the new version does that the
-old one didn't:
+`hermes plugins check-updates` lists plugins with an update. Before you apply one, compare the
+version you have with the new one:
 
 ```
-/detonate <owner/repo> <old-sha> <new-sha> [subdir]
+/detonate update <name>
 ```
+
+Detonator reads which commit you have installed, runs it and the version an update would install,
+and shows what the new version does that the old one didn't. (Comparing two commits of your own
+choice also works: `/detonate <owner/repo> <old-sha> <new-sha>`.)
 
 ## Next
 

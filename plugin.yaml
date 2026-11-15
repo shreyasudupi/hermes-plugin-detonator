@@ -1,5 +1,5 @@
 name: detonator
-version: "0.3.0"
+version: "0.3.1"
 description: >
   Security testing sandbox for Hermes plugins. After you approve it, runs a plugin
   you did not write at an exact commit inside a disposable Docker container with

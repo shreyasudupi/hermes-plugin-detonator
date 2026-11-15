@@ -14,19 +14,36 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
+_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
 def detonate_plugin(args: dict, **kwargs) -> str:
     try:
-        repo = str(args.get("repo", ""))
-        sha = str(args.get("sha", "")).lower()
+        name = str(args.get("name") or "").strip().lower()
+        repo = str(args.get("repo") or "").strip()
+        sha = str(args.get("sha") or "").strip().lower()
         subdir = str(args.get("subdir") or "").strip()
-        if not _REPO_RE.match(repo):
-            return json.dumps({"error": "repo must look like owner/name"})
-        if not _SHA_RE.match(sha):
-            return json.dumps({"error": "sha must be a full 40-character commit SHA"})
         new_sha = str(args.get("new_sha") or "").strip().lower()
-        if new_sha and not _SHA_RE.match(new_sha):
-            return json.dumps({"error": "new_sha must be a full 40-character commit SHA"})
-        command = f"/detonate {repo} {sha}" + (f" {new_sha}" if new_sha else "") + (f" {subdir}" if subdir else "")
+        if bool(args.get("update")) and name:
+            if not _NAME_RE.match(name):
+                return json.dumps({"error": "name must be an installed plugin name"})
+            command = f"/detonate update {name}"
+        elif name and not repo:
+            if not _NAME_RE.match(name):
+                return json.dumps({"error": "name must be a Hermes catalog plugin name"})
+            command = f"/detonate {name}"
+        else:
+            if not _REPO_RE.match(repo):
+                return json.dumps({"error": "give a catalog name, or repo as owner/name"})
+            if sha and not _SHA_RE.match(sha):
+                return json.dumps({"error": "sha must be a full 40-character commit SHA, or left out "
+                                            "to test the newest commit"})
+            if new_sha and not (sha and _SHA_RE.match(new_sha)):
+                return json.dumps({"error": "new_sha needs sha too, both full 40-character commit SHAs"})
+            if subdir and (subdir.startswith("/") or ".." in subdir.split("/") or " " in subdir):
+                return json.dumps({"error": "subdir must be a relative folder inside the repo"})
+            command = (f"/detonate {repo}" + (f" {sha}" if sha else "") + (f" {new_sha}" if new_sha else "")
+                       + (f" {subdir}" if subdir else ""))
         return json.dumps({
             "status": "needs_user_approval",
             "message": "Detonator only runs after the user approves it. Ask the user to run this "
