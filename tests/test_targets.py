@@ -210,14 +210,14 @@ def test_catalog_folder_that_climbs_out_is_refused(catalog):
 
 
 @NO_LINKS
-def test_installed_plugin_dir_that_is_a_link_is_refused(tmp_path, monkeypatch):
+def test_installed_plugin_dir_that_is_a_link_works(tmp_path, monkeypatch):
+    """Developers link their own checkout into plugins/ (found on the Mac test)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setitem(sys.modules, "hermes_constants", None)
+    monkeypatch.setitem(sys.modules, "hermes_cli", None)
     real = _install(tmp_path, "real", head=OLD)
     (tmp_path / "plugins" / "linked").symlink_to(real)
-    with pytest.raises(ValueError, match="No installed plugin"):
-        targets.parse("update linked")
-
+    assert targets.parse("update linked").sha == (OLD, None)
 
 def test_docker_is_checked_before_asking(monkeypatch):
     plugin = _load_plugin()

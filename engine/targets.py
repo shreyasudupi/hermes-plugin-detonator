@@ -154,7 +154,9 @@ def plan_update(name: str) -> Plan:
     if not NAME_RE.match(name or ""):
         raise ValueError("Give the installed plugin's name, as `hermes plugins list` shows it.")
     plugin_dir = hermes_home() / "plugins" / name
-    if not plugin_dir.is_dir() or plugin_dir.is_symlink():
+    # A linked folder is fine (developers link their own checkout); files inside .git are still
+    # read only when they are not links themselves.
+    if not plugin_dir.is_dir():
         raise ValueError(f"No installed plugin called {name} (looked in {plugin_dir}). "
                          "`hermes plugins list` shows the names.")
     old, repo, cat_name = installed_commit(plugin_dir)
