@@ -160,13 +160,6 @@ def summary(evaluation: dict, path: Path, commit: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def _docker_problem() -> str | None:
-    try:
-        return runner.docker_problem()
-    except Exception:
-        return None  # the run itself reports Docker trouble in detail
-
-
 def make_slash_handler(ctx):
     def handle(raw_args: str = "", **_kwargs) -> str:
         if (raw_args or "").strip().lower() in ("check", "doctor"):
@@ -180,11 +173,6 @@ def make_slash_handler(ctx):
         except ValueError as exc:
             return str(exc)
         repo, sha, subdir = plan.repo, plan.sha, plan.subdir
-        # Check Docker before asking, so nobody approves a run that cannot start.
-        # Read-only (`docker info`); runs no plugin code.
-        problem = _docker_problem()
-        if problem:
-            return f"Detonator could not run: {problem}"
         choice = ctx.ask_choice(
             approval_question(repo, sha, subdir, plan.source),
             [
@@ -238,10 +226,6 @@ def cli_handler(args) -> int:
     if not sys.stdin.isatty():
         print("Refusing to run: Detonator needs an interactive yes from you, and stdin is not a terminal.",
               file=sys.stderr)
-        return 2
-    problem = _docker_problem()
-    if problem:
-        print(f"Detonator could not run: {problem}", file=sys.stderr)
         return 2
     print(approval_question(repo, sha, subdir, plan.source))
     if getattr(args, "quick", False):

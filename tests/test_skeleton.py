@@ -14,9 +14,6 @@ def _load_plugin():
     mod = importlib.util.module_from_spec(spec)
     sys.modules["detonator_plugin"] = mod
     spec.loader.exec_module(mod)
-    # Tests of the slash command assume Docker is ready (CI's Windows machines have no Linux
-    # Docker); test_docker_is_checked_before_asking covers the other case.
-    mod.commands._docker_problem = lambda: None
     return mod
 
 
@@ -69,7 +66,6 @@ def test_tool_never_runs_and_asks_for_user_command():
 def test_slash_command_refuses_without_approval(monkeypatch):
     plugin = _load_plugin()
     ran = []
-    monkeypatch.setattr(plugin.commands, "_docker_problem", lambda: None)
     monkeypatch.setattr(plugin.commands, "run_detonation", lambda *a: ran.append(a))
     for answer in (None, "cancel", "something else"):
         ctx = FakeCtx(choice=answer)
@@ -89,7 +85,6 @@ def test_slash_command_runs_only_after_yes(monkeypatch, tmp_path):
         modes.append(outside)
         return {"verdict": "NO_FINDINGS", "findings": []}, "", path
 
-    monkeypatch.setattr(plugin.commands, "_docker_problem", lambda: None)
     monkeypatch.setattr(plugin.commands, "run_detonation", fake)
     for choice in ("run", "run-quick"):
         ctx = FakeCtx(choice=choice)

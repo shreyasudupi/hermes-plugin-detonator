@@ -149,7 +149,6 @@ def test_slash_command_looks_up_newest_commit_only_after_approval(monkeypatch, t
     monkeypatch.setattr(plugin.commands.targets, "resolve_latest", lambda repo, run: looked.append(repo) or NEW)
     ran = []
     path = tmp_path / "r.md"
-    monkeypatch.setattr(plugin.commands, "_docker_problem", lambda: None)
     monkeypatch.setattr(plugin.commands, "run_detonation",
                         lambda repo, sha, subdir, outside=None: ran.append(sha) or (
                             {"verdict": "NO_FINDINGS", "findings": []}, "", path))
@@ -218,11 +217,3 @@ def test_installed_plugin_dir_that_is_a_link_works(tmp_path, monkeypatch):
     real = _install(tmp_path, "real", head=OLD)
     (tmp_path / "plugins" / "linked").symlink_to(real)
     assert targets.parse("update linked").sha == (OLD, None)
-
-def test_docker_is_checked_before_asking(monkeypatch):
-    plugin = _load_plugin()
-    monkeypatch.setattr(plugin.commands, "_docker_problem", lambda: "Docker is installed but not running.")
-    ctx = FakeCtx(choice="run")
-    plugin.register(ctx)
-    out = ctx.commands["detonate"](f"acme/x {SHA}")
-    assert "not running" in out and ctx.asked == []

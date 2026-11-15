@@ -102,8 +102,7 @@ what `hermes plugins update` would install: the catalog's pin, or for a plugin i
 GitHub, its newest commit.
 
 From a terminal: `hermes detonate <catalog-name | owner/repo | update name> [sha] [--subdir path] [--compare-to new-sha]`.
-`/detonate check` only tells you whether Docker is ready; it runs nothing. Every run also checks
-Docker before asking you to approve. The terminal command needs no AI provider, so it works on a
+`/detonate check` only tells you whether Docker is ready; it runs nothing. The terminal command needs no AI provider, so it works on a
 Hermes that has no model set up yet.
 
 Detonator always asks you before it runs anything. If no one can answer (a cron
@@ -351,8 +350,6 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   every summary names the full commit it tested.
   - Install with the catalog name (`hermes plugins install detonator`): installing straight from
   the GitHub repo is blocked by Hermes's install scan.
-  - Docker is checked before the approval question, so you are never asked to approve a run that
-  cannot start.
   - Clearer messages: a short SHA or a folder that does not exist says what to type instead; the
   terminal prompt also accepts `y`.
 
