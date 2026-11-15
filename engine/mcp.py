@@ -273,6 +273,24 @@ def _phase_label(phase: str, calls: dict) -> str:
             "relist": "while being listed again"}.get(phase.split("-")[0], f"during {rules._safe_name(phase)}")
 
 
+# Lookups Python and Node make for themselves (ctypes.util.find_library runs `ldconfig -p`).
+_HARMLESS_PROGRAM = re.compile(r"^(?:/usr)?(?:/s?bin/)?ldconfig -p$")
+_GENERIC_NAMES = {"mcp", "server", "servers", "node", "modules", "node_modules", "dist", "build", "index", "main",
+                  "src", "lib", "bin", "js", "mjs", "cjs", "py", "python", "plugin", "site", "run", "cli", "app"}
+
+
+def _own_names(result: dict) -> set:
+    """Words naming the server (from its command line and the name it gave), for its own settings folder."""
+    words = set()
+    texts = [str(a) for a in (result.get("argv") or [])[:4]]
+    texts.append(str(((result.get("initialize") or {}).get("serverInfo") or {}).get("name") or ""))
+    for t in texts:
+        for w in re.split(r"[^A-Za-z0-9]+", t.lower()):
+            if len(w) >= 3 and w not in _GENERIC_NAMES:
+                words.add(w)
+    return words
+
+
 def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     """What the server and the programs it started did, from the outside trace."""
     findings: list[Finding] = []
@@ -368,13 +386,23 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     if environ:
         findings.append(Finding("environ_file_read", HIGH,
                                 "Read another process's environment, where Hermes's keys live", environ[:5]))
+    own_names = _own_names(result)
+    grouped: dict = {}
     for phase, label, path in writes:
         norm = posixpath.normpath(path)
         rel = posixpath.relpath(norm, home).split("/") if home and rules._under(norm, [home]) else []
         if rel and rel[0] in _CACHE_DIRS:
-            findings.append(Finding("write_tmp", LOW, "Wrote to a cache folder", [f"{path} ({label})"]))
+            grouped.setdefault(("write_tmp", LOW, "Wrote to a cache folder", None), []).append(f"{path} ({label})")
             continue
         rule, sev, tech = rules._classify_write(path, "write", home, hermes_home, "/plugin")
+        app = rel[1] if len(rel) > 2 and rel[0] == ".config" else \
+            rel[2] if len(rel) > 3 and rel[:2] in ([".local", "share"], [".local", "state"]) else ""
+        if rule == "write_outside_folder" and app and app.lower().lstrip(".") in own_names:
+            # Its own settings folder (like ~/.config/sentry for the Sentry server): normal, but listed.
+            # Only plain writes: start-up places and Hermes's files keep their own rules whatever its name.
+            grouped.setdefault(("write_own_state", LOW, "Kept its own settings in your home folder", None),
+                               []).append(f"{path} ({label})")
+            continue
         if rule == "content_altered":
             rule = "agent_config_modified"
         title = {"persistence": "Wrote to a place that starts programs automatically",
@@ -383,7 +411,12 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                  "write_outside_folder": "Wrote or changed sensitive files outside its folder",
                  "write_own_state": "Kept its own files in your home folder",
                  "write_tmp": "Wrote temporary files"}.get(rule, "Wrote files")
-        findings.append(Finding(rule, sev, title, [f"{path} ({label})"], attack=[tech] if tech else []))
+        grouped.setdefault((rule, sev, title, tech), []).append(f"{path} ({label})")
+    for (rule, sev, title, tech), paths in grouped.items():    # one finding per kind, not per file
+        uniq = list(dict.fromkeys(paths))
+        findings.append(Finding(rule, sev, title, uniq[:8] + ([f"and {len(uniq) - 8} more"] if len(uniq) > 8 else []),
+                                attack=[tech] if tech else []))
+    programs = [x for x in programs if not _HARMLESS_PROGRAM.match(x[2])]
     if programs:
         fetch = [p for _, _, p in programs if rules.FETCH_CMD_RE.search(p)]
         if fetch:
@@ -394,7 +427,9 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     tool_nets = [f"{a} ({label})" for phase, label, a in nets if phase.startswith("call-")]
     sink_hosts = rules._connection_lines((out.get("sink") or {}).get("tcp") or [])
     if start_nets:
-        findings.append(Finding("undeclared_network", HIGH,
+        # Many honest servers check for updates or load their service's settings at start-up. That is
+        # worth a look; taking keys or decoys (caught by their own rules) is what makes it an alarm.
+        findings.append(Finding("undeclared_network", MEDIUM,
                                 "Reached for the network on its own, before any tool was used",
                                 sorted(set(start_nets))[:8] + sink_hosts[:4]))
     if tool_nets:
@@ -630,8 +665,8 @@ def render(label: str, evaluation: dict, raw: dict | None = None) -> str:
            "listed its tools, resources and prompts, called every tool with test input, and listed everything "
            "again to catch changes.")
     if raw and raw.get("path_args"):
-        how += (f" Its {len(raw['path_args'])} folder argument(s) from the config were swapped for empty test "
-                "folders, so it never saw your real files.")
+        how += (f" Its {len(raw['path_args'])} folder or file argument(s) from the config were swapped for "
+                "empty test ones, so it never saw your real files.")
     if marker in text:
         head, tail = text.split(marker, 1)
         tail = tail.split("\n\n", 2)

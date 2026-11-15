@@ -192,6 +192,9 @@ def test_folder_args_are_swapped_for_empty_folders(tmp_path):
     assert argv[2] == str(tmp_path / "folder-0") and argv[3] == f"--root={tmp_path / 'folder-1'}"
     assert argv[4] == "/plugin/data" and argv[5] == "plain" and len(swapped) == 2
     assert all(pathlib.Path(p).is_dir() for p in swapped)
+    argv, swapped = h.swap_path_args(["python", "-c", "x", "--db-path", "/tmp/test.db"], str(tmp_path / "b"), "/plugin")
+    assert argv[4].endswith("/folder-0/test.db") and not pathlib.Path(argv[4]).exists()
+    assert pathlib.Path(argv[4]).parent.is_dir()
 
 
 def test_server_that_kills_the_stand_in_for_hermes():
@@ -214,3 +217,42 @@ def test_no_outside_monitor_still_reports_a_poisoned_description():
     raw = result([bad])
     raw["outside"] = {"ran": False, "reason": "x"}
     assert mcp.evaluate(raw)["verdict"] == "DANGEROUS"
+
+
+# ---- popular third-party servers (calibration) ------------------------------------------
+def _write_trace(path):
+    return _trace(f'openat(AT_FDCWD</>, "{path}", O_WRONLY|O_CREAT, 0666) = 3')
+
+
+def test_own_settings_folder_is_low_and_grouped():
+    trace = _trace(*[f'openat(AT_FDCWD</>, "{HOME}/.config/sentry/cli.db{x}", O_WRONLY|O_CREAT, 0666) = 3'
+                     for x in ("", "-wal", "-shm", "-journal")])
+    raw = result(trace=trace, argv=["node", "node_modules/@sentry/mcp-server/dist/index.js"])
+    found = [f for f in mcp.evaluate(raw)["findings"] if f["rule"] == "write_own_state"]
+    assert len(found) == 1 and found[0]["severity"] == "low" and len(found[0]["evidence"]) == 4
+    assert mcp.evaluate(raw)["verdict"] == "NO_FINDINGS"
+
+
+def test_a_name_never_hides_a_start_up_place():
+    raw = result(trace=_write_trace(f"{HOME}/.config/autostart/x.desktop"), argv=["node", "autostart.js"])
+    assert rules_of(raw)["persistence"]["severity"] in ("high", "critical")
+
+
+def test_someone_elses_settings_folder_is_still_flagged():
+    raw = result(trace=_write_trace(f"{HOME}/.config/gcloud/creds.db"), argv=["node", "weather.js"])
+    assert "write_outside_folder" in rules_of(raw)
+
+
+def test_ldconfig_lookup_is_not_a_program_run():
+    trace = _trace('execve("/sbin/ldconfig", ["/sbin/ldconfig", "-p"], 0x1 /* 5 vars */) = 0')
+    assert "command_run" not in rules_of(result(trace=trace))
+
+
+def test_network_at_start_up_is_a_look_not_an_alarm():
+    trace = ('7 13:00:00.000001 openat(AT_FDCWD</>, "/detonator-phase/plugin-start", O_RDONLY) = -1 ENOENT\n'
+             '7 13:00:00.000002 vfork() = 20\n'
+             '20 13:00:00.000003 execve("/usr/local/bin/python", ["python", "server.py"], 0x1 /* 5 vars */) = 0\n'
+             '20 13:00:00.000004 connect(4, {sa_family=AF_INET, sin_port=htons(443), '
+             'sin_addr=inet_addr("198.18.0.2")}, 16) = 0\n')
+    found = rules_of(result(trace=trace))
+    assert found["undeclared_network"]["severity"] == "medium"

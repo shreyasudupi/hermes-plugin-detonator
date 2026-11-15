@@ -241,9 +241,10 @@ def load_entry(canary):
 
 
 def swap_path_args(argv, data_dir, plugin_dir):
-    """Folders from the person's computer (like a filesystem server's allowed folder) do not exist
-    here. Each absolute or ~ path argument becomes its own empty folder under mcp-data, so the
-    server starts and works on a harmless copy. The program and its script are left alone."""
+    """Folders and files from the person's computer (like a filesystem server's allowed folder or a
+    database file) do not exist here. Each absolute or ~ path argument becomes its own empty folder
+    under mcp-data (or a not-yet-existing file in one, when it looks like a file), so the server
+    starts and works on a harmless copy. The program and its script are left alone."""
     out, swapped = list(argv[:1]), []
     for a in argv[1:]:
         flag, sep, val = a.partition("=") if a.startswith("--") else ("", "", a)
@@ -253,6 +254,9 @@ def swap_path_args(argv, data_dir, plugin_dir):
             continue
         new = os.path.join(data_dir, f"folder-{len(swapped)}")
         os.makedirs(new, exist_ok=True)
+        base = os.path.basename(val.rstrip("/"))
+        if os.path.splitext(base)[1] and not val.endswith("/"):
+            new = os.path.join(new, base)    # looks like a file (test.db): a new file in an empty folder
         swapped.append(new)
         out.append(flag + sep + new if sep else new)
     return out, swapped

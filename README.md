@@ -219,7 +219,8 @@ There is no quick test for MCP servers: a server is its own program, so only the
 sees what it does. If that monitor cannot start, the result is an error, not a clean run.
 
 Limits: a server that needs a real account, only acts on specific input, or waits longer than the
-test (about two minutes) can look clean. Its code is not yet read for abilities it did not use
+test (about two minutes) can look clean. A server that needs a program the sandbox lacks (such as
+`git` or a downloaded browser) stops early and is reported as not started. Its code is not yet read for abilities it did not use
 during the run. A clean run is evidence, not proof.
 
 ## What it checks
@@ -325,8 +326,10 @@ no Python code to run, and Detonator says so instead of guessing.
 - **MCP servers** are checked against 13 more harmless test servers (Python and Node: poisoned and
   cross-tool descriptions, a rug pull, a "read-only" tool that writes, key stealers, a sampling
   abuser, a credential phisher, an npm postinstall dropper and a risky config) and against official
-  servers from the MCP project (memory, filesystem, sequential thinking, everything, fetch, time),
-  which must come out clean or review. Stress tests cover servers that hang, flood output, list
+  servers from the MCP project (memory, filesystem, sequential thinking, everything, fetch, time)
+  and 16 popular third-party ones (Playwright, Puppeteer, GitHub, Notion, Sentry, Supabase,
+  Context7, Firecrawl, Exa, Tavily, Brave Search, DuckDuckGo, AWS Documentation, Atlassian, SQLite,
+  git), which must come out clean or review: 4 no findings, 18 review, none worse. Stress tests cover servers that hang, flood output, list
   5,000 tools, start hundreds of programs, kill the stand-in for Hermes, or hang in an install script.
 - **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
   their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
