@@ -342,7 +342,7 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
-- **v0.3.1** (Nov 15, 2026): No SHA needed.
+- **v0.3.1**: No SHA needed.
   - `/detonate <catalog-name>` tests exactly what `hermes plugins install <name>` would install
   (repo, commit and folder from the Hermes catalog). `/detonate <owner/repo>` or a GitHub link
   tests the newest commit, looked up only after you approve. `/detonate update <installed-name>`
@@ -353,7 +353,7 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   - Clearer messages: a short SHA or a folder that does not exist says what to type instead; the
   terminal prompt also accepts `y`.
 
-- **v0.3.0** (Nov 13, 2026): The outside monitor and sharper rules.
+- **v0.3.0**: The outside monitor and sharper rules.
   - **Outside monitor.** Every run is now also watched from two
   containers the plugin cannot reach: a `strace` tracer attached before the plugin loads, and a
   fake internet that answers every address and logs what is sent. Three new rules:
@@ -379,7 +379,7 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   - 9 new test plugins (2 caught only by the outside monitor, 7 for the sharper rules); 32 test
   plugins now set off all 55 rules.
 
-- **v0.2.3** (Nov 11, 2026): Windows fixes, found by the new Windows CI job. Reports and
+- **v0.2.3**: Windows fixes, found by the new Windows CI job. Reports and
   plugin files are always read and written as UTF-8 (Windows' default code page crashed on the
   report's symbols), and the rules always treat sandbox paths as Linux paths (on Windows some
   matches were missed, so a few verdicts came out different). `/detonate check` spots Docker
@@ -389,19 +389,19 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   Docker Desktop isn't running on Windows. Tested on a real Windows PC: clean plugin
   NO_FINDINGS, key stealer and persistence planter DANGEROUS. CI now runs the
   tests and a Windows smoke test on a Windows machine.
-- **v0.2.2** (Nov 11, 2026): Three new rules: reading every API key at once through `/proc`,
+- **v0.2.2**: Three new rules: reading every API key at once through `/proc`,
   a plugin name with `../` in it, and flooding the activity log to hide something. Report titles
   can't carry text from the plugin, and each run writes its own account files. Plain-language
   Docker errors and `/detonate check`. 23 test plugins now set off all 45 rules in CI, and
   GitHub Actions are pinned to exact commits.
   From the catalog review: `git` and `docker` now get a minimal, allow-listed environment, so
   Hermes's API keys never reach them, and `plugin.yaml` is read with Hermes's own YAML loader.
-- **v0.2.1** (Nov 10, 2026): First public release, the version submitted to the Hermes plugin
+- **v0.2.1**: First public release, the version submitted to the Hermes plugin
   catalog. CI runs the fake-malicious test plugins on every change.
-- **v0.2.0** (Nov 10, 2026): Clock jump (time bombs and sleepers), the dormant-code check, rules
+- **v0.2.0**: Clock jump (time bombs and sleepers), the dormant-code check, rules
   tuned on the whole catalog, read-only AI explanations (`detonator_report`), a random sandbox
   world every run, and the symlink fix.
-- **v0.1** (Nov 9, 2026): First working version: the Docker sandbox with decoys, rules mapped to
+- **v0.1**: First working version: the Docker sandbox with decoys, rules mapped to
   MITRE ATT&CK and ATLAS, `/detonate`, and comparing two versions.
 
 ## Layout
