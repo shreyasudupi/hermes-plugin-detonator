@@ -4,7 +4,7 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-**Current version: v0.4.0** ([what's new](#versions))
+**Current version: v0.3.1** ([what's new](#versions))
 
 [![Watch the 82-second Plugin Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
@@ -342,7 +342,7 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
-- **v0.4.0** (Nov 15, 2026): No SHA needed.
+- **v0.3.1** (Nov 15, 2026): No SHA needed.
   - `/detonate <catalog-name>` tests exactly what `hermes plugins install <name>` would install
   (repo, commit and folder from the Hermes catalog). `/detonate <owner/repo>` or a GitHub link
   tests the newest commit, looked up only after you approve. `/detonate update <installed-name>`
