@@ -536,6 +536,38 @@ def _strip(text: str, values: list) -> str:
     return text
 
 
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,24}")
+_RECIPIENT_FIELDS = (
+    re.compile(r'"(?:to|cc|bcc|recipients?|to_?addresses|cc_?addresses|bcc_?addresses)"\s*:\s*'
+               r'(\[[^\]]{0,4000}\]|"[^"]{0,1000}")', re.I),
+    re.compile(r"^(?:to|cc|bcc)\s*:\s*(.{0,1000})$", re.I | re.M),
+    re.compile(r"RCPT TO:\s*<([^>]{1,320})>", re.I),
+    re.compile(r"(?:^|[&?\s])(?:to|cc|bcc)=([^&\s]{1,1000})", re.I),
+)
+
+
+def _extra_recipients(result: dict, out: dict) -> list:
+    """Addresses a message was sent to that the tool was not given. Only messages that also
+    carry the tool's own test address count, so a server's own sender address is not flagged."""
+    from urllib.parse import unquote
+    ours = str(result.get("test_address") or "").lower()
+    if not ours:
+        return []
+    given = {ours} | {m.lower() for c in result.get("calls") or [] for m in _EMAIL.findall(json.dumps(c.get("args")))}
+    found = []
+    for e in (out.get("sink") or {}).get("tcp") or []:
+        data = unquote(str(e.get("data") or ""))
+        if ours not in data.lower():
+            continue
+        where = str(e.get("http_host") or e.get("tls_server_name") or e.get("host") or e.get("dst") or "?")[:120]
+        for rx in _RECIPIENT_FIELDS:
+            for m in rx.finditer(data):
+                for addr in _EMAIL.findall(m.group(1)):
+                    if addr.lower() not in given:
+                        found.append(f"{re.sub(r'[^A-Za-z0-9._%+@-]', '?', addr)[:120]} (in a message to {rules._safe_name(where, 120)})")
+    return list(dict.fromkeys(found))[:8]
+
+
 def evaluate(result: dict) -> dict:
     result = result or {}
     out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
@@ -555,6 +587,12 @@ def evaluate(result: dict) -> dict:
                 "outside": summary, "tools": [], **extra}
     listing = result.get("listing") or {}
     findings += _description_findings(listing, "")
+    # Hermes names MCP tools mcp_<server>_<tool>, so a name close to a built-in one is not a clash;
+    # letters from another alphabet that look like Latin ones are only there to fool a reader.
+    disguised = [f"{str(t.get('name'))[:80]!a} uses letters from another alphabet"
+                 for t in listing.get("tools") or [] if any(ord(c) > 127 for c in str(t.get("name") or ""))]
+    if disguised:
+        findings.append(Finding("lookalike_name", HIGH, "Names its tools with look-alike letters", disguised[:10]))
     relisting = result.get("relisting") or {}
     if relisting:
         first_hits = {(f.rule, f.title) for f in findings}
@@ -580,6 +618,10 @@ def evaluate(result: dict) -> dict:
         # A forged result file, or the server tracing or killing Detonator's own process.
         findings += [f for f in rules._outside_findings({**result, "events": []})
                      if f.rule in ("result_forged", "monitor_tamper", "log_flood")]
+        extra = _extra_recipients(result, out)
+        if extra:
+            findings.append(Finding("mcp_extra_recipient", HIGH,
+                                    "Sent a copy of a message to an address the tool was not given", extra))
         # The server is its own process here, so signals it sends to the stand-in for Hermes are
         # checked directly (in plugin mode the plugin runs inside the harness instead).
         trace = out.get("trace") or {}

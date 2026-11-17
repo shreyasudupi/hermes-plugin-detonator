@@ -18,6 +18,7 @@ file cannot watch inside it; the tracer and the fake internet do that.
 import json
 import os
 import queue
+import re
 import signal
 import subprocess
 import threading
@@ -43,9 +44,58 @@ def _short(value, limit=MAX_KEEP):
     return text if len(text) <= limit else text[:limit] + f"…[{len(text) - limit} more]"
 
 
-def _schema_args(h, schema):
-    """Canary arguments for an MCP inputSchema (the harness builds them for the Hermes shape)."""
-    return h.sample_args({"parameters": schema if isinstance(schema, dict) else {}})
+def test_address(canary):
+    """The one email address tools are given. Every test value carries the canary."""
+    return f"det-{canary.lower()}@example.com"
+
+
+def _kind(key, spec):
+    """What a string field holds, from its JSON Schema format or its name."""
+    fmt = str(spec.get("format") or "").lower()
+    words = set(re.split(r"[^a-z]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", str(key)).lower()))
+    if fmt == "email" or words & {"email", "to", "cc", "bcc", "recipient", "recipients"}:
+        return "email"
+    if fmt in ("uri", "url", "iri") or words & {"url", "uri", "link", "href", "website"}:
+        return "url"
+    if words & {"path", "file", "filename", "filepath", "dir", "directory", "folder"}:
+        return "path"
+    return "text"
+
+
+def _value(h, key, spec, data_dir, depth=0):
+    spec = spec if isinstance(spec, dict) else {}
+    if spec.get("enum"):
+        return spec["enum"][0]
+    t = spec.get("type", "string")
+    t = t[0] if isinstance(t, list) and t else t
+    if t == "array":
+        return [_value(h, key, spec.get("items") or {}, data_dir, depth + 1)] if depth < 3 else []
+    if t == "object":
+        props = spec.get("properties") or {}
+        return {k: _value(h, k, v, data_dir, depth + 1) for k, v in list(props.items())[:20]} if depth < 3 else {}
+    if t in ("integer", "number"):
+        low = spec.get("minimum")
+        return low if isinstance(low, (int, float)) else (1 if t == "integer" else 1.0)
+    if t == "boolean":
+        return False
+    kind = _kind(key, spec)
+    if kind == "email":
+        return test_address(h.CANARY)
+    if kind == "url":
+        return f"https://example.com/detonator-{h.CANARY}"
+    if kind == "path":
+        return os.path.join(data_dir, f"detonator-{h.CANARY}.txt")
+    return f"detonator test input [{h.CANARY}-ARG]"
+
+
+def _schema_args(h, schema, data_dir):
+    """Test arguments for an MCP inputSchema that look like what each field wants (an email
+    address, a link, a file in the server's test folder), so tools get past their own input
+    checks and do their real work. Every value carries this run's canary."""
+    props = (schema or {}).get("properties") if isinstance(schema, dict) else None
+    if not isinstance(props, dict):
+        return {}
+    return {k: _value(h, k, v, data_dir) for k, v in list(props.items())[:40]}
 
 
 class Server:
@@ -301,6 +351,10 @@ def run(h):
     h.plant_decoys()
     os.makedirs(result["allowed_write_dirs"][0], exist_ok=True)
     argv, result["path_args"] = swap_path_args(argv, result["allowed_write_dirs"][0], h.PLUGIN_DIR)
+    # A file for tools that read one: test values name it, and it holds nothing of the person's.
+    with open(os.path.join(result["allowed_write_dirs"][0], f"detonator-{h.CANARY}.txt"), "w") as f:
+        f.write(f"detonator test file [{h.CANARY}]\n")
+    result["test_address"] = test_address(h.CANARY)
     result["argv"] = argv
     # What Hermes hands a stdio server: its own env entries plus a small safe baseline.
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "TERM": "xterm-256color",
@@ -365,7 +419,7 @@ def run(h):
         name = str(tool.get("name") or "")
         h._PHASE = f"call:{i}"
         h.phase_marker(f"mcp-call-{i}")
-        args = _schema_args(h, tool.get("inputSchema"))
+        args = _schema_args(h, tool.get("inputSchema"), result["allowed_write_dirs"][0])
         r = server.request("tools/call", {"name": name, "arguments": args})
         res = r.get("result") if isinstance(r.get("result"), dict) else {}
         text = json.dumps(res.get("content"), default=str) if res else ""
