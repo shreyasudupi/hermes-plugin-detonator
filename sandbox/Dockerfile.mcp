@@ -1,0 +1,18 @@
+# Sandbox image for MCP servers: the plugin sandbox (sandbox/Dockerfile) plus Node.js,
+# because most MCP servers are Node packages. Built only when /detonate-mcp is used.
+# Both base images are pinned by digest (multi-arch index), so every build is identical.
+# Same rules as the plugin sandbox at run time: --network none (or the fake internet),
+# read-only root, no capabilities, non-root user.
+FROM node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c AS node
+
+FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+COPY harness.py mcp_harness.py /opt/detonator/
+
+USER 10001
+ENTRYPOINT ["python", "-I", "-B", "/opt/detonator/harness.py"]

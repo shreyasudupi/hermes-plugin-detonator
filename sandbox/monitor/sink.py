@@ -8,8 +8,12 @@ connects to, the connection lands on one of the listeners below. It:
   * answers every DNS lookup with a made-up address (one per name, so the host can
     tell which name a later connection was for),
   * accepts TCP connections on the ports malware commonly uses, reads what the
-    plugin sends, answers plain HTTP with a short "200 OK" and reads the TLS
-    server name from an HTTPS hello,
+    plugin sends and answers HTTP with a short "200 OK",
+  * reads inside HTTPS: it makes a fresh certificate authority for this run only
+    (its key never leaves this container) and answers each HTTPS hello with a
+    certificate for the name asked for, signed by it. The sandbox trusts that
+    authority, so what a plugin sends over HTTPS is logged like plain HTTP. A
+    client that pins its own certificates refuses, and only the server name is logged,
   * writes one JSON line per lookup or connection to /sink/log.jsonl.
 
 The plugin cannot read or change that log: /sink is mounted only in this
@@ -19,15 +23,22 @@ container. It records, it never decides; the host-side rules do that.
 import ipaddress
 import json
 import os
+import re
+import secrets
 import select
 import socket
+import ssl
 import struct
+import subprocess
 import sys
 import threading
 import time
 
 LOG_PATH = "/sink/log.jsonl"
 READY_PATH = "/sink/ready"
+CA_PUBLIC = "/ca/ca.pem"      # the only file the sandbox sees (read-only)
+KEYS = "/work"                # private tmpfs: the authority's key and the per-name certificates
+MAX_CERTS = 300
 TCP_PORTS = (21, 22, 23, 25, 80, 110, 143, 443, 465, 587, 993, 995, 1080, 1337, 2375, 3128, 4444,
              5000, 5555, 6379, 6667, 8000, 8080, 8443, 8888, 9001, 9050, 31337)
 READ_TIMEOUT_S = 2.0
@@ -189,31 +200,129 @@ def _http_wants(data):
     return 0
 
 
+# --------------------------------------------------------------------------
+# HTTPS: a certificate authority made for this run only
+# --------------------------------------------------------------------------
+_TLS = {"ready": False}
+_certs: dict = {}
+_cert_lock = threading.Lock()
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))*$")
+
+
+def _openssl(*args):
+    subprocess.run(["openssl", *args], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=20)
+
+
+def make_authority():
+    """A new authority per run, valid for two days, with a random name. Only its certificate
+    is shared (in /ca); its key stays in this container's private tmpfs."""
+    key, cert = os.path.join(KEYS, "ca.key"), os.path.join(KEYS, "ca.pem")
+    _openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+             "-keyout", key, "-out", cert, "-days", "2", "-subj", f"/CN=Detonator test CA {secrets.token_hex(4)}",
+             "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+    with open(cert, "rb") as src, open(CA_PUBLIC + ".tmp", "wb") as dst:
+        dst.write(src.read())
+    os.chmod(CA_PUBLIC + ".tmp", 0o644)
+    os.replace(CA_PUBLIC + ".tmp", CA_PUBLIC)
+    _TLS.update(ready=True, key=key, cert=cert)
+
+
+def context_for(name):
+    """A server context with a certificate for `name` (a host name or an IP address)."""
+    try:
+        ipaddress.ip_address(name)
+        san = f"IP:{name}"
+    except ValueError:
+        if not _SAFE_NAME.match(name) or len(name) > 253:
+            name = "unnamed.invalid"
+        san = f"DNS:{name}"
+    with _cert_lock:
+        ctx = _certs.get(name)
+        if ctx is not None:
+            return ctx
+        if len(_certs) >= MAX_CERTS:
+            return None
+        n = len(_certs)
+        key, cert = os.path.join(KEYS, f"{n}.key"), os.path.join(KEYS, f"{n}.pem")
+        _openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+                 "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=" + name, "-addext", "subjectAltName=" + san,
+                 "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "extendedKeyUsage=serverAuth",
+                 "-CA", _TLS["cert"], "-CAkey", _TLS["key"])
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        ctx.set_alpn_protocols(["http/1.1"])   # never HTTP/2, so the request reads like plain HTTP
+        _certs[name] = ctx
+        return ctx
+
+
+def _peek_hello(conn, deadline):
+    """The TLS ClientHello record, read without taking it off the socket."""
+    data = b""
+    while time.monotonic() < deadline:
+        r, _, _ = select.select([conn], [], [], max(0.0, deadline - time.monotonic()))
+        if not r:
+            break
+        data = conn.recv(16 * 1024, socket.MSG_PEEK)
+        if not data or data[:1] != b"\x16" or len(data) >= 5 + struct.unpack(">H", data[3:5])[0]:
+            break
+        time.sleep(0.01)
+    return data
+
+
+def _read_request(sock, deadline):
+    """What the client sends: up to MAX_READ, or until an HTTP request is complete."""
+    data, is_http = b"", False
+    while len(data) < MAX_READ and time.monotonic() < deadline:
+        sock.settimeout(max(0.05, deadline - time.monotonic()))
+        try:
+            chunk = sock.recv(MAX_READ - len(data))
+        except (socket.timeout, ssl.SSLError, OSError):
+            break
+        if not chunk:
+            break
+        data += chunk
+        is_http = data[:8].split(b" ")[0] in (b"GET", b"POST", b"PUT", b"HEAD", b"PATCH", b"DELETE",
+                                               b"OPTIONS", b"CONNECT")
+        if is_http and _http_wants(data) == 0:
+            break
+    return data, is_http
+
+
 def handle(conn, peer):
     try:
         here = conn.getsockname()
-        conn.settimeout(READ_TIMEOUT_S)
-        data = b""
         deadline = time.monotonic() + READ_TIMEOUT_S
-        is_http = False
-        while len(data) < MAX_READ and time.monotonic() < deadline:
-            r, _, _ = select.select([conn], [], [], max(0.0, deadline - time.monotonic()))
-            if not r:
-                break
-            chunk = conn.recv(MAX_READ - len(data))
-            if not chunk:
-                break
-            data += chunk
-            is_http = data[:8].split(b" ")[0] in (b"GET", b"POST", b"PUT", b"HEAD", b"PATCH", b"DELETE",
-                                                   b"OPTIONS", b"CONNECT")
-            if data[:1] == b"\x16":
-                break  # TLS hello: we cannot read further without a certificate it trusts
-            if is_http and _http_wants(data) == 0:
-                break
+        tls_note = {}
+        hello = _peek_hello(conn, deadline) if _TLS["ready"] else b""
+        sni = tls_server_name(hello) if hello[:1] == b"\x16" else None
+        sock = conn
+        if hello[:1] == b"\x16" and _TLS["ready"]:
+            ctx = None
+            try:
+                ctx = context_for((sni or here[0]).lower())
+            except Exception:
+                ctx = None
+            if ctx is not None:
+                try:
+                    conn.settimeout(READ_TIMEOUT_S)
+                    sock = ctx.wrap_socket(conn, server_side=True)
+                    tls_note["tls_read"] = True
+                    deadline = time.monotonic() + READ_TIMEOUT_S
+                except (ssl.SSLError, OSError) as exc:
+                    # The client did not accept our certificate (it pins its own, or brings its
+                    # own list of authorities): only the server name is known.
+                    tls_note.update(tls_read=False, tls_refused=type(exc).__name__)
+                    sock = None
+        if sock is None:
+            data, is_http = hello, False
+        else:
+            data, is_http = _read_request(sock, deadline)
         keep = KEEP_BYTES if _entries < FULL_DETAIL else KEEP_BYTES_LATER
         entry = {"dst": here[0], "port": here[1], "src_port": peer[1], "bytes": len(data),
-                 "data": data[:keep].decode("latin-1")}
-        sni = tls_server_name(data)
+                 "data": data[:keep].decode("latin-1"), **tls_note}
+        if sni is None and data[:1] == b"\x16":
+            sni = tls_server_name(data)
         if sni:
             entry["tls_server_name"] = sni[:255]
         if is_http:
@@ -222,7 +331,7 @@ def handle(conn, peer):
                 if k.strip().lower() == b"host":
                     entry["http_host"] = v.strip().decode("latin-1")[:255]
             try:
-                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n"
+                sock.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n"
                              b"Connection: close\r\n\r\n{\"ok\":true}")
             except OSError:
                 pass
@@ -230,10 +339,11 @@ def handle(conn, peer):
     except Exception as exc:  # never let one odd client stop the sink
         log("tcp_error", error=type(exc).__name__)
     finally:
-        try:
-            conn.close()
-        except OSError:
-            pass
+        for c in {id(x): x for x in (locals().get("sock"), conn) if x is not None}.values():
+            try:
+                c.close()
+            except OSError:
+                pass
 
 
 def serve_tcp(sock):
@@ -291,6 +401,11 @@ def main():
         notes["capabilities"] = "none"
     except OSError as exc:
         notes["capabilities"] = f"kept ({exc})"
+    try:
+        make_authority()     # openssl needs no special rights, so this runs after they are dropped
+        notes["tls"] = "read"
+    except Exception as exc:
+        notes["tls"] = f"server name only ({type(exc).__name__})"
     log("ready", ports=bound, **notes)
     with open(READY_PATH, "w") as f:
         f.write("ok\n")

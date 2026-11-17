@@ -67,12 +67,23 @@ _COMMON = ["--rm", "--label", "detonator=monitor", "--network", "none", "--read-
            "--security-opt", "no-new-privileges"]
 
 
-def sink_cmd(tag: str, name: str, sink_dir: Path, hostname: str) -> list[str]:
-    # The plugin's container shares this network, so its host name is set here.
+def sink_cmd(tag: str, name: str, sink_dir: Path, hostname: str, ca_dir: Path | None = None) -> list[str]:
+    # The plugin's container shares this network, so its host name is set here. /work is a
+    # private tmpfs for this run's certificate authority key; only its certificate goes to /ca.
     return ["docker", "run", "-d", f"--name={name}", "--hostname", hostname, *_COMMON,
             "--cap-add", "NET_ADMIN", "--cap-add", "NET_BIND_SERVICE",
             "--pids-limit", "128", "--memory", "128m", "--cpus", "0.5",
-            "-v", f"{sink_dir}:/sink:rw", tag, "python", "-I", "-B", "/opt/detonator-monitor/sink.py"]
+            "--tmpfs", "/work:rw,size=16m,mode=0700",
+            "-v", f"{sink_dir}:/sink:rw", *(["-v", f"{ca_dir}:/ca:rw"] if ca_dir else []),
+            tag, "python", "-I", "-B", "/opt/detonator-monitor/sink.py"]
+
+
+# Where the sandbox finds this run's test certificate authority, and the variables that make
+# Python (ssl, requests, httpx, pip), Node and curl trust it. Only the fake internet answers there.
+CA_IN_SANDBOX = "/etc/detonator-ca.pem"
+CA_MAX_BYTES = 8192
+_PEM_CERT = re.compile(r"-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]{100,7000}\n-----END CERTIFICATE-----")
+CA_ENV = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE")
 
 
 def tracer_cmd(tag: str, name: str, trace_dir: Path) -> list[str]:
@@ -91,19 +102,20 @@ class Monitor:
         self.sink_dir = workdir / "sink"
         self.trace_dir = workdir / "trace"
         self.resolv = workdir / "resolv.conf"
+        self.ca_dir = workdir / "ca"
         self.hostname = hostname
         self.started = False
 
     def start(self) -> list[str]:
         """Start both containers; return the extra `docker run` arguments for the plugin's container."""
         tag = ensure_image(self.run)
-        for d in (self.sink_dir, self.trace_dir):
+        for d in (self.sink_dir, self.trace_dir, self.ca_dir):
             d.mkdir()
             os.chmod(d, 0o777)  # the containers drop every capability, including overriding file permissions
         self.resolv.write_text("nameserver 127.0.0.1\noptions attempts:1 timeout:1\n", encoding="utf-8")
         os.chmod(self.resolv, 0o644)
         self.started = True
-        proc = self.run(sink_cmd(tag, self.sink, self.sink_dir, self.hostname), timeout=60)
+        proc = self.run(sink_cmd(tag, self.sink, self.sink_dir, self.hostname, self.ca_dir), timeout=60)
         if proc.returncode != 0:
             raise RuntimeError(f"fake internet did not start: {(proc.stderr or '').strip()[-300:]}")
         deadline = time.monotonic() + SINK_READY_TIMEOUT_S
@@ -114,8 +126,29 @@ class Monitor:
         proc = self.run(tracer_cmd(tag, self.tracer, self.trace_dir), timeout=60)
         if proc.returncode != 0:
             raise RuntimeError(f"tracer did not start: {(proc.stderr or '').strip()[-300:]}")
+        ca = self._trusted_copy()
+        trust = ["-v", f"{ca}:{CA_IN_SANDBOX}:ro", *[a for k in CA_ENV for a in ("-e", f"{k}={CA_IN_SANDBOX}")]] \
+            if ca else []
         return ["--network", f"container:{self.sink}", "--pid", f"container:{self.tracer}",
-                "-v", f"{self.resolv}:/etc/resolv.conf:ro"]
+                "-v", f"{self.resolv}:/etc/resolv.conf:ro", *trust]
+
+    def _trusted_copy(self) -> Path | None:
+        """The fake internet's certificate, copied into a file Detonator made itself. Its folder is
+        writable by the container, so the file there is never mounted as it is: a link or a swap
+        there must not decide which of your files the sandbox gets."""
+        from .runner import read_plain_file    # no link, plain file only, also on Windows
+        try:
+            text = read_plain_file(self.ca_dir / "ca.pem", CA_MAX_BYTES + 1)
+        except OSError:
+            return None
+        data = text.encode("ascii", "replace")
+        text = text.replace("\r\n", "\n")
+        if len(data) > CA_MAX_BYTES or not _PEM_CERT.fullmatch(text.strip()):
+            return None
+        out = self.ca_dir.parent / "ca-trust.pem"
+        out.write_text(text.strip() + "\n", encoding="ascii", newline="\n")
+        os.chmod(out, 0o644)
+        return out
 
     def finish(self) -> dict:
         """Wait for the tracer to write its log, stop the fake internet, and read both logs."""
@@ -265,7 +298,7 @@ def parse_strace(text: str, harness_pid) -> dict:
         elif call == "memfd_create":
             sm = _STR.search(args)
             ev["detail"] = _unescape(sm.group(1)) if sm else ""
-        elif call in ("unlink", "unlinkat", "rename", "renameat", "renameat2"):
+        elif call in ("unlink", "unlinkat", "rename", "renameat", "renameat2", "symlink", "symlinkat", "link", "linkat"):
             ev["paths"] = [_unescape(s) for s in _STR.findall(args)[:2]]
         events.append(ev)
     started = _first_marker(events, "plugin-start")

@@ -8,7 +8,7 @@ FROM python:3.11-slim@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b5
 # No user account is created here: each run mounts its own account list with a
 # random user name (engine/runner.py), so the image carries no fixed name.
 
-COPY harness.py /opt/detonator/harness.py
+COPY harness.py mcp_harness.py /opt/detonator/
 
 USER 10001
 ENTRYPOINT ["python", "-I", "-B", "/opt/detonator/harness.py"]

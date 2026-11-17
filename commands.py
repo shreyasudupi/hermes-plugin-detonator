@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 if __package__:
-    from .engine import diff, report, rules, runner, targets
+    from .engine import diff, mcp, report, rules, runner, targets
 
 USAGE = targets.USAGE if __package__ else ""
 APPROVE, QUICK, CANCEL = "run", "run-quick", "cancel"
@@ -199,6 +199,115 @@ def make_slash_handler(ctx):
         return summary(evaluation, path, sha)
 
     return handle
+
+
+# --------------------------------------------------------------------------------------
+# MCP servers: /detonate-mcp
+# --------------------------------------------------------------------------------------
+MCP_HELP = ("inside the sandbox, watched by the outside monitor (a tracer and a fake internet); "
+            "takes one to two minutes for most servers (two passes, the second with the clock moved forward)")
+
+
+def mcp_approval_question(spec: str) -> str:
+    return (
+        f"Detonate the MCP server '{spec}'? Detonator will read the entry (from a local folder's "
+        "mcp-server.yaml, or by that name from your ~/.hermes/config.yaml), download its package in a "
+        "locked-down container with install scripts off, then start the server inside a disposable Docker "
+        "container with fake secrets and no real network, acting as Hermes: it lists the tools, calls each "
+        "one with test input, and watches what the server does. Your real keys are never given to it."
+    )
+
+
+def _mcp_target(spec: str):
+    """Resolve the MCP target (reads config / downloads the package). Runs after approval only.
+    A config server name and a local folder are both accepted; a folder wins if it exists."""
+    p = Path(os.path.expanduser(spec))
+    if p.is_dir():
+        return mcp.load_folder_entry(str(p)), None
+    work = tempfile.mkdtemp(prefix="detonator-mcp-")
+    return mcp.load_config_target(spec, Path(work)), work
+
+
+def run_mcp_detonation(spec: str, outside: bool | None = None) -> str:
+    target, work = _mcp_target(spec)
+    try:
+        raw = mcp.detonate(target, outside=outside)
+        evaluation = mcp.evaluate(raw)
+        markdown = mcp.render(target.label, evaluation, raw)
+        tag = re.sub(r"[^A-Za-z0-9_.-]", "_", target.label)[:60]
+        path = reports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-mcp-{tag}.md"
+        path.write_text(markdown, encoding="utf-8")
+        # The detonator_report tool reads the newest summary, so MCP runs write one too.
+        _write_summary_json(path, f"MCP server {target.label}"[:300], None, None, evaluation)
+    finally:
+        if work:
+            import shutil
+            shutil.rmtree(work, ignore_errors=True)
+    return summary(evaluation, path).replace("what the plugin did", "what the server did")
+
+
+def make_mcp_slash_handler(ctx):
+    def handle(raw_args: str = "", **_kwargs) -> str:
+        spec = (raw_args or "").strip()
+        if spec.lower().split(" ", 1)[0] in ("", "help"):
+            return ("Usage: /detonate-mcp <folder> | <server-name>\n"
+                    "  <folder>: a directory with the server's code and an mcp-server.yaml entry\n"
+                    "  <server-name>: a server listed under mcp_servers in your ~/.hermes/config.yaml")
+        if spec.lower().startswith("config "):
+            spec = spec[len("config "):].strip()
+        choice = ctx.ask_choice(
+            mcp_approval_question(spec),
+            [
+                # No quick test here: the server is its own process, so only the outside monitor
+                # sees what it does; without it a key stealer would come out clean.
+                {"value": APPROVE, "label": "Run test", "description": MCP_HELP},
+                {"value": CANCEL, "label": "Cancel"},
+            ],
+        )
+        if choice != APPROVE:
+            return ("Not run: Detonator needs your explicit approval, and none was given "
+                    "(cancelled, timed out, or no one could be asked).")
+        try:
+            return run_mcp_detonation(spec)
+        except mcp.McpError as exc:
+            return f"Detonator could not run: {exc}"
+        except (runner.DetonatorError, LookupError) as exc:
+            return f"Detonator could not run: {exc}"
+        except Exception as exc:  # never crash the session
+            return f"Detonator failed unexpectedly: {type(exc).__name__}: {exc}"
+
+    return handle
+
+
+def setup_mcp_cli(subparser):
+    subparser.add_argument("server", metavar="folder-or-name",
+                           help="a folder with mcp-server.yaml, or a server name from ~/.hermes/config.yaml")
+
+
+def mcp_cli_handler(args) -> int:
+    spec = args.server
+    if not sys.stdin.isatty():
+        print("Refusing to run: Detonator needs an interactive yes from you, and stdin is not a terminal.",
+              file=sys.stderr)
+        return 2
+    print(mcp_approval_question(spec))
+    print("Test: " + MCP_HELP)
+    try:
+        answer = input("Type 'yes' to run: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer not in ("yes", "y"):
+        print("Cancelled.")
+        return 1
+    try:
+        print(run_mcp_detonation(spec))
+    except mcp.McpError as exc:
+        print(f"Detonator could not run: {exc}", file=sys.stderr)
+        return 2
+    except (runner.DetonatorError, LookupError) as exc:
+        print(f"Detonator could not run: {exc}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def setup_cli(subparser):

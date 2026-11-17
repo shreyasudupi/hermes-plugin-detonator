@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import sys
+import types
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -46,8 +47,8 @@ def test_register_matches_manifest():
     ctx = FakeCtx()
     plugin.register(ctx)
     assert set(ctx.tools) == {"detonate_plugin", "detonator_report"}
-    assert set(ctx.commands) == {"detonate"}
-    assert set(ctx.cli) == {"detonate"}
+    assert set(ctx.commands) == {"detonate", "detonate-mcp"}
+    assert set(ctx.cli) == {"detonate", "detonate-mcp"}
     text = (ROOT / "plugin.yaml").read_text(encoding="utf-8")
     assert "- detonate_plugin" in text and "- detonator_report" in text
 
@@ -200,3 +201,62 @@ def test_quick_comparison_says_what_was_not_checked(monkeypatch, tmp_path):
     monkeypatch.setattr(c, "_report_path", lambda *a: tmp_path / "d.md")
     out = c.run_comparison("a/b", SHA, SHA, None, outside=False)
     assert "Test mode: quick" in out and "Not checked without the outside monitor" in out
+
+
+def test_mcp_run_leaves_a_summary_the_report_tool_can_read(monkeypatch, tmp_path):
+    import json as _json
+    plugin = _load_plugin()
+    commands = plugin.commands
+    monkeypatch.setattr(commands, "reports_dir", lambda: tmp_path)
+    target = types.SimpleNamespace(label="weather (npm w@1.0.0)", entry={}, checks=[])
+    monkeypatch.setattr(commands, "_mcp_target", lambda spec: (target, None))
+    monkeypatch.setattr(commands.mcp, "detonate", lambda t, outside=None: {"mode": "mcp"})
+    monkeypatch.setattr(commands.mcp, "evaluate", lambda raw: {
+        "verdict": "SUSPICIOUS", "findings": [{"rule": "mcp_rug_pull", "severity": "high", "title": "t"}],
+        "outside": {"ran": True}})
+    monkeypatch.setattr(commands.mcp, "render", lambda *a: "# report")
+    out = commands.run_mcp_detonation("weather")
+    assert "what the server did" in out
+    saved = [_json.loads(p.read_text()) for p in tmp_path.glob("*.json")]
+    assert saved and saved[0]["repo"].startswith("MCP server weather") and saved[0]["verdict"] == "SUSPICIOUS"
+
+
+def test_result_file_is_never_read_through_a_link(tmp_path):
+    from engine import rules, runner
+    secret = tmp_path / "host-secret.json"
+    secret.write_text('{"verdict": "NO_FINDINGS", "tools": ["LEAKED"]}')
+    link = tmp_path / "result.json"
+    link.symlink_to(secret)
+    try:
+        runner.read_plain_file(link)
+        assert False, "followed a link"
+    except OSError:
+        pass
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "package.json").symlink_to(secret)
+    try:
+        runner.read_plain_file(tmp_path / "pkg" / "package.json", inside=tmp_path / "pkg")
+        assert False, "followed a link out of the folder"
+    except OSError:
+        pass
+    plain = tmp_path / "plain.json"
+    plain.write_text("{}")
+    assert runner.read_plain_file(plain, inside=tmp_path) == "{}"
+    ev = rules.evaluate({"fatal": "unreadable result: link", "result_not_plain": True,
+                         "outside": {"ran": True, "trace": {"events": []}, "sink": {}}})
+    assert ev["verdict"] == "DANGEROUS" and any(f["rule"] == "result_forged" for f in ev["findings"])
+
+
+def test_link_is_refused_without_o_nofollow_too(tmp_path, monkeypatch):
+    """Windows has no O_NOFOLLOW; the entry is checked before opening instead."""
+    from engine import runner
+    monkeypatch.delattr(runner.os, "O_NOFOLLOW", raising=False)
+    target = tmp_path / "t.json"
+    target.write_text("{}")
+    (tmp_path / "l.json").symlink_to(target)
+    try:
+        runner.read_plain_file(tmp_path / "l.json")
+        assert False, "followed a link"
+    except OSError:
+        pass
+    assert runner.read_plain_file(target) == "{}"

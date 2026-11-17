@@ -283,3 +283,13 @@ def test_a_plugin_that_kills_its_own_sandbox_is_not_just_an_error():
     raw = {"fatal": "no result (exit 137)", "outside": {**_result()["outside"], "trace": _parsed(killed)}}
     tamper = [f for f in rules._outside_findings(raw) if f.rule == "monitor_tamper"]
     assert tamper and "ended its own sandbox" in tamper[0].evidence[0]
+
+
+def test_a_kill_that_returns_zero_is_still_caught():
+    # kill() of the harness can return before the signal lands ("= 0"); the old check read the
+    # return value as the signal and let SIGTERM through.
+    killed = TRACE.replace(TRACE.splitlines()[-2] + "\n", "") .replace(TRACE.splitlines()[-1] + "\n", "")
+    killed += "7     13:00:00.000020 kill(7, SIGTERM)                  = 0\n"
+    raw = {"fatal": "no result (exit 143)", "outside": {**_result()["outside"], "trace": _parsed(killed)}}
+    assert [f for f in rules._outside_findings(raw) if f.rule == "monitor_tamper"]
+    assert rules._kill_signal({"detail": "7, 0)  = 0"}) == "0"

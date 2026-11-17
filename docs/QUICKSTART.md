@@ -59,8 +59,8 @@ git clone --branch <tag> --depth 1 https://github.com/shreyasudupi/hermes-plugin
 hermes plugins enable detonator && hermes gateway stop
 ```
 
-We don't offer a `curl ... | bash` installer on purpose: a security tool shouldn't ask you to run a
-script you haven't read. These are Hermes's own commands.
+We don't offer a one-line installer that pipes a downloaded script into your shell, on purpose: a
+security tool shouldn't ask you to run a script you haven't read. These are Hermes's own commands.
 
 ## 4. Check Docker is ready
 
@@ -124,6 +124,20 @@ version you have with the new one:
 Detonator reads which commit you have installed, runs it and the version an update would install,
 and shows what the new version does that the old one didn't. (Comparing two commits of your own
 choice also works: `/detonate <owner/repo> <old-sha> <new-sha>`.)
+
+## 7. Test an MCP server
+
+MCP servers you add under `mcp_servers:` in Hermes's config give the agent new tools. To test one
+before you trust it, use its name from the config:
+
+```
+/detonate-mcp <server-name>
+```
+
+Detonator downloads its npm or PyPI package (install scripts off), starts it in the sandbox with fake
+keys, calls every tool the way Hermes would, and reports what the server told the model and what it
+did. A server whose code is in a folder works too: `/detonate-mcp <folder>`, with an
+`mcp-server.yaml` next to it (see the README).
 
 ## Next
 

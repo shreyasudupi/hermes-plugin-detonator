@@ -33,7 +33,7 @@ FIND_TIMEOUT_S = 60
 # container, so nothing from a run can keep running.
 MAX_LIFETIME_S = 300
 SYSCALLS = ("open,openat,openat2,creat,execve,execveat,connect,sendto,sendmsg,bind,listen,"
-            "clone,clone3,fork,vfork,unlink,unlinkat,rename,renameat,renameat2,memfd_create,"
+            "clone,clone3,fork,vfork,unlink,unlinkat,rename,renameat,renameat2,symlink,symlinkat,link,linkat,memfd_create,"
             "ptrace,process_vm_readv,process_vm_writev,kill,tkill,tgkill")
 # How much of the trace is kept. Lines that can matter (programs, connections, the result
 # file, and files in the home folder outside the plugin's own data folder) are kept up to

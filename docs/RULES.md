@@ -90,10 +90,37 @@ sent is logged). There is still no real network. The outside monitor runs by def
 |---|---|---|---|
 | `secret_sent_out` | critical | A fake key actually reached the fake internet: the plugin sent it over the network (in a web request, a raw connection or a DNS lookup). With real keys, they would now be in someone else's hands. | [T1041](https://attack.mitre.org/techniques/T1041/) [T1048](https://attack.mitre.org/techniques/T1048/) [AML.T0025](https://atlas.mitre.org/techniques/AML.T0025) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
 | `monitor_blind_spot` | critical (high when no file was involved) | The outside monitor, which the plugin cannot reach, saw the plugin's own process do this, but Detonator's monitor inside the plugin's process recorded nothing. Honest code does not slip past the inside monitor; code written to hide from it (or to switch it off) does. | [T1562.001](https://attack.mitre.org/techniques/T1562/001/) [T1106](https://attack.mitre.org/techniques/T1106/) |
-| `result_forged` | critical | Something other than Detonator wrote the sandbox's result file. A plugin that writes its own result is trying to hand in a fake clean report. | [T1565.001](https://attack.mitre.org/techniques/T1565/001/) [T1562.001](https://attack.mitre.org/techniques/T1562/001/) |
+| `result_forged` | critical | Something other than Detonator wrote, removed or linked the sandbox's result file. A plugin that writes its own result is trying to hand in a fake clean report; one that puts a link there is trying to make Detonator read some other file instead (Detonator never follows it). | [T1565.001](https://attack.mitre.org/techniques/T1565/001/) [T1562.001](https://attack.mitre.org/techniques/T1562/001/) |
 
 The outside monitor also adds evidence to two rules above: `decoy_accessed` when a program the plugin
 started read a decoy file, and `monitor_tamper` when the plugin tried to trace or read another process.
+
+## MCP servers
+
+Rules for `/detonate-mcp`, which runs one MCP server (an entry from `mcp_servers:` in Hermes's
+`config.yaml`) in the same sandbox with the outside monitor. A stand-in for Hermes lists the server's
+tools, resources and prompts, calls every tool with test input (and a few more times), answers sampling
+and form requests, and lists everything again. Then it starts the server once more with its clock 400
+days ahead and repeats the run; anything new then is `time_triggered`, and tools that changed are
+`mcp_rug_pull`. Tool names with letters from another alphabet are `lookalike_name`. Every `env` value
+is replaced with a fake key. What the server does on the
+computer is judged by the rules above that the outside monitor can see (key files, `.env`, network,
+programs, writes, persistence, leaks); the rules below cover what only MCP servers can do, and the server's own entry in `config.yaml`.
+
+| Rule | Severity | Why it matters | MITRE |
+|---|---|---|---|
+| `mcp_tool_poisoning` | critical (high when it asks for nothing secret and hides nothing) | MCP tool descriptions and parameter text go straight into the model's instructions. Text that tells the model to read secrets, call other tools or keep steps from the user turns every conversation that loads this server into an attack (tool poisoning). | [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) [AML.T0011.002](https://atlas.mitre.org/techniques/AML.T0011.002) |
+| `mcp_cross_tool_instructions` | high | A tool's description gives orders about OTHER tools (Hermes's own terminal, messaging or file tools, or other servers). That lets one server change what trusted tools do, for example adding a hidden recipient to every message (tool shadowing). | [T1036.005](https://attack.mitre.org/techniques/T1036/005/) [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) |
+| `mcp_rug_pull` | high (medium when it only said the tools changed) | The tools changed while the server was running. Hermes refreshes tools automatically when a server says they changed, so a server can pass review with clean descriptions and swap in different ones later. | [T1195.002](https://attack.mitre.org/techniques/T1195/002/) [AML.T0109](https://atlas.mitre.org/techniques/AML.T0109) |
+| `mcp_readonly_lie` | critical | The tool says it is read-only (readOnlyHint), but it wrote files, ran a program or used the network when called. On servers marked `trust: untrusted`, Hermes skips the approval prompt for read-only tools, so this lie gets the action past the user. | [T1036](https://attack.mitre.org/techniques/T1036/) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) |
+| `mcp_sampling_used` | high (critical with keys or hidden orders in the request) | The server asked Hermes to run the user's AI model on its own (MCP sampling, on by default in Hermes). That spends the user's key and lets the server put text in front of the model. | [T1496](https://attack.mitre.org/techniques/T1496/) [AML.T0051.001](https://atlas.mitre.org/techniques/AML.T0051.001) [AML.T0034](https://atlas.mitre.org/techniques/AML.T0034) |
+| `mcp_credential_request` | high when it asks the user (medium for a tool parameter) | The server asks the user, or the model on the user's behalf, for a password, API key or private key. Honest servers get their keys from their `env` entry, set once by the user. | [T1056.002](https://attack.mitre.org/techniques/T1056/002/) [T1552](https://attack.mitre.org/techniques/T1552/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
+| `mcp_extra_recipient` | high | A message the server sent for a tool went to an address the tool was not given, such as a hidden Bcc on every email. The person asked for one recipient; a copy goes to someone else. Detonator gives each tool its own test address and reads what leaves, including inside HTTPS. | [T1114.003](https://attack.mitre.org/techniques/T1114/003/) [T1567](https://attack.mitre.org/techniques/T1567/) [AML.T0025](https://atlas.mitre.org/techniques/AML.T0025) |
+| `mcp_install_script` | high when the scripts did something risky (info otherwise) | npm runs a package's install scripts the moment it is installed, before any tool is used and with all of the person's keys in reach. Detonator downloads with scripts switched off and runs them only in the sandbox; the finding says what they did there. | [T1195.002](https://attack.mitre.org/techniques/T1195/002/) [T1059.007](https://attack.mitre.org/techniques/T1059/007/) [AML.T0010.005](https://atlas.mitre.org/techniques/AML.T0010.005) |
+| `mcp_unpinned_launch` | medium | The config starts a package without an exact version, so Hermes runs whatever was published last. A clean test today says nothing about tomorrow's version, and a hijacked package reaches you on the next start. | [T1195.002](https://attack.mitre.org/techniques/T1195/002/) [AML.T0010.005](https://atlas.mitre.org/techniques/AML.T0010.005) |
+| `mcp_inline_secret` | medium | A key is written in plain text in config.yaml (or sent without encryption), where any plugin, backup or screen share can read it. Hermes can take it from its .env file instead. | – |
+| `mcp_full_trust_third_party` | low | Hermes trusts MCP servers fully by default and runs their tools without asking. For code you did not write, `trust: untrusted` makes Hermes ask before each tool that is not read-only. | – |
+| `server_not_started` | medium | The server did not start or did not answer, so little of it was observed. Servers that need a real account or extra packages stop early in the sandbox. | – |
 
 ## Declarations and coverage
 

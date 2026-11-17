@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import sys
 import subprocess
 import tempfile
@@ -26,7 +27,9 @@ from . import static
 
 SANDBOX_DIR = Path(__file__).resolve().parent.parent / "sandbox"
 IMAGE_REPO = "detonator-sandbox"
+MCP_IMAGE_REPO = "detonator-mcp-sandbox"   # the same sandbox plus Node.js (sandbox/Dockerfile.mcp)
 RUN_TIMEOUT_S = 180
+MCP_RUN_TIMEOUT_S = 240   # an MCP run may first spend up to 45 s on install scripts
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -73,6 +76,35 @@ _PASS_ENV = (
     "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
     "PROGRAMW6432", "TEMP", "TMP",
 )
+
+
+
+RESULT_MAX_BYTES = 200_000_000
+
+
+def read_plain_file(path: Path, limit: int = 10_000_000, inside: Path | None = None) -> str:
+    """Read a file that a container or a download produced: never through a link (it could point
+    at any file on this computer), only a plain file, at most `limit` bytes, and, with `inside`,
+    only when its real location is under that folder."""
+    path = Path(path)
+    if inside is not None:
+        real, root = os.path.realpath(path), os.path.realpath(inside)
+        if os.path.commonpath([real, root]) != root:
+            raise OSError(f"{path.name} lies outside {Path(root).name}")
+    # Windows has no O_NOFOLLOW: check the entry itself first, then that the file opened is
+    # that same entry (so a swap between the check and the open is caught too).
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(f"{path.name} is a link or not a plain file")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != (before.st_dev, before.st_ino):
+            raise OSError(f"{path.name} is not a plain file")
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise OSError(f"{path.name} is larger than {limit} bytes")
+    return data.decode("utf-8", errors="replace")
 
 
 def _env() -> dict:
@@ -205,21 +237,22 @@ def docker_check() -> str:
     return "\n".join(lines)
 
 
-def image_tag() -> str:
+def image_tag(mcp: bool = False) -> str:
     h = hashlib.sha256()
     for name in sorted(os.listdir(SANDBOX_DIR)):
         p = SANDBOX_DIR / name
         if p.is_file():
             h.update(name.encode())
             h.update(p.read_bytes())
-    return f"{IMAGE_REPO}:{h.hexdigest()[:12]}"
+    return f"{MCP_IMAGE_REPO if mcp else IMAGE_REPO}:{h.hexdigest()[:12]}"
 
 
-def ensure_image() -> str:
-    tag = image_tag()
+def ensure_image(mcp: bool = False) -> str:
+    tag = image_tag(mcp)
     if _run(["docker", "image", "inspect", tag], timeout=30).returncode == 0:
         return tag
-    proc = _run(["docker", "build", "-q", "-t", tag, str(SANDBOX_DIR)], timeout=900)
+    dockerfile = ["-f", str(SANDBOX_DIR / "Dockerfile.mcp")] if mcp else []
+    proc = _run(["docker", "build", "-q", *dockerfile, "-t", tag, str(SANDBOX_DIR)], timeout=900)
     if proc.returncode != 0:
         err = proc.stderr.strip()
         hint = explain_docker_error(err)
@@ -464,17 +497,20 @@ def outside_enabled() -> bool:
     return os.environ.get("DETONATOR_OUTSIDE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def detonate(target: Target, outside: bool | None = None) -> dict:
+def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None = None) -> dict:
     """Run the plugin in a fresh container and return the raw harness result.
 
     By default the outside monitor (engine/outside.py) watches the run from two more
     containers. If it cannot start (for example its image cannot be built offline), the
     plugin is still tested by the in-process monitor and the result says why the outside
-    monitor did not run."""
+    monitor did not run.
+
+    With `mcp_entry` ({"command", "args", "env"}, env values already fake), the folder is an MCP
+    server instead of a plugin: the harness starts it and speaks MCP to it (engine/mcp.py)."""
     problem = docker_problem()
     if problem:
         raise DetonatorError(problem)
-    tag = ensure_image()
+    tag = ensure_image(mcp=mcp_entry is not None)
     use_outside = outside_enabled() if outside is None else outside
     with tempfile.TemporaryDirectory(prefix="detonator-") as tmp:
         tmp = Path(tmp)
@@ -486,7 +522,11 @@ def detonate(target: Target, outside: bool | None = None) -> dict:
         os.chmod(tmp, 0o700)
         in_dir = tmp / "in"
         in_dir.mkdir()
-        (in_dir / "manifest.json").write_text(json.dumps(load_manifest(plugin_copy)), encoding="utf-8")
+        manifest = {} if mcp_entry is not None else load_manifest(plugin_copy)
+        (in_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        if mcp_entry is not None:
+            (in_dir / "mcp.json").write_text(json.dumps(mcp_entry), encoding="utf-8")
+            os.chmod(in_dir / "mcp.json", 0o644)
         os.chmod(in_dir, 0o755)
         os.chmod(in_dir / "manifest.json", 0o644)
         out_dir = tmp / "out"
@@ -509,16 +549,26 @@ def detonate(target: Target, outside: bool | None = None) -> dict:
                             "reason": "quick test chosen (in-process monitor only)"
                             if outside is False else "switched off (DETONATOR_OUTSIDE=0)"}
         canary = secrets.token_hex(10).upper()
-        (in_dir / "run.json").write_text(json.dumps({"canary": canary, "traced": bool(monitor_args)}),
+        (in_dir / "run.json").write_text(json.dumps({"canary": canary, "traced": bool(monitor_args),
+                                                    **({"mode": "mcp"} if mcp_entry is not None else {})}),
                                          encoding="utf-8")
         os.chmod(in_dir / "run.json", 0o644)
         if monitor:
             seen_note = {"canary": canary, "home": world["home"]}
         cmd = docker_run_cmd(tag, plugin_copy, in_dir, out_dir, world, tmp / "etc", monitor_args)
+        if mcp_entry is not None and mcp_entry.get("install"):
+            # npm install scripts build into the package's own folder, so this throwaway copy is
+            # writable for that run. Writes there after the install phase still count as the
+            # server changing its own files (engine/mcp.py).
+            cmd = [f"{plugin_copy}:/plugin:rw" if a == f"{plugin_copy}:/plugin:ro" else a for a in cmd]
+            for dirpath, dirnames, filenames in os.walk(plugin_copy):
+                os.chmod(dirpath, 0o777)
+                for n in filenames:
+                    os.chmod(os.path.join(dirpath, n), 0o666 | (os.stat(os.path.join(dirpath, n)).st_mode & 0o111))
         cmd.insert(3, f"--name={name}")
         try:
             try:
-                proc = _run(cmd, timeout=RUN_TIMEOUT_S)
+                proc = _run(cmd, timeout=MCP_RUN_TIMEOUT_S if mcp_entry is not None else RUN_TIMEOUT_S)
             except subprocess.TimeoutExpired:
                 _run(["docker", "rm", "-f", name], timeout=30)
                 proc = None
@@ -527,15 +577,20 @@ def detonate(target: Target, outside: bool | None = None) -> dict:
             if monitor:
                 monitor.cleanup()
         if proc is None:
-            return {"fatal": f"sandbox timed out after {RUN_TIMEOUT_S}s", "outside": seen_outside}
+            limit = MCP_RUN_TIMEOUT_S if mcp_entry is not None else RUN_TIMEOUT_S
+            return {"fatal": f"sandbox timed out after {limit}s", "outside": seen_outside}
         result_path = out_dir / "result.json"
-        if not result_path.is_file():
+        if not result_path.is_file() and not result_path.is_symlink():
             err = proc.stderr.strip()
             hint = explain_docker_error(err)
             return {"fatal": (f"{hint} " if hint else "") + f"no result (exit {proc.returncode}): {err[-800:]}",
                     "outside": seen_outside}
         try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
+            result = json.loads(read_plain_file(result_path, RESULT_MAX_BYTES))
+        except OSError as exc:
+            # A link or something else in place of the result: never followed (it could point
+            # at any file on this computer). The outside monitor's evidence is still judged.
+            return {"fatal": f"unreadable result: {exc}", "outside": seen_outside, "result_not_plain": True}
         except json.JSONDecodeError as exc:
             return {"fatal": f"unreadable result: {exc}", "outside": seen_outside}
         if not isinstance(result, dict):
