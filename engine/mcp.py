@@ -46,7 +46,8 @@ _CRED_TEXT = re.compile(r"\b(?:password|passphrase|api[ _-]?key|secret key|priva
                         r"recovery phrase|2fa|one[- ]time code)\b", re.I)
 _SANDBOX_PROBES = ("/.dockerenv", "/run/.containerenv", "/proc/1/cgroup", "/proc/1/sched", "/sys/class/dmi/id",
                    "/sys/hypervisor")
-_RECON = ("/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/machine-id")
+# Account and machine files under /etc that a server has no reason to read (same names as the harness uses).
+_RECON_NAMES = {"shadow", "gshadow", "sudoers", "machine-id"}
 _CACHE_DIRS = (".cache", ".npm")
 _BUILD_TOOLS = {"npm", "npm-cli.js", "node", "sh", "dash", "bash", "node-gyp", "node-gyp.js", "make", "cc", "gcc",
                 "g++", "c++", "python3", "python", "uname"}
@@ -360,7 +361,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                 hit = True
             elif path.startswith(_SANDBOX_PROBES):
                 probes.append(path)
-            elif path in _RECON:
+            elif posixpath.dirname(path) == "/etc" and posixpath.basename(path) in _RECON_NAMES:
                 recon.append(path)
         elif call in ("unlink", "unlinkat", "rename", "renameat", "renameat2") and e.get("ok"):
             for p in e.get("paths") or []:

@@ -59,8 +59,8 @@ git clone --branch <tag> --depth 1 https://github.com/shreyasudupi/hermes-plugin
 hermes plugins enable detonator && hermes gateway stop
 ```
 
-We don't offer a `curl ... | bash` installer on purpose: a security tool shouldn't ask you to run a
-script you haven't read. These are Hermes's own commands.
+We don't offer a one-line installer that pipes a downloaded script into your shell, on purpose: a
+security tool shouldn't ask you to run a script you haven't read. These are Hermes's own commands.
 
 ## 4. Check Docker is ready
 
