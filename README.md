@@ -192,15 +192,20 @@ After you approve, Detonator:
    from their folder. Remote (`url:`) servers run on someone else's computer, so only their entry
    is checked. Docker and other programs are not supported yet.
 3. **Runs it in the sandbox** with both monitors. A stand-in for Hermes starts the server,
-   lists its tools, resources and prompts, calls every tool with test input, reads every
+   lists its tools, resources and prompts, calls every tool with test input that fits it (an email
+   address for an email field, a link, a test file), calls every tool a few more times, reads every
    resource and prompt, answers sampling with a marked fake reply, declines elicitation, and lists
-   everything again to catch a rug pull. Packages with npm install scripts get an install step
+   everything again to catch a rug pull. Then it starts the server again with its clock moved 400
+   days forward and does it all once more, so code that waits for a date or for weeks after install
+   shows itself (Python and Node servers; other languages keep the real clock). Packages with npm install scripts get an install step
    first, inside the sandbox with decoy keys in reach, because that is when such scripts strike.
    Folder arguments (like a filesystem server's allowed folder) are swapped for empty test folders.
 
 It reports what the model would see (poisoned or bossy tool descriptions, instructions about other
-tools, injection in results), what the server asked Hermes for (sampling, credential prompts), what
-it did (files, programs, network, persistence, install scripts, a "read-only" tool that writes), and
+tools, injection in results, tool names with look-alike letters), what the server asked Hermes for
+(sampling, credential prompts), what it did (files, programs, network, persistence, install scripts,
+a "read-only" tool that writes, a hidden copy of an email to an address it was not given, anything
+it did only after the clock moved forward or after being used a few times), and
 risky settings in the entry (no exact version, a key in config.yaml, plain `http://`, full trust
 for a third-party server). The same rules decide the verdict; see [docs/RULES.md](docs/RULES.md#mcp-servers).
 
@@ -218,8 +223,8 @@ service, Detonator reads descriptions only inside the sandbox and sends nothing 
 There is no quick test for MCP servers: a server is its own program, so only the outside monitor
 sees what it does. If that monitor cannot start, the result is an error, not a clean run.
 
-Limits: a server that needs a real account, only acts on specific input, or waits longer than the
-test (about two minutes) can look clean. A server that needs a program the sandbox lacks (such as
+Limits: a server that needs a real account, only acts on specific input, waits for a trigger other
+than time, or checks the clock in a language other than Python or Node can look clean. A server that needs a program the sandbox lacks (such as
 `git` or a downloaded browser) stops early and is reported as not started. Its code is not yet read for abilities it did not use
 during the run. A clean run is evidence, not proof.
 
@@ -228,7 +233,7 @@ during the run. A clean run is evidence, not proof.
 | Severity → verdict | Examples |
 |---|---|
 | critical → DANGEROUS | Reads decoy SSH or cloud keys, browser passwords or wallets; reads API keys and also reaches for the network; leaks a decoy secret, even base64, hex, compressed or split across requests; quietly sends a tool call somewhere else (a new message recipient, web address or chained command); points model requests at another server; plants autostart, cron, LaunchAgent, `.bashrc` or `.pth` persistence |
-| high → SUSPICIOUS | Reads Hermes's `.env` or API keys it does not declare; reads every key at once through `/proc`; did something only after the clock was moved forward (time bomb); network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools; changes Hermes's config or files outside its folder; opens a listening port; a plugin name with `../` in it; floods the activity log to hide something; sends your chat text out; changes tool arguments from a hook; rewrites the model's messages or model; skips a real tool and makes up its result; tool names disguised as built-ins (`rеad_file` with a Cyrillic е, `termina1`); adds huge text to every prompt; a description that promises the opposite of what it does ("works offline" but connects out) |
+| high → SUSPICIOUS | Reads Hermes's `.env` or API keys it does not declare; reads every key at once through `/proc`; did something only after the clock was moved forward (time bomb); network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools; changes Hermes's config or files outside its folder; opens a listening port; an MCP tool that sends a hidden copy of a message to an address it was not given; a plugin name with `../` in it; floods the activity log to hide something; sends your chat text out; changes tool arguments from a hook; rewrites the model's messages or model; skips a real tool and makes up its result; tool names disguised as built-ins (`rеad_file` with a Cyrillic е, `termina1`); adds huge text to every prompt; a description that promises the opposite of what it does ("works offline" but connects out) |
 | medium → REVIEW | Secret-file paths or start-up locations in code that never ran (possible time bomb); a declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; copying the whole environment; listing your home or key folders; reading system account files; calling other agent tools on its own; declared middleware that rewrites tool arguments; a tool result over 100,000 characters; tool names one letter from a built-in; own state outside `plugin-data/`; exec of strings; sandbox checks; native code; crashing while loading |
 | low / info | Registers middleware; shell, string-built code or network calls in code that never ran; coverage notes (stand-in modules), temp files, background threads, library behaviour |
 
@@ -255,8 +260,12 @@ never run plugin code and which the plugin cannot reach:
   can write.
 - **A fake internet.** The plugin's container joins this container's network, which has no
   real network at all: every address answers locally, every DNS lookup gets a made-up
-  address, plain HTTP gets a short "200 OK", and whatever the plugin sends is logged
-  (including the server name of an HTTPS hello).
+  address, plain HTTP gets a short "200 OK", and whatever the plugin sends is logged.
+  HTTPS is read too: each run makes its own short-lived test certificate authority inside the
+  fake internet, and the sandbox is told to trust it (the standard `SSL_CERT_FILE`,
+  `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` and `CURL_CA_BUNDLE` settings, as a company proxy
+  would set them), so a key sent inside an HTTPS request is caught as well. A program that refuses
+  that authority still shows the server name it asked for.
 
 Detonator then compares the two records. Three rules come from this:
 
@@ -297,8 +306,9 @@ plugins get a REVIEW verdict from this check alone (28 of them also check the da
 
 **The report is advisory evidence, not proof.** Sandbox-aware code, triggers other than
 time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still
-evade it. The outside monitor sees what the kernel does, not what the plugin meant: it cannot
-read inside HTTPS, a plugin can notice it is being traced, and reads through file handles the
+evade it. The outside monitor sees what the kernel does, not what the plugin meant: it reads
+inside HTTPS only when the program trusts the run's test authority (code that ships its own
+certificate list does not), a plugin can notice it is being traced, and reads through file handles the
 sandbox itself opened are not seen. A clean report does not mean a plugin is safe.
 
 The sandbox image has no Hermes and no third-party packages. When a plugin imports one
@@ -381,7 +391,10 @@ Detonator does things a reviewer should know about:
   --security-opt no-new-privileges` with small memory and process limits. The tracer adds only
   `SYS_PTRACE` (to attach `strace`). The fake internet adds `NET_ADMIN` (to make every address
   answer locally inside its own empty network) and `NET_BIND_SERVICE` (to listen on ports such
-  as 80 and 443), and gives both up once it is listening. Neither container is privileged, both
+  as 80 and 443), and gives both up once it is listening. To read HTTPS it makes a new
+  certificate authority for each run with `openssl` (key kept in the container's private memory,
+  never written to disk or shared); only the public certificate is mounted read-only into the
+  sandbox, and it is thrown away with the run. Nothing on your machine is told to trust it. Neither container is privileged, both
   keep Docker's default seccomp and AppArmor profiles, neither can reach a real network, the
   Docker socket or any of your files, and each only writes its own log folder (Detonator never
   follows a link there). Docker removes them as soon as they stop, and they stop by themselves
@@ -423,9 +436,14 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
 
 - **v0.4.0**: MCP servers. `/detonate-mcp <server-name | folder>` (and `hermes detonate-mcp`) tests
   an MCP server from your config or a folder in the sandbox with both monitors, acting as Hermes.
-  11 new rules (tool poisoning, cross-tool orders, rug pull, read-only lie, sampling, credential
-  prompts, install scripts, unpinned launch, key in config, full trust, server not started).
+  12 new rules (tool poisoning, cross-tool orders, rug pull, read-only lie, sampling, credential
+  prompts, install scripts, unpinned launch, key in config, full trust, server not started, hidden
+  extra recipients).
   Also fixes a plugin that stops its own sandbox with a signal such as SIGTERM going unflagged.
+  The fake internet now reads inside HTTPS (a per-run test authority the sandbox trusts), for
+  plugins and servers alike. For MCP servers: test input that fits each field, repeated calls, a
+  second pass with the clock 400 days ahead (`time_triggered`), hidden extra recipients
+  and look-alike tool names.
 - **v0.3.1**: No SHA needed.
   - `/detonate <catalog-name>` tests exactly what `hermes plugins install <name>` would install
   (repo, commit and folder from the Hermes catalog). `/detonate <owner/repo>` or a GitHub link

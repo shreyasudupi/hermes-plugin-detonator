@@ -265,12 +265,31 @@ def _phases(events: list, start: int | None):
         yield phase, e
 
 
+_TOOL_PHASE = re.compile(r"^(?:late-)?(?:call|again)-\d+$")
+
+
+def _call_names(result: dict) -> dict:
+    """Phase name -> tool name, for every tool call of both passes."""
+    names = {}
+    for c in result.get("calls") or []:
+        names[f'{"again" if (c.get("round") or 1) > 1 else "call"}-{c.get("index")}'] = c.get("tool")
+    for c in (result.get("late") or {}).get("calls") or []:
+        names[f'late-call-{c.get("index")}'] = c.get("tool")
+    return names
+
+
 def _phase_label(phase: str, calls: dict) -> str:
     phase = phase.replace(":", "-")
-    if phase.startswith("call-"):
-        return f"while running tool {rules._safe_name(calls.get(phase, '?'), 60)}"
-    return {"install": "while installing", "start": "while starting", "initialize": "while starting", "list": "while being listed",
-            "relist": "while being listed again"}.get(phase.split("-")[0], f"during {rules._safe_name(phase)}")
+    late = phase.startswith("late-")
+    base = phase[5:] if late else phase
+    if _TOOL_PHASE.match(phase):
+        label = f"while running tool {rules._safe_name(calls.get(phase, '?'), 60)}" + \
+            (" again" if base.startswith("again-") else "")
+    else:
+        label = {"install": "while installing", "start": "while starting", "initialize": "while starting",
+                 "list": "while being listed", "relist": "while being listed again"}.get(
+            base.split("-")[0], f"during {rules._safe_name(phase)}")
+    return label + (", clock moved forward" if late else "")
 
 
 # Lookups Python and Node make for themselves (ctypes.util.find_library runs `ldconfig -p`).
@@ -301,11 +320,13 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     allowed = [str(d) for d in result.get("allowed_write_dirs") or []]
     categories = result.get("decoy_categories") or {}
     server_pid = result.get("server_pid")
-    calls = {f'call-{c.get("index")}': c.get("tool") for c in result.get("calls") or []}
+    calls = _call_names(result)
+    clock_dir = f"/tmp/clock-{result.get('canary')}/" if result.get("canary") else ""
+    server_pids = {server_pid, (result.get("late") or {}).get("server_pid")} - {None}
     per_phase: dict = {}
     reads: dict = {}
     writes, programs, nets, local, listen, probes, recon, environ = [], [], [], [], [], [], [], []
-    own_exec_seen = False
+    own_exec_seen: set = set()
     exe_of: dict = {}    # process (thread group) -> program it last started, from execve
     for phase, e in _phases(events, trace.get("start_index")):
         if e.get("in_harness"):
@@ -321,8 +342,8 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
         label = _phase_label(phase, calls)
         hit = False
         if call in ("open", "openat", "openat2", "creat") and e.get("ok"):
-            if path.startswith(rules._PHASE_PREFIX) or path == rules._RESULT_FILE:
-                continue
+            if path.startswith(rules._PHASE_PREFIX) or path == rules._RESULT_FILE or (clock_dir and path.startswith(clock_dir)):
+                continue    # Detonator's own files (Python caches the clock file it was given)
             if e.get("write"):
                 if phase == "install" and (rules._under(path, ["/plugin"]) or rules._under(path, [
                         posixpath.join(home, ".npm"), posixpath.join(home, ".cache")])):
@@ -346,8 +367,8 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                     writes.append((phase, label, p))
                     hit = True
         elif call in ("execve", "execveat") and e.get("ok"):
-            if e.get("pid") == server_pid and not own_exec_seen:
-                own_exec_seen = True
+            if e.get("pid") in server_pids and e.get("pid") not in own_exec_seen:
+                own_exec_seen.add(e.get("pid"))
                 continue
             if phase == "install" and posixpath.basename(path) in _BUILD_TOOLS:
                 continue    # npm running the package's scripts, and the usual build tools
@@ -423,8 +444,8 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
             findings.append(Finding("remote_code_fetch", HIGH, "Downloaded or installed code while running", fetch[:5]))
         findings.append(Finding("command_run", HIGH, "Started other programs",
                                 [f"{p} ({label})" for _, label, p in programs][:8]))
-    start_nets = [f"{a} ({label})" for phase, label, a in nets if not phase.startswith("call-")]
-    tool_nets = [f"{a} ({label})" for phase, label, a in nets if phase.startswith("call-")]
+    start_nets = [f"{a} ({label})" for phase, label, a in nets if not _TOOL_PHASE.match(phase)]
+    tool_nets = [f"{a} ({label})" for phase, label, a in nets if _TOOL_PHASE.match(phase)]
     sink_hosts = rules._connection_lines((out.get("sink") or {}).get("tcp") or [])
     if start_nets:
         # Many honest servers check for updates or load their service's settings at start-up. That is
@@ -450,11 +471,14 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
 
 def _readonly_lies(result: dict, per_phase: dict, findings: list) -> list:
     out = []
-    for c in result.get("calls") or []:
+    both = [(c, ("call", "again")) for c in result.get("calls") or [] if (c.get("round") or 1) == 1]
+    both += [(c, ("late-call",)) for c in (result.get("late") or {}).get("calls") or []]
+    for c, prefixes in both:
         ann = c.get("annotations") or {}
         if ann.get("readOnlyHint") is not True:
             continue
-        did = per_phase.get(f'call-{c.get("index")}') or set()
+        i = c.get("index")
+        did = set().union(*[per_phase.get(f"{p}-{i}") or set() for p in prefixes])
         acts = []
         if did & {"open", "openat", "openat2", "creat", "unlink", "unlinkat", "rename", "renameat", "renameat2"}:
             acts.append("changed files")
@@ -465,7 +489,8 @@ def _readonly_lies(result: dict, per_phase: dict, findings: list) -> list:
         # Reads of decoys are also recorded per phase; only count real writes as file changes.
         writes = [f for f in findings if f.rule in ("persistence", "agent_config_modified", "write_outside_folder",
                                                      "write_own_state", "self_modify")
-                  and any(f"tool {rules._safe_name(c.get('tool'), 60)})" in str(ev) for ev in f.evidence)]
+                  and any(f"tool {rules._safe_name(c.get('tool'), 60)}{end})" in str(ev) for ev in f.evidence
+                          for end in ("", " again", ", clock moved forward"))]
         if "changed files" in acts and not writes:
             acts.remove("changed files")
         if acts:
@@ -475,9 +500,9 @@ def _readonly_lies(result: dict, per_phase: dict, findings: list) -> list:
     return out
 
 
-def _content_findings(result: dict, canary: str, declared: list) -> list:
+def _content_findings(result: dict, canary: str, declared: list, names: dict | None = None) -> list:
     out = []
-    calls = {f'call-{c.get("index")}': c.get("tool") for c in result.get("calls") or []}
+    calls = names if names is not None else _call_names(result)
     init = result.get("initialize") or {}
     hits = rules._injection_hits(init.get("instructions"))
     if hits:
@@ -553,7 +578,8 @@ def _extra_recipients(result: dict, out: dict) -> list:
     ours = str(result.get("test_address") or "").lower()
     if not ours:
         return []
-    given = {ours} | {m.lower() for c in result.get("calls") or [] for m in _EMAIL.findall(json.dumps(c.get("args")))}
+    given = {ours} | {m.lower() for c in [*(result.get("calls") or []), *((result.get("late") or {}).get("calls") or [])]
+                       for m in _EMAIL.findall(json.dumps(c.get("args")))}
     found = []
     for e in (out.get("sink") or {}).get("tcp") or []:
         data = unquote(str(e.get("data") or ""))
@@ -568,8 +594,67 @@ def _extra_recipients(result: dict, out: dict) -> list:
     return list(dict.fromkeys(found))[:8]
 
 
+def _merge(findings: list) -> list:
+    """One finding per rule and title: the later pass repeats much of the first."""
+    merged: dict = {}
+    for f in findings:
+        g = merged.get((f.rule, f.title))
+        if g is None:
+            merged[(f.rule, f.title)] = f
+            continue
+        g.evidence = list(dict.fromkeys([*g.evidence, *f.evidence]))[:10]
+        if rules.SEVERITY_ORDER.index(f.severity) < rules.SEVERITY_ORDER.index(g.severity):
+            g.severity = f.severity
+    return list(merged.values())
+
+
+def _before_late(result: dict) -> dict:
+    """The run as it was before the later pass: trace events up to its marker, fake-internet
+    entries from before it started."""
+    late = result.get("late") or {}
+    out = dict(result.get("outside") or {})
+    trace = dict(out.get("trace") or {})
+    events = list(trace.get("events") or [])
+    marker = rules._PHASE_PREFIX + "mcp-late-start"
+    cut = next((i for i, e in enumerate(events) if e.get("in_harness") and str(e.get("path") or "") == marker),
+               len(events))
+    trace["events"] = events[:cut]
+    out["trace"] = trace
+    when = late.get("started_at")
+    if when and isinstance(out.get("sink"), dict):
+        out["sink"] = {k: [e for e in v if not isinstance(e, dict) or float(e.get("t") or 0) < when]
+                       if isinstance(v, list) else v for k, v in out["sink"].items()}
+    return {**result, "late": None, "outside": out}
+
+
 def evaluate(result: dict) -> dict:
+    """Judge the run. When the later pass ran (the server restarted with its clock moved forward),
+    anything it did only then is also reported as a time bomb."""
     result = result or {}
+    full = _evaluate(result)
+    late = result.get("late") or {}
+    days = int(late.get("clock_days") or 0)
+    full["clock"] = {"days": days, "ran": bool(late.get("listing")),
+                     "reason": str(late.get("skipped") or late.get("start_error")
+                                   or (late.get("initialize") or {}).get("error") or "")[:300]}
+    if not late.get("listing") or full["verdict"] == rules.VERDICT_ERROR:
+        return full
+    seen = {(f["rule"], f["title"]) for f in _evaluate(_before_late(result))["findings"]}
+    new = []
+    for f in full["findings"]:
+        if (f["rule"], f["title"]) in seen or f["severity"] not in (CRITICAL, HIGH, MEDIUM):
+            continue
+        new.append(f"+{days} days: {f['title']}")
+        f["title"] += f" (only after the clock moved {days} days forward)"
+    if new:
+        full["findings"] = sorted(full["findings"] + [Finding(
+            "time_triggered", HIGH, "Did new things only after its clock was moved forward (time bomb)",
+            new[:8]).to_dict()], key=lambda f: rules.SEVERITY_ORDER.index(f["severity"]))
+        full["verdict"] = rules._verdict([Finding(**f) for f in full["findings"]])
+    return full
+
+
+def _evaluate(result: dict) -> dict:
     out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
     canary = str(out.get("canary") or result.get("canary") or "")
     declared_names = [str(n) for n in result.get("declared_env") or []]
@@ -600,7 +685,21 @@ def evaluate(result: dict) -> dict:
             if (f.rule, f.title.replace(" (after it changed)", "")) not in first_hits:
                 findings.append(f)
         findings += _rug_pull(listing, relisting, result.get("notifications") or [])
+    late = result.get("late") or {}
+    if late.get("listing"):
+        later = [late["listing"]] + ([late["relisting"]] if late.get("relisting") else [])
+        for lst in later:
+            findings += _description_findings(lst, "")
+            findings += [Finding("lookalike_name", HIGH, "Names its tools with look-alike letters",
+                                 [f"{str(t.get('name'))[:80]!a} uses letters from another alphabet"])
+                         for t in lst.get("tools") or [] if any(ord(c) > 127 for c in str(t.get("name") or ""))]
+        # Tools that differ after a restart with the clock moved forward are a rug pull too.
+        findings += _rug_pull(listing, late["listing"], [])
+        if late.get("relisting"):
+            findings += _rug_pull(late["listing"], late["relisting"], late.get("notifications") or [])
     findings += _content_findings(result, canary, declared)
+    if late:
+        findings += _content_findings(late, canary, declared, names=_call_names(result))
     per_phase = {}
     if out.get("ran"):
         b, per_phase = _behaviour(result, out)
@@ -657,6 +756,7 @@ def evaluate(result: dict) -> dict:
                                 [str(result.get("start_error") or (result.get("initialize") or {}).get("error")
                                      or result.get("fatal") or "no answer")[:300],
                                  "stderr: " + str(result.get("stderr_tail") or "")[-300:]]))
+    findings = _merge(findings)
     seen = {f.rule for f in findings}
     if seen & {"undeclared_network", "tool_network", "secret_sent_out", "decoy_accessed", "browser_or_wallet_read"}:
         for f in findings:
@@ -704,8 +804,15 @@ def render(label: str, evaluation: dict, raw: dict | None = None) -> str:
     how = ("Disposable Docker container: no real network, read-only root, all capabilities dropped, non-root "
            "user, fake Hermes home with decoy keys, credentials, browser data, wallets, memory and chat history. "
            "The server was started there with fake values for every env entry, and a stand-in for Hermes "
-           "listed its tools, resources and prompts, called every tool with test input, and listed everything "
-           "again to catch changes.")
+           "listed its tools, resources and prompts, called every tool with test input, and called every tool a few more "
+           "times, and listed everything again to catch changes.")
+    clock = evaluation.get("clock") or {}
+    if clock.get("ran"):
+        how += (f" Then it started the server again with its clock moved {clock.get('days')} days forward (Python "
+                "and Node servers; other languages keep the real clock) and did it all once more, to wake code that "
+                "waits for a date.")
+    elif clock.get("reason"):
+        how += f" The second pass with the clock moved forward did not run ({rules._safe_name(clock['reason'], 200)})."
     if raw and raw.get("path_args"):
         how += (f" Its {len(raw['path_args'])} folder or file argument(s) from the config were swapped for "
                 "empty test ones, so it never saw your real files.")
