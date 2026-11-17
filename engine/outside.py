@@ -81,6 +81,8 @@ def sink_cmd(tag: str, name: str, sink_dir: Path, hostname: str, ca_dir: Path | 
 # Where the sandbox finds this run's test certificate authority, and the variables that make
 # Python (ssl, requests, httpx, pip), Node and curl trust it. Only the fake internet answers there.
 CA_IN_SANDBOX = "/etc/detonator-ca.pem"
+CA_MAX_BYTES = 8192
+_PEM_CERT = re.compile(r"-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]{100,7000}\n-----END CERTIFICATE-----")
 CA_ENV = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE")
 
 
@@ -124,12 +126,30 @@ class Monitor:
         proc = self.run(tracer_cmd(tag, self.tracer, self.trace_dir), timeout=60)
         if proc.returncode != 0:
             raise RuntimeError(f"tracer did not start: {(proc.stderr or '').strip()[-300:]}")
-        ca = self.ca_dir / "ca.pem"
-        trust = []
-        if ca.is_file() and not ca.is_symlink():
-            trust = ["-v", f"{ca}:{CA_IN_SANDBOX}:ro", *[a for k in CA_ENV for a in ("-e", f"{k}={CA_IN_SANDBOX}")]]
+        ca = self._trusted_copy()
+        trust = ["-v", f"{ca}:{CA_IN_SANDBOX}:ro", *[a for k in CA_ENV for a in ("-e", f"{k}={CA_IN_SANDBOX}")]] \
+            if ca else []
         return ["--network", f"container:{self.sink}", "--pid", f"container:{self.tracer}",
                 "-v", f"{self.resolv}:/etc/resolv.conf:ro", *trust]
+
+    def _trusted_copy(self) -> Path | None:
+        """The fake internet's certificate, copied into a file Detonator made itself. Its folder is
+        writable by the container, so the file there is never mounted as it is: a link or a swap
+        there must not decide which of your files the sandbox gets."""
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(self.ca_dir / "ca.pem", flags)
+            with os.fdopen(fd, "rb") as f:
+                data = f.read(CA_MAX_BYTES + 1)
+        except OSError:
+            return None
+        text = data.decode("ascii", "replace")
+        if len(data) > CA_MAX_BYTES or not _PEM_CERT.fullmatch(text.strip()):
+            return None
+        out = self.ca_dir.parent / "ca-trust.pem"
+        out.write_text(text.strip() + "\n", encoding="ascii")
+        os.chmod(out, 0o644)
+        return out
 
     def finish(self) -> dict:
         """Wait for the tracer to write its log, stop the fake internet, and read both logs."""

@@ -391,3 +391,19 @@ def test_test_inputs_are_never_taken_for_keys(tmp_path):
     for v in args.values():
         assert CANARY.lower() in v.lower() and not rules._secret_hits(f'{{"x": "{v}"}}', CANARY), v
     assert not rules._secret_hits("to=" + args["to"].replace("@", "%40"), CANARY)
+
+
+def test_test_certificate_is_copied_never_mounted_through_a_link(tmp_path):
+    m = outside.Monitor(None, tmp_path, "n", "h")
+    m.ca_dir.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("not a certificate")
+    (m.ca_dir / "ca.pem").symlink_to(secret)
+    assert m._trusted_copy() is None
+    (m.ca_dir / "ca.pem").unlink()
+    (m.ca_dir / "ca.pem").write_text("junk")
+    assert m._trusted_copy() is None
+    pem = "-----BEGIN CERTIFICATE-----\n" + "A" * 64 + "\n" + "B" * 64 + "\n-----END CERTIFICATE-----\n"
+    (m.ca_dir / "ca.pem").write_text(pem)
+    got = m._trusted_copy()
+    assert got == tmp_path / "ca-trust.pem" and got.read_text() == pem
