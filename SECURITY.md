@@ -4,7 +4,7 @@ Detonator is a security tool, so bypasses matter. Thank you for reporting them.
 
 ## Reporting
 
-- **A way for a plugin to escape the sandbox, reach your real files or keys, or reach the network:**
+- **A way for a plugin or MCP server to escape the sandbox, reach your real files or keys, or reach the network:**
   please report it privately through GitHub's
   [private vulnerability reporting](https://github.com/shreyasudupi/hermes-plugin-detonator/security/advisories/new).
   Do not open a public issue for these.

@@ -1,6 +1,6 @@
 # Contributing to Detonator
 
-Thanks for helping. Detonator is a security sandbox for Hermes Agent plugins, so the most useful
+Thanks for helping. Detonator is a security sandbox for Hermes Agent plugins and MCP servers, so the most useful
 contributions are:
 
 1. **A false alarm** on an honest plugin (Detonator flagged something normal).

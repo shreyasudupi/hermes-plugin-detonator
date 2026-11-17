@@ -3,9 +3,10 @@
 From nothing to your first sandbox run, step by step. If you already have Hermes and Docker
 running, skip to [step 3](#3-install-detonator-one-command).
 
-**What Detonator does:** you name a Hermes plugin (by its catalog name or GitHub link). It runs that plugin inside
+**What Detonator does:** you name a Hermes plugin (by its catalog name or GitHub link) or an MCP server from your Hermes config. It runs it inside
 a throwaway Docker container with no network and fake secrets, then tells you what the plugin
 actually did (read keys, reached for the network, ran commands, planted start-up files...).
+For MCP servers the command is `/detonate-mcp <server-name>`; see the [README](../README.md#test-an-mcp-server).
 It always asks before running anything.
 
 ## 1. Install Docker
@@ -106,7 +107,8 @@ takes a minute or two; after that a run takes seconds.
 
 You get a verdict (`DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS` or `ERROR`), the full commit
 it tested, and a list of findings, each with why it matters. The full report is saved under
-`~/.hermes/plugin-data/detonator/reports/`.
+`<Hermes home>/plugin-data/detonator/reports/` (`~/.hermes` on macOS and Linux,
+`%LOCALAPPDATA%\hermes` on Windows).
 
 To have your model explain the report in plain words, ask Hermes:
 "Use the detonator_report tool to explain my latest Detonator report". The model explains; it never

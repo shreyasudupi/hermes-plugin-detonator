@@ -1,4 +1,4 @@
-"""Plugin Detonator: dynamic sandbox for Hermes plugins."""
+"""Detonator: dynamic sandbox for Hermes plugins and MCP servers."""
 
 # Hermes imports this file as a package. pytest also imports it bare while
 # collecting tests (no parent package), so only do the relative imports when
