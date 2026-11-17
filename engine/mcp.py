@@ -805,8 +805,8 @@ def render(label: str, evaluation: dict, raw: dict | None = None) -> str:
     how = ("Disposable Docker container: no real network, read-only root, all capabilities dropped, non-root "
            "user, fake Hermes home with decoy keys, credentials, browser data, wallets, memory and chat history. "
            "The server was started there with fake values for every env entry, and a stand-in for Hermes "
-           "listed its tools, resources and prompts, called every tool with test input, and called every tool a few more "
-           "times, and listed everything again to catch changes.")
+           "listed its tools, resources and prompts, called every tool with test input (and then a few more "
+           "times), and listed everything again to catch changes.")
     clock = evaluation.get("clock") or {}
     if clock.get("ran"):
         how += (f" Then it started the server again with its clock moved {clock.get('days')} days forward (Python "
