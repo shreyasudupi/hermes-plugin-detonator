@@ -67,12 +67,21 @@ _COMMON = ["--rm", "--label", "detonator=monitor", "--network", "none", "--read-
            "--security-opt", "no-new-privileges"]
 
 
-def sink_cmd(tag: str, name: str, sink_dir: Path, hostname: str) -> list[str]:
-    # The plugin's container shares this network, so its host name is set here.
+def sink_cmd(tag: str, name: str, sink_dir: Path, hostname: str, ca_dir: Path | None = None) -> list[str]:
+    # The plugin's container shares this network, so its host name is set here. /work is a
+    # private tmpfs for this run's certificate authority key; only its certificate goes to /ca.
     return ["docker", "run", "-d", f"--name={name}", "--hostname", hostname, *_COMMON,
             "--cap-add", "NET_ADMIN", "--cap-add", "NET_BIND_SERVICE",
             "--pids-limit", "128", "--memory", "128m", "--cpus", "0.5",
-            "-v", f"{sink_dir}:/sink:rw", tag, "python", "-I", "-B", "/opt/detonator-monitor/sink.py"]
+            "--tmpfs", "/work:rw,size=16m,mode=0700",
+            "-v", f"{sink_dir}:/sink:rw", *(["-v", f"{ca_dir}:/ca:rw"] if ca_dir else []),
+            tag, "python", "-I", "-B", "/opt/detonator-monitor/sink.py"]
+
+
+# Where the sandbox finds this run's test certificate authority, and the variables that make
+# Python (ssl, requests, httpx, pip), Node and curl trust it. Only the fake internet answers there.
+CA_IN_SANDBOX = "/etc/detonator-ca.pem"
+CA_ENV = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE")
 
 
 def tracer_cmd(tag: str, name: str, trace_dir: Path) -> list[str]:
@@ -91,19 +100,20 @@ class Monitor:
         self.sink_dir = workdir / "sink"
         self.trace_dir = workdir / "trace"
         self.resolv = workdir / "resolv.conf"
+        self.ca_dir = workdir / "ca"
         self.hostname = hostname
         self.started = False
 
     def start(self) -> list[str]:
         """Start both containers; return the extra `docker run` arguments for the plugin's container."""
         tag = ensure_image(self.run)
-        for d in (self.sink_dir, self.trace_dir):
+        for d in (self.sink_dir, self.trace_dir, self.ca_dir):
             d.mkdir()
             os.chmod(d, 0o777)  # the containers drop every capability, including overriding file permissions
         self.resolv.write_text("nameserver 127.0.0.1\noptions attempts:1 timeout:1\n", encoding="utf-8")
         os.chmod(self.resolv, 0o644)
         self.started = True
-        proc = self.run(sink_cmd(tag, self.sink, self.sink_dir, self.hostname), timeout=60)
+        proc = self.run(sink_cmd(tag, self.sink, self.sink_dir, self.hostname, self.ca_dir), timeout=60)
         if proc.returncode != 0:
             raise RuntimeError(f"fake internet did not start: {(proc.stderr or '').strip()[-300:]}")
         deadline = time.monotonic() + SINK_READY_TIMEOUT_S
@@ -114,8 +124,12 @@ class Monitor:
         proc = self.run(tracer_cmd(tag, self.tracer, self.trace_dir), timeout=60)
         if proc.returncode != 0:
             raise RuntimeError(f"tracer did not start: {(proc.stderr or '').strip()[-300:]}")
+        ca = self.ca_dir / "ca.pem"
+        trust = []
+        if ca.is_file() and not ca.is_symlink():
+            trust = ["-v", f"{ca}:{CA_IN_SANDBOX}:ro", *[a for k in CA_ENV for a in ("-e", f"{k}={CA_IN_SANDBOX}")]]
         return ["--network", f"container:{self.sink}", "--pid", f"container:{self.tracer}",
-                "-v", f"{self.resolv}:/etc/resolv.conf:ro"]
+                "-v", f"{self.resolv}:/etc/resolv.conf:ro", *trust]
 
     def finish(self) -> dict:
         """Wait for the tracer to write its log, stop the fake internet, and read both logs."""

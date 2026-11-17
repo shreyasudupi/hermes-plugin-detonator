@@ -304,7 +304,11 @@ def run(h):
     result["argv"] = argv
     # What Hermes hands a stdio server: its own env entries plus a small safe baseline.
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": home, "TERM": "xterm-256color",
-           "USER": os.environ.get("USER", ""), "LANG": "C.UTF-8", **extra_env, **declared}
+           "USER": os.environ.get("USER", ""), "LANG": "C.UTF-8", **extra_env, **declared,
+           # This run's test certificate authority (from the fake internet), as a person's own
+           # proxy or company network would set it, so HTTPS from the server can be read.
+           **{k: os.environ[k] for k in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+                                         "CURL_CA_BUNDLE") if os.environ.get(k)}}
     if h.TRACED:
         result["traced"] = h.wait_for_tracer()
     h.reserve_fd()

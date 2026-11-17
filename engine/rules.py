@@ -287,6 +287,11 @@ RULES.update({
         "The server asks the user, or the model on the user's behalf, for a password, API key or private "
         "key. Honest servers get their keys from their `env` entry, set once by the user.",
         ("T1056.002", "T1552"), ("AML.T0055",)),
+    "mcp_extra_recipient": Rule(
+        "A message the server sent for a tool went to an address the tool was not given, such as a hidden "
+        "Bcc on every email. The person asked for one recipient; a copy goes to someone else. Detonator "
+        "gives each tool its own test address and reads what leaves, including inside HTTPS.",
+        ("T1114.003", "T1567"), ("AML.T0025",)),
     "mcp_install_script": Rule(
         "npm runs a package's install scripts the moment it is installed, before any tool is used and "
         "with all of the person's keys in reach. Detonator downloads with scripts switched off and runs "
