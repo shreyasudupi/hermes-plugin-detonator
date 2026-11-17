@@ -216,7 +216,7 @@ def test_mcp_run_leaves_a_summary_the_report_tool_can_read(monkeypatch, tmp_path
         "outside": {"ran": True}})
     monkeypatch.setattr(commands.mcp, "render", lambda *a: "# report")
     out = commands.run_mcp_detonation("weather")
-    assert "what the server did" in out
+    assert "what the server did" in out and "plugin" not in out.lower()
     saved = [_json.loads(p.read_text()) for p in tmp_path.glob("*.json")]
     assert saved and saved[0]["repo"].startswith("MCP server weather") and saved[0]["verdict"] == "SUSPICIOUS"
 

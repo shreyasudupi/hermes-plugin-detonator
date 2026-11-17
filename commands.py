@@ -243,7 +243,11 @@ def run_mcp_detonation(spec: str, outside: bool | None = None) -> str:
         if work:
             import shutil
             shutil.rmtree(work, ignore_errors=True)
-    return summary(evaluation, path).replace("what the plugin did", "what the server did")
+    text = summary(evaluation, path)
+    # The shared summary speaks of plugins; here the thing under test is a server.
+    for old, new in (("the plugin's", "the server's"), ("the plugin", "the server"), ("a plugin", "a server")):
+        text = text.replace(old, new)
+    return text
 
 
 def make_mcp_slash_handler(ctx):
