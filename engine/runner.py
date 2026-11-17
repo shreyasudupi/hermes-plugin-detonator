@@ -91,9 +91,15 @@ def read_plain_file(path: Path, limit: int = 10_000_000, inside: Path | None = N
         real, root = os.path.realpath(path), os.path.realpath(inside)
         if os.path.commonpath([real, root]) != root:
             raise OSError(f"{path.name} lies outside {Path(root).name}")
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    # Windows has no O_NOFOLLOW: check the entry itself first, then that the file opened is
+    # that same entry (so a swap between the check and the open is caught too).
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError(f"{path.name} is a link or not a plain file")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
     with os.fdopen(fd, "rb") as f:
-        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != (before.st_dev, before.st_ino):
             raise OSError(f"{path.name} is not a plain file")
         data = f.read(limit + 1)
     if len(data) > limit:

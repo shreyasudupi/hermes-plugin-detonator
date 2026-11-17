@@ -245,3 +245,18 @@ def test_result_file_is_never_read_through_a_link(tmp_path):
     ev = rules.evaluate({"fatal": "unreadable result: link", "result_not_plain": True,
                          "outside": {"ran": True, "trace": {"events": []}, "sink": {}}})
     assert ev["verdict"] == "DANGEROUS" and any(f["rule"] == "result_forged" for f in ev["findings"])
+
+
+def test_link_is_refused_without_o_nofollow_too(tmp_path, monkeypatch):
+    """Windows has no O_NOFOLLOW; the entry is checked before opening instead."""
+    from engine import runner
+    monkeypatch.delattr(runner.os, "O_NOFOLLOW", raising=False)
+    target = tmp_path / "t.json"
+    target.write_text("{}")
+    (tmp_path / "l.json").symlink_to(target)
+    try:
+        runner.read_plain_file(tmp_path / "l.json")
+        assert False, "followed a link"
+    except OSError:
+        pass
+    assert runner.read_plain_file(target) == "{}"

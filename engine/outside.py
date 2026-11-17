@@ -136,18 +136,17 @@ class Monitor:
         """The fake internet's certificate, copied into a file Detonator made itself. Its folder is
         writable by the container, so the file there is never mounted as it is: a link or a swap
         there must not decide which of your files the sandbox gets."""
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        from .runner import read_plain_file    # no link, plain file only, also on Windows
         try:
-            fd = os.open(self.ca_dir / "ca.pem", flags)
-            with os.fdopen(fd, "rb") as f:
-                data = f.read(CA_MAX_BYTES + 1)
+            text = read_plain_file(self.ca_dir / "ca.pem", CA_MAX_BYTES + 1)
         except OSError:
             return None
-        text = data.decode("ascii", "replace")
+        data = text.encode("ascii", "replace")
+        text = text.replace("\r\n", "\n")
         if len(data) > CA_MAX_BYTES or not _PEM_CERT.fullmatch(text.strip()):
             return None
         out = self.ca_dir.parent / "ca-trust.pem"
-        out.write_text(text.strip() + "\n", encoding="ascii")
+        out.write_text(text.strip() + "\n", encoding="ascii", newline="\n")
         os.chmod(out, 0o644)
         return out
 

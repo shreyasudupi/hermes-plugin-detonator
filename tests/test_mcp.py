@@ -4,6 +4,8 @@ These run without Docker, on hand-made harness results. The real containers are 
 the MCP fixtures in the private fixtures repo (python -m engine.mcp <folder>).
 """
 
+import os
+
 import pytest
 
 from engine import mcp, outside
@@ -193,7 +195,7 @@ def test_folder_args_are_swapped_for_empty_folders(tmp_path):
     assert argv[4] == "/plugin/data" and argv[5] == "plain" and len(swapped) == 2
     assert all(pathlib.Path(p).is_dir() for p in swapped)
     argv, swapped = h.swap_path_args(["python", "-c", "x", "--db-path", "/tmp/test.db"], str(tmp_path / "b"), "/plugin")
-    assert argv[4].endswith("/folder-0/test.db") and not pathlib.Path(argv[4]).exists()
+    assert argv[4].endswith(os.path.join("folder-0", "test.db")) and not pathlib.Path(argv[4]).exists()
     assert pathlib.Path(argv[4]).parent.is_dir()
 
 
