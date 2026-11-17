@@ -205,7 +205,7 @@ def make_slash_handler(ctx):
 # MCP servers: /detonate-mcp
 # --------------------------------------------------------------------------------------
 MCP_HELP = ("inside the sandbox, watched by the outside monitor (a tracer and a fake internet); "
-            "takes under a minute for most servers")
+            "takes one to two minutes for most servers (two passes, the second with the clock moved forward)")
 
 
 def mcp_approval_question(spec: str) -> str:
