@@ -483,7 +483,9 @@ def run(h):
     h.phase_marker("mcp-late-start")
     late = {"clock_days": CLOCK_DAYS, "started_at": time.time()}
     try:
-        server = Server(h, argv, clock_env(env, f"/tmp/clock-{h.CANARY}", CLOCK_DAYS), h.PLUGIN_DIR, started)
+        # Not named after the canary: env-dumping tools show this path, and it must not read as a key.
+        late["clock_dir"] = f"/tmp/clock-{os.urandom(6).hex()}"
+        server = Server(h, argv, clock_env(env, late["clock_dir"], CLOCK_DAYS), h.PLUGIN_DIR, started)
     except OSError as exc:
         late["start_error"] = f"{type(exc).__name__}: {exc}"[:500]
         result["late"] = late

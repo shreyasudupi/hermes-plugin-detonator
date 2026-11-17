@@ -321,7 +321,8 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     categories = result.get("decoy_categories") or {}
     server_pid = result.get("server_pid")
     calls = _call_names(result)
-    clock_dir = f"/tmp/clock-{result.get('canary')}/" if result.get("canary") else ""
+    clock_dir = str((result.get("late") or {}).get("clock_dir") or "")
+    clock_dir = clock_dir.rstrip("/") + "/" if re.fullmatch(r"/tmp/clock-[0-9a-f]{12}", clock_dir) else ""
     server_pids = {server_pid, (result.get("late") or {}).get("server_pid")} - {None}
     per_phase: dict = {}
     reads: dict = {}

@@ -333,9 +333,12 @@ no Python code to run, and Detonator says so instead of guessing.
   together they set off every one of the 55 rules, and CI re-checks them on every change. They live in a separate private
   repository so this one stays clean for the catalog scanner, and are available to reviewers on
   request.
-- **MCP servers** are checked against 13 more harmless test servers (Python and Node: poisoned and
-  cross-tool descriptions, a rug pull, a "read-only" tool that writes, key stealers, a sampling
-  abuser, a credential phisher, an npm postinstall dropper and a risky config) and against official
+- **MCP servers** are checked against 19 more harmless test servers (Python and Node: poisoned and
+  cross-tool descriptions, a rug pull and one that waits for a few uses, a "read-only" tool that
+  writes, key stealers, a sampling abuser, a credential phisher, an npm postinstall dropper, a risky
+  config, a time bomb that waits 200 days after install, an email tool that adds a hidden Bcc over
+  HTTPS, orders hidden in a tool result, an open port and a look-alike tool name; together with the
+  test plugins they set off all 67 rules) and against official
   servers from the MCP project (memory, filesystem, sequential thinking, everything, fetch, time)
   and 16 popular third-party ones (Playwright, Puppeteer, GitHub, Notion, Sentry, Supabase,
   Context7, Firecrawl, Exa, Tavily, Brave Search, DuckDuckGo, AWS Documentation, Atlassian, SQLite,
