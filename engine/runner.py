@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import sys
 import subprocess
 import tempfile
@@ -75,6 +76,29 @@ _PASS_ENV = (
     "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
     "PROGRAMW6432", "TEMP", "TMP",
 )
+
+
+
+RESULT_MAX_BYTES = 200_000_000
+
+
+def read_plain_file(path: Path, limit: int = 10_000_000, inside: Path | None = None) -> str:
+    """Read a file that a container or a download produced: never through a link (it could point
+    at any file on this computer), only a plain file, at most `limit` bytes, and, with `inside`,
+    only when its real location is under that folder."""
+    path = Path(path)
+    if inside is not None:
+        real, root = os.path.realpath(path), os.path.realpath(inside)
+        if os.path.commonpath([real, root]) != root:
+            raise OSError(f"{path.name} lies outside {Path(root).name}")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise OSError(f"{path.name} is not a plain file")
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise OSError(f"{path.name} is larger than {limit} bytes")
+    return data.decode("utf-8", errors="replace")
 
 
 def _env() -> dict:
@@ -550,13 +574,17 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
             limit = MCP_RUN_TIMEOUT_S if mcp_entry is not None else RUN_TIMEOUT_S
             return {"fatal": f"sandbox timed out after {limit}s", "outside": seen_outside}
         result_path = out_dir / "result.json"
-        if not result_path.is_file():
+        if not result_path.is_file() and not result_path.is_symlink():
             err = proc.stderr.strip()
             hint = explain_docker_error(err)
             return {"fatal": (f"{hint} " if hint else "") + f"no result (exit {proc.returncode}): {err[-800:]}",
                     "outside": seen_outside}
         try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
+            result = json.loads(read_plain_file(result_path, RESULT_MAX_BYTES))
+        except OSError as exc:
+            # A link or something else in place of the result: never followed (it could point
+            # at any file on this computer). The outside monitor's evidence is still judged.
+            return {"fatal": f"unreadable result: {exc}", "outside": seen_outside, "result_not_plain": True}
         except json.JSONDecodeError as exc:
             return {"fatal": f"unreadable result: {exc}", "outside": seen_outside}
         if not isinstance(result, dict):

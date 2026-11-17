@@ -273,7 +273,7 @@ Detonator then compares the two records. Three rules come from this:
 |---|---|---|
 | `secret_sent_out` | critical | A fake key reaching the fake internet, plain or disguised (base64, base32, hex, URL escapes, rot13, reversed, compressed, or layers of these), or hidden in DNS names, even split across several lookups |
 | `monitor_blind_spot` | critical | The plugin's own process opening a decoy file, connecting out or starting a program that the inside monitor never recorded |
-| `result_forged` | critical | Anything other than Detonator writing the result file |
+| `result_forged` | critical | Anything other than Detonator writing, removing or linking the result file (Detonator never reads it through a link) |
 
 It also adds evidence to `decoy_accessed` when a program the plugin started reads a decoy
 file (high when it is that program's own login file, such as pip reading `.netrc`), and to
@@ -322,15 +322,15 @@ no Python code to run, and Detonator says so instead of guessing.
 
 - **Every change** runs over 130 tests in CI, including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
-- **Detection** is checked against 33 harmless test plugins (fake keys, reserved TEST-NET
+- **Detection** is checked against 34 harmless test plugins (fake keys, reserved TEST-NET
   addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,
   prompt injection, tool poisoning, a rug pull, a backdoor port, a config hijack, a log flood, a
   trojan update, a date-triggered time bomb, a sleeper thread, a plugin that reads keys through C
   code to dodge the inside monitor and one that forges a clean result (both caught only from
-  outside), an encoded key leak, an argument swapper, a model-request redirector, look-alike tool
+  outside), one that swaps the result file for a link, an encoded key leak, an argument swapper, a model-request redirector, look-alike tool
   names, an output flood, a chat snooper and a plugin whose description lies, plus honest and
-  grey-area plugins that must not be flagged as dangerous. All 33 get their expected verdict,
-  together they set off every one of the 55 rules, and CI re-checks them on every change. They live in a separate private
+  grey-area plugins that must not be flagged as dangerous. All 34 get their expected verdict,
+  together they set off every one of the plugin rules, and CI re-checks them on every change. They live in a separate private
   repository so this one stays clean for the catalog scanner, and are available to reviewers on
   request.
 - **MCP servers** are checked against 19 more harmless test servers (Python and Node: poisoned and
@@ -446,7 +446,8 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   The fake internet now reads inside HTTPS (a per-run test authority the sandbox trusts), for
   plugins and servers alike. For MCP servers: test input that fits each field, repeated calls, a
   second pass with the clock 400 days ahead (`time_triggered`), hidden extra recipients
-  and look-alike tool names.
+  and look-alike tool names. From a self-audit: the result file and files from a downloaded package
+  are never read through a link, and a plugin that puts a link there is flagged as `result_forged`.
 - **v0.3.1**: No SHA needed.
   - `/detonate <catalog-name>` tests exactly what `hermes plugins install <name>` would install
   (repo, commit and folder from the Hermes catalog). `/detonate <owner/repo>` or a GitHub link

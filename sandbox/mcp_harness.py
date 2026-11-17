@@ -612,6 +612,5 @@ def _finish(h, result, server, into=None):
         (result if into is None else into)["server_stopped"] = server.stop()
     h.release_fd()
     h.phase_marker("plugin-done")
-    with open(h.OUT_PATH, "w") as f:
-        json.dump(result, f, indent=1, default=str)
+    h.write_result(result, indent=1, default=str)
     os._exit(0)

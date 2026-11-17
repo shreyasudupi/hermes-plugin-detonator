@@ -299,7 +299,7 @@ def parse_strace(text: str, harness_pid) -> dict:
         elif call == "memfd_create":
             sm = _STR.search(args)
             ev["detail"] = _unescape(sm.group(1)) if sm else ""
-        elif call in ("unlink", "unlinkat", "rename", "renameat", "renameat2"):
+        elif call in ("unlink", "unlinkat", "rename", "renameat", "renameat2", "symlink", "symlinkat", "link", "linkat"):
             ev["paths"] = [_unescape(s) for s in _STR.findall(args)[:2]]
         events.append(ev)
     started = _first_marker(events, "plugin-start")

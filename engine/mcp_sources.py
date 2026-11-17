@@ -372,7 +372,7 @@ def _inside(base: Path, rel: str) -> bool:
 def npm_entry(plan: Plan, work: Path) -> dict:
     pkg_dir = work / "node_modules" / plan.package
     try:
-        meta = json.loads((pkg_dir / "package.json").read_text(encoding="utf-8"))
+        meta = json.loads(runner.read_plain_file(pkg_dir / "package.json", 2_000_000, inside=work))
     except (OSError, ValueError):
         raise SourceError(f"{plan.package} did not install")
     plan.version = plan.version or str(meta.get("version") or "")[:40]
@@ -402,7 +402,7 @@ def pypi_entry(plan: Plan, work: Path) -> dict:
     scripts = {}
     try:
         section = None
-        for line in (info / "entry_points.txt").read_text(encoding="utf-8").splitlines():
+        for line in runner.read_plain_file(info / "entry_points.txt", 2_000_000, inside=work).splitlines():
             line = line.strip()
             if line.startswith("["):
                 section = line.strip("[]")
@@ -439,7 +439,7 @@ def npm_install_scripts(folder: Path, limit: int = 2000) -> list:
                                    (up.name.startswith("@") and up.parent.name == "node_modules")):
             continue    # a package's own package.json sits right under node_modules (or a @scope)
         try:
-            meta = json.loads(pj.read_text(encoding="utf-8"))
+            meta = json.loads(runner.read_plain_file(pj, 2_000_000, inside=folder))
         except (OSError, ValueError):
             continue
         scripts = meta.get("scripts") if isinstance(meta, dict) else None

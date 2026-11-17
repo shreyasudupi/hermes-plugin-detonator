@@ -1214,10 +1214,21 @@ def main():
     result["events_truncated"] = len(EVENTS) > MAX_EVENTS
     result["events"] = trim_events(EVENTS)
 
-    with open(OUT_PATH, "w") as f:
-        json.dump(result, f, indent=1, default=_short)
+    write_result(result, indent=1, default=_short)
     # Exit hard so plugin threads cannot run (or rewrite the result) afterwards.
     os._exit(0)
+
+
+def write_result(obj, **kw):
+    """Write the result as a new plain file. /out is shared with the code under test, which may
+    have left a link there; a link is removed, never written through."""
+    try:
+        os.unlink(OUT_PATH)
+    except FileNotFoundError:
+        pass
+    fd = os.open(OUT_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    with os.fdopen(fd, "w") as f:
+        json.dump(obj, f, **kw)
 
 
 def main_mcp():
@@ -1234,6 +1245,5 @@ if __name__ == "__main__":
         _ACTIVE = False
         release_fd()
         phase_marker("harness-fatal")
-        with open(OUT_PATH, "w") as f:
-            json.dump({"harness_version": 2, "fatal": traceback.format_exc()}, f)
+        write_result({"harness_version": 2, "fatal": traceback.format_exc()})
         sys.exit(2)

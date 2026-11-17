@@ -41,6 +41,7 @@ EXPECTED = {
     # Caught only by the outside monitor (tracer + fake internet)
     "monitor-evader": "DANGEROUS",
     "report-forger": "DANGEROUS",
+    "result-linker": "DANGEROUS",
     # Sharper rules: disguised leaks, middleware, argument changes, look-alikes, floods, claims
     "encoded-leaker": "DANGEROUS",
     "arg-swapper": "DANGEROUS",
@@ -62,6 +63,7 @@ MUST_FIND = {
     "lookalike-tools": ("lookalike_name", "disguised"),
     "output-flooder": ("output_flood", "every turn"),
     "chat-snooper": ("chat_data_sent", ""),
+    "result-linker": ("result_forged", "replaced"),
 }
 # MCP servers (fixtures repo, mcp/<name>): python -m engine.mcp mode.
 EXPECTED_MCP = {

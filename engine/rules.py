@@ -247,8 +247,9 @@ RULES = {
         "past the inside monitor; code written to hide from it (or to switch it off) does.",
         ("T1562.001", "T1106"), ()),
     "result_forged": Rule(
-        "Something other than Detonator wrote the sandbox's result file. A plugin that writes its own "
-        "result is trying to hand in a fake clean report.",
+        "Something other than Detonator wrote, removed or linked the sandbox's result file. A plugin that "
+        "writes its own result is trying to hand in a fake clean report; one that puts a link there is trying "
+        "to make Detonator read some other file instead (Detonator never follows it).",
         ("T1565.001", "T1562.001"), ()),
     "coverage_stubbed_imports": Rule(
         "The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, "
@@ -1077,6 +1078,7 @@ _ENVIRON_PATH = re.compile(r"^/pro" r"c/(?:self|thread-self|\d+)(?:/task/\d+)?/e
 # canary followed by one of these tags.
 _INPUT_TAGS = ("-ARG", "-USER", "-SYSTEM", "-TOOLRESULT", "-TERMINAL", "-ASSISTANT")
 _RESULT_FILE = "/out/result.json"
+_LINK_CALLS = ("symlink", "symlinkat", "link", "linkat", "unlink", "unlinkat", "rename", "renameat", "renameat2")
 _PHASE_PREFIX = "/detonator-phase/"
 # Credential files a well-known program reads for its own login. When a program the plugin
 # started reads its own one, that is the program working normally (still worth a look, since a
@@ -1149,6 +1151,11 @@ def _outside_findings(result: dict) -> list:
     # Its own decoding budget, so a flood of encoded text inside cannot blind the outside check.
     _leakfind.reset_run_budget()
     findings = _outside_findings_raw(result)
+    if result.get("result_not_plain") and not any(f.rule == "result_forged" for f in findings):
+        # Detonator refuses to read a link in place of its result file; only the code under test
+        # could have put it there (to feed Detonator a report, or another file from this computer).
+        findings.append(Finding("result_forged", CRITICAL, "Replaced Detonator's result file with a link "
+                                "(a forged report)", [str(result.get("fatal") or "")[:200]]))
     # Evidence quotes what the plugin sent or named; keep it on one line and out of Markdown code.
     for f in findings:
         f.evidence = [str(x).replace("`", "'").replace("\r", "\\r").replace("\n", "\\n") for x in f.evidence]
@@ -1241,6 +1248,12 @@ def _outside_findings_raw(result: dict) -> list:
                 for e in plugin_events if e.get("call") in ("execve", "execveat") and e.get("ok")}
     for j, e in enumerate(plugin_events, start + 1):
         call, path = e.get("call"), str(e.get("path") or "")
+        if call in _LINK_CALLS and e.get("ok") and _RESULT_FILE in (e.get("paths") or [])[-1:] + \
+                ((e.get("paths") or [])[:1] if call.startswith(("unlink", "rename")) else []):
+            # A link put where the result goes, or the result file removed or renamed. The
+            # harness itself only ever removes it right before writing it, after the run.
+            forged.append((j, {**e, "pid": e.get("pid"), "what": call}))
+            continue
         if call in ("open", "openat", "openat2", "creat"):
             if path.startswith(_PHASE_PREFIX):
                 continue
@@ -1315,8 +1328,9 @@ def _outside_findings_raw(result: dict) -> list:
     early = {j for j, _ in forged if limit is None or j < limit}
     if len(forged) > 1 or early:
         findings.append(Finding("result_forged", CRITICAL,
-                                "Wrote Detonator's result file itself (a forged report)",
-                                [f'process {e.get("pid")} opened {_RESULT_FILE} for writing'
+                                "Wrote or replaced Detonator's result file itself (a forged report)",
+                                [f'process {e.get("pid")} {"opened" if not e.get("what") else "used " + e["what"] + " on"} '
+                                 f'{_RESULT_FILE}{"" if e.get("what") else " for writing"}'
                                  f'{" before the run finished" if j in early else ""}' for j, e in forged][:5]))
     if tamper:
         findings.append(Finding("monitor_tamper", HIGH,

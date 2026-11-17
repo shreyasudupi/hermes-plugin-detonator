@@ -219,3 +219,29 @@ def test_mcp_run_leaves_a_summary_the_report_tool_can_read(monkeypatch, tmp_path
     assert "what the server did" in out
     saved = [_json.loads(p.read_text()) for p in tmp_path.glob("*.json")]
     assert saved and saved[0]["repo"].startswith("MCP server weather") and saved[0]["verdict"] == "SUSPICIOUS"
+
+
+def test_result_file_is_never_read_through_a_link(tmp_path):
+    from engine import rules, runner
+    secret = tmp_path / "host-secret.json"
+    secret.write_text('{"verdict": "NO_FINDINGS", "tools": ["LEAKED"]}')
+    link = tmp_path / "result.json"
+    link.symlink_to(secret)
+    try:
+        runner.read_plain_file(link)
+        assert False, "followed a link"
+    except OSError:
+        pass
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "package.json").symlink_to(secret)
+    try:
+        runner.read_plain_file(tmp_path / "pkg" / "package.json", inside=tmp_path / "pkg")
+        assert False, "followed a link out of the folder"
+    except OSError:
+        pass
+    plain = tmp_path / "plain.json"
+    plain.write_text("{}")
+    assert runner.read_plain_file(plain, inside=tmp_path) == "{}"
+    ev = rules.evaluate({"fatal": "unreadable result: link", "result_not_plain": True,
+                         "outside": {"ran": True, "trace": {"events": []}, "sink": {}}})
+    assert ev["verdict"] == "DANGEROUS" and any(f["rule"] == "result_forged" for f in ev["findings"])
