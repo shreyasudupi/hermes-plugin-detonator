@@ -1,4 +1,6 @@
-# Plugin Detonator
+# Detonator
+
+**A security sandbox for Hermes Agent plugins and MCP servers.**
 
 ![Detonator: a security testing sandbox for Hermes Agent plugins and MCP servers](docs/store/cover.png)
 
@@ -6,12 +8,12 @@
 
 **Current version: v0.4.0** ([what's new](#versions))
 
-[![Watch the 82-second Plugin Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
+[![Watch the 82-second Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
 ▶️ **[Watch the 82-second demo](https://x.com/shreyasudupi/status/2120289870908465286)**: a real run catching a fake key-stealer plugin, comparing two versions, the clock jump, and the plain-words AI explanation.
 
 Detonator is a security sandbox for [Hermes Agent](https://hermes-agent.nousresearch.com/)
-plugins. You name a plugin (its catalog name, or its GitHub page) and approve the run. It then
+plugins and MCP servers. You name a plugin (its catalog name, or its GitHub page) and approve the run. It then
 loads that plugin inside a disposable Docker container with a fake Hermes home full
 of decoys, fires synthetic hooks and tool calls at it, and reports what the plugin
 actually did compared with what it declares. Each finding says, in plain words, why it
@@ -115,7 +117,8 @@ Detonator always asks you before it runs anything. If no one can answer (a cron
 job, a hook, a non-interactive or unattended run), it refuses instead of running.
 There is no flag that skips the question. The `detonate_plugin` tool lets the
 agent suggest a run (by catalog name or repo), but it only returns the `/detonate` command for you to run.
-Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/`.
+Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/` (`~/.hermes` on macOS and
+Linux, `%LOCALAPPDATA%\hermes` on Windows).
 
 ### Docker problems
 
@@ -320,7 +323,7 @@ no Python code to run, and Detonator says so instead of guessing.
 
 ## How it was tested
 
-- **Every change** runs over 130 tests in CI, including real Docker sandbox runs, plus Hermes's own
+- **Every change** runs over 270 tests in CI, including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
 - **Detection** is checked against 34 harmless test plugins (fake keys, reserved TEST-NET
   addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,

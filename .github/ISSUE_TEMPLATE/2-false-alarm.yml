@@ -1,5 +1,5 @@
 name: False alarm
-description: Detonator flagged something an honest plugin does normally.
+description: Detonator flagged something an honest plugin or MCP server does normally.
 labels: [false-alarm]
 body:
   - type: markdown

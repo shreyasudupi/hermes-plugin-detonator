@@ -1,1 +1,1 @@
-"""Plugin Detonator engine: fetch, sandbox, observe, judge, report."""
+"""Detonator engine: fetch, sandbox, observe, judge, report."""

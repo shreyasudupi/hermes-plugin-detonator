@@ -32,7 +32,8 @@ USAGE = (
     "   or: /detonate <owner/repo or GitHub link> [subdir]   (its newest commit)\n"
     "   or: /detonate update <installed-name>     (your installed copy vs. what an update would install)\n"
     "   or: /detonate <owner/repo> <40-char-sha> [<newer-sha>] [subdir]   (exact commits)\n"
-    "   or: /detonate check                       (is Docker ready? runs nothing)"
+    "   or: /detonate check                       (is Docker ready? runs nothing)\n"
+    "MCP servers: /detonate-mcp <server-name | folder>"
 )
 
 Sha = Union[str, None, tuple]
