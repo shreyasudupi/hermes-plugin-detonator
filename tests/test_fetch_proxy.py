@@ -41,6 +41,11 @@ def _echo_server():
     return srv
 
 
+def test_windows_names_ignore_case(env):
+    env.setattr(s.os, "name", "nt")
+    assert s._env_names(s._PROXY_VARS) == ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")
+
+
 def test_no_proxy_no_args(env):
     with s._ProxySetup() as args:
         assert args == []
@@ -57,11 +62,11 @@ def test_remote_proxy_passed_by_name(env):
 def test_local_proxy_on_docker_desktop(env):
     env.setattr(s, "_docker_desktop", lambda: True)
     env.setenv("HTTPS_PROXY", "http://user:pw@127.0.0.1:8888")
-    env.setenv("http_proxy", "http://localhost:8888/")
+    env.setenv("HTTP_PROXY", "http://localhost:8888/")
     with s._ProxySetup() as args:
         path, vals = _env_file(args)
         assert vals == {"HTTPS_PROXY": "http://user:pw@host.docker.internal:8888",
-                        "http_proxy": "http://host.docker.internal:8888/"}
+                        "HTTP_PROXY": "http://host.docker.internal:8888/"}
         assert "--network" not in args and "pw" not in " ".join(args)
         assert args[args.index("--add-host") + 1] == "host.docker.internal:host-gateway"
         if os.name != "nt":
@@ -101,7 +106,7 @@ def test_relay_refuses_peers_outside_the_bridge():
         try:
             c.sendall(b"hi")
             assert c.recv(100) == b""      # closed without forwarding
-        except ConnectionResetError:
+        except ConnectionError:            # reset (Linux) or aborted (Windows): refused either way
             pass
         c.close()
     finally:

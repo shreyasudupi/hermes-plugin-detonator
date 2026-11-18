@@ -430,6 +430,11 @@ def _bridge() -> tuple:
                       "that is not localhost, or unset it")
 
 
+def _env_names(names: tuple) -> tuple:
+    """Windows environment names ignore case, so HTTPS_PROXY and https_proxy are one variable there."""
+    return tuple(n for n in names if n.isupper()) if os.name == "nt" else names
+
+
 class _ProxySetup:
     """Docker arguments that give the download container this computer's proxy settings and
     certificate bundle, so the download works where the person's own npm and pip work.
@@ -451,7 +456,7 @@ class _ProxySetup:
 
     def _build(self):
         rewritten, by_name = {}, []
-        for k in _PROXY_VARS:
+        for k in _env_names(_PROXY_VARS):
             val = os.environ.get(k)
             if not val:
                 continue
@@ -460,7 +465,7 @@ class _ProxySetup:
                 by_name.append(k)
                 continue
             rewritten[k] = self._reach(m)
-        for k in _NO_PROXY_VARS:
+        for k in _env_names(_NO_PROXY_VARS):
             if os.environ.get(k):
                 by_name.append(k)
         for k in by_name:
