@@ -412,7 +412,11 @@ Detonator does things a reviewer should know about:
   Downloads run `npm install --ignore-scripts` or `pip install --only-binary=:all:` in a container
   from `sandbox/Dockerfile.mcp` (digest-pinned `node` and `python` images) with your proxy settings,
   as your own user (never root), `--read-only --cap-drop ALL --security-opt no-new-privileges
-  --pids-limit 256 --memory 1g`, and only an empty work folder mounted. Nothing downloaded runs
+  --pids-limit 256 --memory 1g`, and only an empty work folder mounted. It never uses host
+  networking: if your proxy runs on this computer (localhost), Docker Desktop reaches it through
+  `host.docker.internal`, and on Linux Detonator opens a relay for the length of the download that
+  forwards only to your proxy's port, so the container cannot reach your other local services.
+  Proxy values go through a private env file, so a proxy password never shows in `ps`. Nothing downloaded runs
   there or on your machine: the server and its install scripts run only in the sandbox, which uses
   the same image settings as above with a 240-second limit.
 - **Private run folder.** Each run's temporary folder is readable only by you, so other users
