@@ -14,7 +14,8 @@ shows only the first characters of a value.
 
 Disclosure (catalog rule 13): `docker run` of a pinned node or python image with network access to
 download the package (npm install --ignore-scripts / pip install --only-binary). Nothing from the
-package runs in that container.
+package runs in that container. It never gets host networking: a proxy on this computer's loopback
+is reached through host.docker.internal (Docker Desktop) or a one-port relay (Linux, `_Relay`).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import os
 import posixpath
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -297,23 +299,222 @@ def _readable_file(path: str) -> bool:
         return False
 
 
-def _proxy_args() -> list:
-    """Corporate proxies and certificate bundles from this computer, so the download works
-    where the person's own npm and pip work."""
-    args = []
-    proxy = ""
-    for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"):
-        if os.environ.get(k):
-            args += ["-e", k]    # by name: docker reads the value, so a proxy password never shows in ps
-            proxy = proxy or (os.environ[k] if "proxy" in k.lower() and "no" not in k.lower() else "")
-    if proxy and re.match(r"^\w+://(?:[^@/]*@)?(?:127\.|localhost|\[::1\])", proxy):
-        args += ["--network", "host"]     # a proxy on this computer's own loopback
-    ca = next((os.environ[k] for k in ("NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
-               if os.environ.get(k) and _readable_file(os.environ[k])), None)
-    if ca:
-        args += ["-v", f"{ca}:/etc/detonator-ca.pem:ro", "-e", "NODE_EXTRA_CA_CERTS=/etc/detonator-ca.pem",
-                 "-e", "PIP_CERT=/etc/detonator-ca.pem", "-e", "SSL_CERT_FILE=/etc/detonator-ca.pem"]
-    return args
+_PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+_NO_PROXY_VARS = ("NO_PROXY", "no_proxy")
+_LOOPBACK_URL = re.compile(r"^(?P<scheme>\w+)://(?P<auth>[^@/]*@)?"
+                           r"(?P<host>127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::(?P<port>\d{1,5}))?(?P<rest>/.*)?$", re.I)
+_DEFAULT_PORTS = {"http": 80, "https": 443, "socks5": 1080, "socks5h": 1080, "socks4": 1080}
+DESKTOP_HOST = "host.docker.internal"
+RELAY_MAX_CONNS = 32
+RELAY_IDLE_S = 300
+
+
+class _Relay:
+    """Forwards TCP from containers on Docker's bridge to one proxy port on this computer's loopback.
+
+    Used instead of host networking: the download container then sees only this one port of
+    this computer, never its other local services. It listens on the bridge's gateway address
+    (not reachable from other computers), accepts only peers inside the bridge subnet, and
+    lives only for one download."""
+
+    def __init__(self, bind_ip: str, subnet: str, target: tuple):
+        import ipaddress
+        import socket
+        import threading
+        self._net = ipaddress.ip_network(subnet, strict=False)
+        self._target = target
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.bind((bind_ip, 0))
+        self._sock.listen(16)
+        self._sock.settimeout(0.5)    # so close() is noticed on every platform
+        self.host, self.port = self._sock.getsockname()[:2]
+        self._slots = threading.BoundedSemaphore(RELAY_MAX_CONNS)
+        self._closed = False
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self):
+        import ipaddress
+        import socket
+        import threading
+        while not self._closed:
+            try:
+                conn, peer = self._sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            conn.settimeout(None)
+            try:
+                ok = ipaddress.ip_address(peer[0]) in self._net
+            except ValueError:
+                ok = False
+            if not ok or not self._slots.acquire(blocking=False):
+                conn.close()
+                continue
+            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+
+    def _serve(self, conn):
+        import socket
+        import threading
+        try:
+            up = socket.create_connection(self._target, timeout=10)
+        except OSError:
+            conn.close()
+            self._slots.release()
+            return
+        for s in (conn, up):
+            s.settimeout(RELAY_IDLE_S)
+
+        def pump(a, b):
+            try:
+                while True:
+                    data = a.recv(65536)
+                    if not data:
+                        break
+                    b.sendall(data)
+            except OSError:
+                pass
+            finally:
+                for s in (a, b):
+                    try:
+                        s.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+
+        t = threading.Thread(target=pump, args=(up, conn), daemon=True)
+        t.start()
+        pump(conn, up)
+        t.join(RELAY_IDLE_S)
+        conn.close()
+        up.close()
+        self._slots.release()
+
+    def close(self):
+        import socket
+        self._closed = True
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
+def _docker_desktop() -> bool:
+    """Docker Desktop (Mac, Windows, and its Linux app) forwards host.docker.internal to this
+    computer, its loopback included."""
+    if os.name == "nt" or sys.platform == "darwin":
+        return True
+    try:
+        out = runner._run(["docker", "info", "--format", "{{.OperatingSystem}}"], timeout=20).stdout or ""
+    except Exception:
+        return False
+    return "docker desktop" in out.lower()
+
+
+def _bridge() -> tuple:
+    """(gateway ip, subnet) of Docker's default bridge network."""
+    try:
+        out = runner._run(["docker", "network", "inspect", "bridge", "--format",
+                           "{{range .IPAM.Config}}{{.Gateway}} {{.Subnet}}\n{{end}}"], timeout=20).stdout or ""
+    except Exception:
+        out = ""
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and ":" not in parts[0]:
+            return parts[0], parts[1]
+    raise SourceError("your proxy runs on this computer (localhost) and Docker's bridge network was not "
+                      "found, so the download container cannot reach it; set HTTPS_PROXY to an address "
+                      "that is not localhost, or unset it")
+
+
+class _ProxySetup:
+    """Docker arguments that give the download container this computer's proxy settings and
+    certificate bundle, so the download works where the person's own npm and pip work.
+
+    It never uses host networking. A proxy on this computer's loopback is reached through
+    host.docker.internal on Docker Desktop, or through a one-port relay (`_Relay`) on Linux.
+    Proxy values go through a private env file, so a proxy password never shows in ps."""
+
+    def __init__(self):
+        self.args, self._relays, self._env_file = [], {}, None
+
+    def __enter__(self):
+        try:
+            self._build()
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self.args
+
+    def _build(self):
+        rewritten, by_name = {}, []
+        for k in _PROXY_VARS:
+            val = os.environ.get(k)
+            if not val:
+                continue
+            m = _LOOPBACK_URL.match(val.strip())
+            if not m:
+                by_name.append(k)
+                continue
+            rewritten[k] = self._reach(m)
+        for k in _NO_PROXY_VARS:
+            if os.environ.get(k):
+                by_name.append(k)
+        for k in by_name:
+            self.args += ["-e", k]    # by name: docker reads the value, so it never shows in ps
+        if rewritten:
+            import tempfile
+            fd, path = tempfile.mkstemp(prefix="detonator-proxy-", suffix=".env")
+            self._env_file = path
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+                for k, v in rewritten.items():
+                    fh.write(f"{k}={v}\n")
+            self.args += ["--env-file", path]
+            if not self._relays:
+                self.args += ["--add-host", f"{DESKTOP_HOST}:host-gateway"]
+        ca = next((os.environ[k] for k in ("NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+                   if os.environ.get(k) and _readable_file(os.environ[k])), None)
+        if ca:
+            self.args += ["-v", f"{ca}:/etc/detonator-ca.pem:ro", "-e", "NODE_EXTRA_CA_CERTS=/etc/detonator-ca.pem",
+                          "-e", "PIP_CERT=/etc/detonator-ca.pem", "-e", "SSL_CERT_FILE=/etc/detonator-ca.pem"]
+
+    def _reach(self, m) -> str:
+        """The same proxy URL, pointed at an address the download container can reach."""
+        scheme = m.group("scheme").lower()
+        port = int(m.group("port") or _DEFAULT_PORTS.get(scheme, 80))
+        if not 0 < port < 65536:
+            raise SourceError("your proxy address has an invalid port")
+        if _docker_desktop():
+            return f"{m.group('scheme')}://{m.group('auth') or ''}{DESKTOP_HOST}:{port}{m.group('rest') or ''}"
+        target_host = "::1" if m.group("host") == "[::1]" else (
+            "127.0.0.1" if m.group("host").lower() == "localhost" else m.group("host"))
+        relay = self._relays.get((target_host, port))
+        if relay is None:
+            if len(self._relays) >= 4:
+                raise SourceError("your proxy settings name too many different local proxies")
+            gw, subnet = _bridge()
+            try:
+                relay = self._relays[(target_host, port)] = _Relay(gw, subnet, (target_host, port))
+            except OSError as exc:
+                raise SourceError("your proxy runs on this computer (localhost) and Detonator could not "
+                                  f"open a relay to it ({type(exc).__name__}); set HTTPS_PROXY to an "
+                                  "address that is not localhost, or unset it")
+        return f"{m.group('scheme')}://{m.group('auth') or ''}{relay.host}:{relay.port}{m.group('rest') or ''}"
+
+    def __exit__(self, *exc):
+        for relay in self._relays.values():
+            relay.close()
+        self._relays = {}
+        if self._env_file:
+            try:
+                os.unlink(self._env_file)
+            except OSError:
+                pass
+            self._env_file = None
+        return False
 
 
 def _fetch_user() -> str:
@@ -323,12 +524,12 @@ def _fetch_user() -> str:
     return f"{uid}:{gid}" if uid > 0 and gid >= 0 else "10001:10001"
 
 
-def _fetch_cmd(image: str, work: Path, argv: list) -> list:
+def _fetch_cmd(image: str, work: Path, argv: list, proxy_args: list = ()) -> list:
     return ["docker", "run", "--rm", "--read-only", "--tmpfs", "/tmp:rw,size=512m,mode=1777",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256",
             "--memory", "1g", "--cpus", "2", "--user", _fetch_user(), "-e", "HOME=/tmp",
             "-e", "npm_config_cache=/tmp/.npm", "-e", "npm_config_update_notifier=false",
-            *_proxy_args(), "-v", f"{work}:/work:rw", "-w", "/work", "--entrypoint", argv[0], image, *argv[1:]]
+            *proxy_args, "-v", f"{work}:/work:rw", "-w", "/work", "--entrypoint", argv[0], image, *argv[1:]]
 
 
 def _run_fetch(cmd: list, what: str) -> None:
@@ -346,9 +547,10 @@ def fetch_npm(plan: Plan, work: Path) -> Path:
     work.mkdir(parents=True, exist_ok=True)
     os.chmod(work, 0o777)
     spec = f"{plan.package}@{plan.version or 'latest'}"
-    _run_fetch(_fetch_cmd(node_image(), work, [
-        "npm", "install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock",
-        "--prefix", "/work", "--", spec]), spec)
+    with _ProxySetup() as proxy:
+        _run_fetch(_fetch_cmd(node_image(), work, [
+            "npm", "install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock",
+            "--prefix", "/work", "--", spec], proxy), spec)
     return work
 
 
@@ -357,10 +559,11 @@ def fetch_pypi(plan: Plan, work: Path) -> Path:
     os.chmod(work, 0o777)
     spec = f"{plan.package}=={plan.version}" if plan.version else plan.package
     # Wheels only: building from a source package runs its code, which must not happen outside the sandbox.
-    _run_fetch(_fetch_cmd(python_image(), work, [
-        "python", "-m", "pip", "install", "--only-binary=:all:", "--no-compile", "--no-cache-dir",
-        "--disable-pip-version-check", "--target", "/work/site", "--", spec]),
-        spec + " (only packages published as wheels can be tested)")
+    with _ProxySetup() as proxy:
+        _run_fetch(_fetch_cmd(python_image(), work, [
+            "python", "-m", "pip", "install", "--only-binary=:all:", "--no-compile", "--no-cache-dir",
+            "--disable-pip-version-check", "--target", "/work/site", "--", spec], proxy),
+            spec + " (only packages published as wheels can be tested)")
     return work
 
 
