@@ -341,6 +341,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     writes, programs, nets, local, listen, probes, recon, environ = [], [], [], [], [], [], [], []
     shells: list = []
     net_procs = rules.connected_procs(events)
+    unplaced: list = []
     own_exec_seen: set = set()
     exe_of: dict = {}    # process (thread group) -> program it last started, from execve
     for phase, e in _phases(events, trace.get("start_index")):
@@ -378,6 +379,9 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                 recon.append(path)
         elif call in ("unlink", "unlinkat", "rename", "renameat", "renameat2") and e.get("ok"):
             for p in e.get("paths") or []:
+                if p and not p.startswith("/"):
+                    unplaced.append(f"{p} ({label})")    # relative to a folder the trace never named
+                    continue
                 if p and not rules._under(p, allowed + ["/tmp"]):
                     writes.append((phase, label, p))
                     hit = True
@@ -428,6 +432,10 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     if environ:
         findings.append(Finding("environ_file_read", HIGH,
                                 "Read another process's environment, where Hermes's keys live", environ[:5]))
+    if unplaced:
+        findings.append(Finding("write_outside_folder", LOW,
+                                "Renamed or deleted files in a folder the trace could not name",
+                                list(dict.fromkeys(unplaced))[:8]))
     own_names = _own_names(result)
     grouped: dict = {}
     for phase, label, path in writes:

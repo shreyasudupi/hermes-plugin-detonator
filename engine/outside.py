@@ -233,6 +233,7 @@ def parse_strace(text: str, harness_pid) -> dict:
     tgid: dict[int, int] = {}                          # thread id -> process id
     pending: dict[int, str] = {}                       # unfinished call text per pid
     fds: dict[int, dict] = {}                          # process id -> fd -> path (strace cannot always name fds)
+    cwd: dict[int, str] = {}                           # process id -> last working folder strace showed
     events: list[dict] = []
     for raw in text.splitlines():
         m = _LINE.match(raw)
@@ -264,6 +265,8 @@ def parse_strace(text: str, harness_pid) -> dict:
             else:
                 children[child] = pid
                 fds[child] = dict(fds.get(tgid.get(pid, pid), {}))   # a forked process inherits open files
+                if tgid.get(pid, pid) in cwd:
+                    cwd[child] = cwd[tgid.get(pid, pid)]
             continue
         ev = {"pid": pid, "proc": tgid.get(pid, pid), "in_harness": pid in group, "call": call, "ok": ok}
         if err:
@@ -286,7 +289,12 @@ def parse_strace(text: str, harness_pid) -> dict:
                 path = posixpath.join(base, path)
             ev["path"] = posixpath.normpath(path)
             if ok and ret.isdigit():
-                table[int(ret)] = ev["path"]
+                if "O_DIRECTORY" in args or "O_PATH" in args:
+                    table[int(ret)] = ev["path"]       # only folders: a reused file fd must not become a base
+                else:
+                    table.pop(int(ret), None)
+            if dm and dm.group(0).startswith("AT_FDCWD") and dm.group(1):
+                cwd[ev["proc"]] = dm.group(1)
             ev["write"] = call == "creat" or any(f in args for f in _WRITE_FLAGS)
         elif call in ("execve", "execveat"):
             strs = _STR.findall(args)
@@ -314,10 +322,16 @@ def parse_strace(text: str, harness_pid) -> dict:
             paths = []
             for dm2 in re.finditer(r'(?:(AT_FDCWD|\d+)(?:<([^>]*)>)?, )?"((?:[^"\\]|\\.)*)"', args):
                 p = _unescape(dm2.group(3))
-                if not p.startswith("/") and dm2.group(1):
-                    base = dm2.group(2) or (table.get(int(dm2.group(1))) if dm2.group(1).isdigit() else None)
+                if not p.startswith("/"):
+                    if dm2.group(1):
+                        base = dm2.group(2) or (table.get(int(dm2.group(1))) if dm2.group(1).isdigit()
+                                                else cwd.get(ev["proc"]))
+                    else:
+                        base = cwd.get(ev["proc"])
                     if base:
                         p = posixpath.normpath(posixpath.join(base, p))
+                    else:
+                        ev["unresolved"] = True
                 paths.append(p)
                 if len(paths) == 2:
                     break
