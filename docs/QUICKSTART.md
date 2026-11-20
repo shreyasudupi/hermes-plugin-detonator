@@ -53,11 +53,20 @@ What the three parts do:
 `hermes plugins install detonator` installs the version the Hermes catalog has reviewed and pinned
 (Nous reviews every update). **Want a different tagged version?** Pick a tag on the
 [Releases page](https://github.com/shreyasudupi/hermes-plugin-detonator/releases) and install that
-copy yourself (macOS or Linux; replace `<tag>`):
+copy yourself (replace `<tag>`).
+
+**macOS or Linux:**
 
 ```bash
 git clone --branch <tag> --depth 1 https://github.com/shreyasudupi/hermes-plugin-detonator ~/.hermes/plugins/detonator
 hermes plugins enable detonator && hermes gateway stop
+```
+
+**Windows PowerShell** (Hermes keeps its files in `%LOCALAPPDATA%\hermes` on Windows, not `~/.hermes`):
+
+```powershell
+git clone --branch <tag> --depth 1 https://github.com/shreyasudupi/hermes-plugin-detonator "$env:LOCALAPPDATA\hermes\plugins\detonator"
+hermes plugins enable detonator; hermes gateway stop
 ```
 
 We don't offer a one-line installer that pipes a downloaded script into your shell, on purpose: a

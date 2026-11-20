@@ -97,6 +97,8 @@ after that a run takes seconds:
 Full report: ~/.hermes/plugin-data/detonator/reports/....md
 ```
 
+(That run was on a Mac. On Windows the report path starts with `%LOCALAPPDATA%\hermes` instead.)
+
 ## Using it in Hermes
 
 | You want to test | Type |
@@ -123,8 +125,9 @@ Detonator always asks you before it runs anything. If no one can answer (a cron
 job, a hook, a non-interactive or unattended run), it refuses instead of running.
 There is no flag that skips the question. The `detonate_plugin` tool lets the
 agent suggest a run (by catalog name or repo), but it only returns the `/detonate` command for you to run.
-Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/` (`~/.hermes` on macOS and
-Linux, `%LOCALAPPDATA%\hermes` on Windows).
+Your Hermes home is `~/.hermes` on macOS and Linux and `%LOCALAPPDATA%\hermes` on Windows (or
+wherever `HERMES_HOME` points). Reports are saved in its `plugin-data/detonator/reports/` folder,
+and `/detonate-mcp <server-name>` reads the server's entry from its `config.yaml`.
 
 ### Docker problems
 

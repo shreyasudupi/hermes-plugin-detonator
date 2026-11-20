@@ -192,7 +192,7 @@ Used by `/detonate-skill`. The text rules read the skill's files on your compute
 
 ## What the sandbox plants
 
-Fake, canary-marked copies of: `~/.hermes/.env`, `auth.json`, SSH key, AWS credentials, `.git-credentials`,
+Fake, canary-marked copies (at the Linux paths inside the sandbox, whatever your own computer runs) of: `~/.hermes/.env`, `auth.json`, SSH key, AWS credentials, `.git-credentials`,
 `.netrc`, Docker and Kubernetes config, `.npmrc`, `.pypirc`, GitHub CLI token, Chrome and Firefox saved
 logins and cookies (Linux and macOS paths), Solana and Ethereum wallets, Bitcoin `wallet.dat` (Linux and
 macOS paths), Electrum and Exodus wallets, Hermes memory files and an old
