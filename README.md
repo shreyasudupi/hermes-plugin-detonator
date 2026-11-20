@@ -406,6 +406,16 @@ no Python code to run, and Detonator says so instead of guessing.
   Context7, Firecrawl, Exa, Tavily, Brave Search, DuckDuckGo, AWS Documentation, Atlassian, SQLite,
   git), which must come out clean or review: 8 no findings and 14 review across all 22, none worse. Stress tests cover servers that hang, flood output, list
   5,000 tools, start hundreds of programs, kill the stand-in for Hermes, or hang in an install script.
+- **Skills** are checked against 20 harmless test skills (fake "prerequisite" installers, base64
+  piped to the shell, instructions in invisible Unicode, a key stealer, persistence, a reverse shell,
+  a time bomb, a daemon left running, a padded SKILL.md, plus honest skills that must stay clean), on
+  250 honest skills from Anthropic, OpenAI and Nous (all no findings on the text checks), and in the
+  cloud sandbox only on [Datadog's malicious skills](https://github.com/DataDog/malicious-software-packages-dataset).
+  On the 49 real malicious skills held back while the rules were written, 28 come out suspicious
+  or dangerous (10 dangerous); 13 get NOT ENOUGH COVERAGE (too little of them could run: 5 need a
+  second download from a live server, 4 act only through an AI model, 1 is macOS-only); the other 8
+  are missed, half of them instructions that only a model following them would act on. The split was fixed before tuning, but these samples had been read while the rules were
+  designed, so this is not a clean benchmark.
 - **The whole catalog** (measured on v0.2.1, Nov 2026, with 45 rules and before the outside monitor): Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
   their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
   first pass had 7 dangerous results; each was checked by hand, all were false alarms, and the
@@ -521,7 +531,11 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   scripts, so running downloaded code shows in the trace. New verdict NOT ENOUGH COVERAGE when too
   little ran to judge. 27 new rules. Also for every mode: the outside monitor now names files opened
   relative to a folder (it used to put them at `/`), and two revoked ATT&CK IDs (T1562, T1562.001)
-  were replaced by T1685. RESULTS_PLACEHOLDER
+  were replaced by T1685. This release also carries
+  the v0.4.1 work below, which was never released on its own. Other fixes: the decoy files are no
+  longer held open during a plugin run (a plugin could have read them through those handles without
+  an open the tracer sees), `reverse_shell` counts a plain `bash -i` only when that shell connects
+  out, and the fake internet keeps logging a port under a flood of idle connections.
 - **v0.4.1**: Tested on real malware. Detonator was run on every MCP package in
   [Datadog's malicious software packages dataset](https://github.com/DataDog/malicious-software-packages-dataset)
   (55 npm packages, all removed from npm), which showed blind spots our own test servers never hit. Fixed:
