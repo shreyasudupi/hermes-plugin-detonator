@@ -1182,7 +1182,7 @@ def _secret_hits(text: str, canary: str) -> bool:
                 break
             after = view[i + len(needle): i + len(needle) + 12].upper()
             if after[:1] in (" ", "_", ".", "+"):
-                after = after[1:]   # a search box that turned "-ARG" into " arg" (seen in firecrawl-mcp)
+                after = after[1:]   # a search box that turned "-ARG" into " arg" (seen in a real web-scraping server)
             if not after.startswith(tags):
                 return True
             start = i + 1

@@ -99,7 +99,7 @@ def _schema_args(h, schema, data_dir, required_only=False):
     checks and do their real work. Every value carries this run's canary.
     required_only: just the fields the schema requires, the way a person usually calls a tool.
     A server can reject a made-up optional value (an attachment link) before it does its real
-    work, as the real postmark-mcp backdoor did, so some calls leave the optional ones out."""
+    work, as a real hidden-Bcc backdoor did, so some calls leave the optional ones out."""
     props = (schema or {}).get("properties") if isinstance(schema, dict) else None
     if not isinstance(props, dict):
         return {}

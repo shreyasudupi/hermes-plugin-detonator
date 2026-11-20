@@ -455,11 +455,11 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   new `reverse_shell` rule (critical), also read from npm install scripts; `curl`/`wget` downloads during
   npm install are reported; new `obfuscated_code` and `collection_service` (ngrok, Pipedream,
   webhook.site) rules; Bitcoin, Electrum and Exodus wallet decoys; and tools are also called with only
-  their required fields, which is how the real postmark-mcp hidden Bcc is caught. On those 55 packages:
+  their required fields, which is how a real hidden-Bcc email server is caught. On those 55 packages:
   REVIEW 28 → 11, SUSPICIOUS or worse 25 → 42 (the rest: empty placeholder packages, payloads that
   never run even on a real install, such as a misspelt `postInstall` script, and servers that need a real
   account to start). Also fixes a false alarm: a server that rewrites Detonator's tagged test text (as
-  firecrawl-mcp's search does) no longer counts as leaking a key.
+  one popular web-scraping server's search does) no longer counts as leaking a key.
 - **v0.4.0**: MCP servers. `/detonate-mcp <server-name | folder>` (and `hermes detonate-mcp`) tests
   an MCP server from your config or a folder in the sandbox with both monitors, acting as Hermes.
   12 new rules (tool poisoning, cross-tool orders, rug pull, read-only lie, sampling, credential

