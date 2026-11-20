@@ -63,8 +63,14 @@ def outside_lines(summary: dict | None) -> list:
         lines.append(f"- Tracer: ⚠️ {s.get('tracer_problem') or 'did not attach'}, so its cross-check is missing.")
     if s.get("trace_truncated"):
         lines.append("- ⚠️ The trace was very long, so its middle was cut; the start and end were kept.")
-    lines.append("- Fake internet: " + ("answered every lookup and connection; no real network was reachable."
-                                         if s.get("fake_internet") else "⚠️ did not start."))
+    if not s.get("fake_internet"):
+        lines.append("- Fake internet: ⚠️ did not start.")
+    elif s.get("every_port"):
+        lines.append("- Fake internet: answered every lookup and every connection, on any port; no real "
+                     "network was reachable.")
+    else:
+        lines.append("- Fake internet: answered every lookup, but connections only on common ports (others "
+                     "were refused, so what was sent there is not known); no real network was reachable.")
     lines.append(f"- Names looked up: {', '.join(s.get('lookups') or []) or 'none'}")
     lines.append(f"- Connections: {'; '.join(s.get('connections') or []) or 'none'}")
     if s.get("programs"):

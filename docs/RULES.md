@@ -31,6 +31,7 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 | Rule | Severity | Why it matters | MITRE |
 |---|---|---|---|
 | `undeclared_network` | high | Nothing the user asked for needs the network while a plugin loads or inside a background hook. That is when beacons and stealers phone home. | [T1071.001](https://attack.mitre.org/techniques/T1071/001/) [T1041](https://attack.mitre.org/techniques/T1041/) [AML.T0025](https://atlas.mitre.org/techniques/AML.T0025) |
+| `collection_service` | high | Tunnels and request collectors (ngrok, Pipedream, webhook.site, interactsh and the like) give anyone a throwaway address that receives data. Honest servers talk to their own service; real malicious MCP packages sent their loot or relayed every tool call to these. Read from the names the fake internet answered. | [T1567](https://attack.mitre.org/techniques/T1567/) [T1572](https://attack.mitre.org/techniques/T1572/) [AML.T0025](https://atlas.mitre.org/techniques/AML.T0025) |
 | `tool_network` | medium | Expected for tools that wrap an API. Compare the hosts with what the README says the plugin connects to. | [T1071.001](https://attack.mitre.org/techniques/T1071/001/) |
 | `local_network` | medium | Local services (databases, dev servers, the Hermes gateway) often trust anything on localhost without a password. | [T1046](https://attack.mitre.org/techniques/T1046/) |
 | `listener` | high | Opening a port lets something outside talk to the plugin: a classic backdoor. | [T1571](https://attack.mitre.org/techniques/T1571/) |
@@ -55,7 +56,9 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 | Rule | Severity | Why it matters | MITRE |
 |---|---|---|---|
 | `command_run` | high | Shell commands can do anything you can. Hermes plugins rarely need them, and catalog rule 13 requires disclosing them. | [T1059.004](https://attack.mitre.org/techniques/T1059/004/) |
+| `reverse_shell` | critical | A shell whose input and output go to a network connection hands the person's computer to whoever is listening (a reverse shell). Real malicious MCP servers on npm did this at install time and at start-up. No honest plugin or server needs one. Detonator looks for bash's `/dev/tcp`, `sh -i` started by a program, netcat or socat running a program, and Python's `pty.spawn`, in every program started and in npm install scripts (read from package.json, so it counts even when the sandbox's shell could not run it). | [T1059.004](https://attack.mitre.org/techniques/T1059/004/) [T1071](https://attack.mitre.org/techniques/T1071/) [AML.T0050](https://atlas.mitre.org/techniques/AML.T0050) |
 | `remote_code_fetch` | high | Downloading or installing code at runtime means what you reviewed is not what runs. A plugin can turn malicious after it is approved (a rug pull). | [T1105](https://attack.mitre.org/techniques/T1105/) [AML.T0109](https://atlas.mitre.org/techniques/AML.T0109) |
+| `obfuscated_code` | high | Code scrambled on purpose (javascript-obfuscator names like _0x1a2b, or a program decoded from a long list of numbers and run) hides what it does from people and from tests. Real npm malware hid its payload this way, often in a file the sandbox run never reached. Ordinary minified bundles do not count. MCP servers only: read from the server's own files and from packages with install scripts, never run. | [T1027](https://attack.mitre.org/techniques/T1027/) |
 | `self_modify` | high | Changing its own files at runtime is self-updating code (catalog rule 3): a reviewed plugin could rewrite itself later. | [T1554](https://attack.mitre.org/techniques/T1554/) [AML.T0109](https://atlas.mitre.org/techniques/AML.T0109) |
 | `persistence` | critical | Writes to places that make code start automatically (login items, cron, systemd, shell start-up files, Python start-up hooks, SSH authorized keys). Malware does this to survive uninstalling. | – |
 | `agent_config_modified` | high | Changes Hermes's own config, other plugins, skills or hooks. That changes how the agent behaves for every future session. | [AML.T0081](https://atlas.mitre.org/techniques/AML.T0081) |
@@ -82,7 +85,7 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 
 These come from two containers that run next to the plugin's and that it cannot reach: a tracer
 (strace, attached before the plugin loads, following every thread and every program it starts) and a
-fake internet (every address answers locally, every DNS lookup gets a made-up address, and whatever is
+fake internet (every address and every port answers locally, every DNS lookup gets a made-up address, and whatever is
 sent is logged). There is still no real network. The outside monitor runs by default; set
 `DETONATOR_OUTSIDE=0` to switch it off, and the report then says it did not run.
 
@@ -157,7 +160,8 @@ programs, writes, persistence, leaks); the rules below cover what only MCP serve
 
 Fake, canary-marked copies of: `~/.hermes/.env`, `auth.json`, SSH key, AWS credentials, `.git-credentials`,
 `.netrc`, Docker and Kubernetes config, `.npmrc`, `.pypirc`, GitHub CLI token, Chrome and Firefox saved
-logins and cookies (Linux and macOS paths), Solana and Ethereum wallets, Hermes memory files and an old
+logins and cookies (Linux and macOS paths), Solana and Ethereum wallets, Bitcoin `wallet.dat` (Linux and
+macOS paths), Electrum and Exodus wallets, Hermes memory files and an old
 chat transcript, plus five API-key environment variables. Any of these markers showing up in a tool
 result, hook or middleware output, network address, command line or another tool's input is a
 `secret_in_output` finding; one that reaches the fake internet is a

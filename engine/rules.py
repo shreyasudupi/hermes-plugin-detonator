@@ -153,6 +153,22 @@ RULES = {
         "Shell commands can do anything you can. Hermes plugins rarely need them, and catalog rule 13 "
         "requires disclosing them.",
         ("T1059.004",), ()),
+    "reverse_shell": Rule(
+        "A shell whose input and output go to a network connection hands the person's computer to "
+        "whoever is listening (a reverse shell). Real malicious MCP servers on npm did this at install "
+        "time and at start-up. No honest plugin or server needs one.",
+        ("T1059.004", "T1071"), ("AML.T0050",)),
+    "obfuscated_code": Rule(
+        "Code scrambled on purpose (javascript-obfuscator names like _0x1a2b, or a program decoded "
+        "from a long list of numbers and run) hides what it does from people and from tests. Real "
+        "npm malware hid its payload this way, often in a file the sandbox run never reached. "
+        "Ordinary minified bundles do not count.",
+        ("T1027",), ()),
+    "collection_service": Rule(
+        "Tunnels and request collectors (ngrok, Pipedream, webhook.site, interactsh and the like) "
+        "give anyone a throwaway address that receives data. Honest servers talk to their own "
+        "service; real malicious MCP packages sent their loot or relayed every tool call to these.",
+        ("T1567", "T1572"), ("AML.T0025",)),
     "remote_code_fetch": Rule(
         "Downloading or installing code at runtime means what you reviewed is not what runs. A plugin "
         "can turn malicious after it is approved (a rug pull).",
@@ -362,6 +378,33 @@ ENV_REDIRECT = {"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"
                 "PYTHONSTARTUP", "PYTHONHOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
                 "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "NODE_OPTIONS",
                 "GIT_SSH_COMMAND", "BROWSER", "EDITOR"}
+# Command lines that open a reverse shell: bash's /dev/tcp, an interactive shell started by a
+# program (sh -i), netcat or socat running a program for the far end, the mkfifo + nc trick,
+# and Python's pty.spawn.
+REVERSE_SHELL_RE = re.compile(r"/dev/(?:tcp|udp)/[^\s/]+/\d+|(?:^|[\s/'\"(])(?:ba|da|z|k)?sh\s+-i\b|"
+                              r"\bn(?:c|cat|etcat)\b[^\n]{0,80}\s-[ec]\s|\bsocat\b[^\n]{0,160}\bexec:|"
+                              r"\bmkfifo\b[^\n]{0,160}\bnc\b|\bpty\.spawn\(", re.IGNORECASE)
+
+
+COLLECTOR_RE = re.compile(r"(?:^|\.)(?:ngrok(?:-free)?\.(?:app|io|dev)|ngrok\.com|pipedream\.net|webhook\.site|"
+                          r"requestbin\.(?:com|net)|interact\.sh|oast\.(?:fun|live|me|online|pro|site)|"
+                          r"burpcollaborator\.net|oastify\.com|trycloudflare\.com|beeceptor\.com|"
+                          r"requestcatcher\.com|loca\.lt|serveo\.net|pinggy\.link)\.?$", re.IGNORECASE)
+
+
+def collection_hosts(out: dict) -> list:
+    """Tunnel or request-collector names the run looked up or connected to (from the fake internet)."""
+    sink = (out or {}).get("sink") or {}
+    names = [str(d.get("name") or "") for d in sink.get("dns") or []]
+    names += [str(t.get("host") or "").rsplit(":", 1)[0] for t in sink.get("tcp") or []]
+    return sorted({n.lower().rstrip(".")[:200] for n in names if n and COLLECTOR_RE.search(n.lower())})
+
+
+def reverse_shell_hits(texts) -> list:
+    """The command lines (or script texts) that open a reverse shell."""
+    return [str(t)[:300] for t in texts if t and REVERSE_SHELL_RE.search(str(t))]
+
+
 FETCH_CMD_RE = re.compile(r"\b(?:pip3?|uv|poetry)\b[^\n]{0,40}\binstall\b|\bcurl\b|\bwget\b|"
                           r"\bgit\b[^\n]{0,20}\b(?:clone|pull|fetch)\b|\bnpm\b[^\n]{0,20}\b(?:i|install)\b|"
                           r"\bnpx\b", re.IGNORECASE)
@@ -769,6 +812,10 @@ def _evaluate(result: dict) -> dict:
     if procs:
         add(Finding("command_run", HIGH, "Started a process or shell command",
                     sorted({f'{e.get("op")} {str(e.get("detail"))[:300]} [{e.get("phase")}]' for e in procs})[:20]))
+        shells = reverse_shell_hits(f'{e.get("detail")} [{e.get("phase")}]' for e in procs)
+        if shells:
+            add(Finding("reverse_shell", CRITICAL, "Opened a reverse shell (a shell controlled over the network)",
+                        sorted(set(shells))[:6]))
         leaked = sorted({m for e in procs if "command" in e for m in _leaks(e.get("command"), secret_markers)})
         if leaked:
             add(Finding("secret_in_output", CRITICAL, "Put decoy secrets into a command it ran", leaked,
@@ -1134,6 +1181,8 @@ def _secret_hits(text: str, canary: str) -> bool:
             if i < 0:
                 break
             after = view[i + len(needle): i + len(needle) + 12].upper()
+            if after[:1] in (" ", "_", ".", "+"):
+                after = after[1:]   # a search box that turned "-ARG" into " arg" (seen in a real web-scraping server)
             if not after.startswith(tags):
                 return True
             start = i + 1
@@ -1195,7 +1244,8 @@ def _outside_findings_raw(result: dict) -> list:
             if not _secret_hits(data, canary):
                 accepted.append(str(e.get("data") or "")[:120])
         if _secret_hits(data, canary):
-            sent.append(f'sent to {_safe_name(e.get("host"), 80)}:{e.get("port")} '
+            host, port = _safe_name(e.get("host"), 80), f':{e.get("port")}'
+            sent.append(f'sent to {host if host.endswith(port) else host + port} '
                         f'({e.get("bytes")} bytes): {str(e.get("data"))[:160]!r}')
     for e in sink.get("dns") or []:
         if _secret_hits(str(e.get("name") or ""), canary):
@@ -1287,6 +1337,12 @@ def _outside_findings_raw(result: dict) -> list:
             # its world are Detonator's own monitors.
             tamper.append(f'{call}({str(e.get("detail")).split(")")[0][:40]}) refused')
     hidden = list(dict.fromkeys(hidden))
+    shells = reverse_shell_hits(" ".join(str(w) for w in (e.get("argv") or [e.get("path")]))
+                                for e in plugin_events if e.get("call") in ("execve", "execveat") and e.get("ok"))
+    if shells:
+        findings.append(Finding("reverse_shell", CRITICAL,
+                                "Opened a reverse shell (a shell controlled over the network)",
+                                list(dict.fromkeys(shells))[:6]))
     tracer = out.get("tracer") or {}
     if tracer.get("truncated"):
         findings.append(Finding("log_flood", HIGH,
@@ -1295,6 +1351,11 @@ def _outside_findings_raw(result: dict) -> list:
                                  + (f', {tracer.get("important_dropped")} that could matter were dropped'
                                     if tracer.get("important_dropped") else
                                     "; every call that could matter was kept")]))
+    collectors = collection_hosts(out)
+    if collectors:
+        findings.append(Finding("collection_service", HIGH,
+                                "Sent data to a tunnel or data-collection service (ngrok, Pipedream, webhook.site)",
+                                collectors[:6]))
     if sink.get("full"):
         findings.append(Finding("log_flood", HIGH,
                                 "Made so many connections that the fake internet's log filled up",
@@ -1342,7 +1403,9 @@ def _outside_findings_raw(result: dict) -> list:
 def _connection_lines(tcp: list) -> list:
     groups: dict = {}
     for e in tcp:
-        key = f'{_safe_name(e.get("host"), 80)}:{e.get("port")}'
+        host = _safe_name(e.get("host"), 80)
+        port = f':{e.get("port")}'
+        key = host if host.endswith(port) else host + port    # an HTTP Host header may carry the port
         n, sent = groups.get(key, (0, 0))
         groups[key] = (n + 1, sent + int(e.get("bytes") or 0))
     return [f"{k} ({n} time{'s' if n > 1 else ''}, {sent} bytes sent)" for k, (n, sent) in groups.items()][:20]
@@ -1371,6 +1434,7 @@ def outside_summary(result: dict) -> dict:
                                                   "the tracer did not attach before the plugin loaded"),
         "trace_truncated": bool(tracer.get("truncated")),
         "fake_internet": bool(sink.get("ready")),
+        "every_port": bool(sink.get("every_port")),
         "lookups": sorted({_safe_name(e.get("name"), 80) for e in sink.get("dns") or []})[:20],
         "connections": _connection_lines(sink.get("tcp") or []),
         "programs": list(dict.fromkeys(programs))[:10],

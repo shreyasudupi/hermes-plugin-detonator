@@ -133,3 +133,30 @@ def test_inside_hermes_its_own_config_reader_is_used(monkeypatch, tmp_path):
     f = tmp_path / "config.yaml"
     f.write_text("mcp_servers:\n  from-file:\n    command: npx\n    args: [pkg]\n")
     assert list(src.read_servers(f)) == ["from-file"]
+
+
+# ---- hidden (obfuscated) code --------------------------------------------------------------
+def _npm_server(tmp_path, code):
+    pkg = tmp_path / "node_modules" / "srv"
+    pkg.mkdir(parents=True)
+    (pkg / "package.json").write_text('{"name": "srv", "version": "1.0.0"}')
+    (pkg / "index.js").write_text(code)
+    return "node_modules/srv/index.js"   # relative, as in mcp-server.yaml args
+
+
+def test_obfuscator_names_are_hidden_code(tmp_path):
+    start = _npm_server(tmp_path, "".join(f"var _0x{i:04x}a = {i};\n" for i in range(260)))
+    assert src.hidden_code(str(tmp_path), start)
+
+
+def test_plain_minified_code_is_not_hidden(tmp_path):
+    start = _npm_server(tmp_path, "function a(b,c){return b+c}" * 2000 + "var _0xab12 = 1;")
+    assert not src.hidden_code(str(tmp_path), start)
+
+
+def test_number_list_check_is_fast_on_hostile_text():
+    import time
+    t = time.time()
+    assert not src._long_number_list(("1," * 1999 + "x") * 500)
+    assert src._long_number_list(",".join(["104"] * 2100))
+    assert time.time() - t < 2

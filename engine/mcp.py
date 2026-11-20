@@ -53,7 +53,7 @@ _BUILD_TOOLS = {"npm", "npm-cli.js", "node", "sh", "dash", "bash", "node-gyp", "
                 "g++", "c++", "python3", "python", "uname"}
 _RISKY_RULES = {"decoy_accessed", "hermes_env_read", "browser_or_wallet_read", "environ_file_read", "memory_read",
                 "persistence", "agent_config_modified", "write_outside_folder", "command_run", "remote_code_fetch",
-                "undeclared_network", "listener", "secret_sent_out", "sandbox_check", "recon"}
+                "undeclared_network", "listener", "secret_sent_out", "sandbox_check", "recon", "reverse_shell"}
 
 
 class McpError(Exception):
@@ -97,6 +97,8 @@ def _finish_target(target: runner.Target, entry: dict, checks: list) -> runner.T
         entry["install"] = [INSTALL_CMD]
     target.entry = entry
     target.install_scripts = scripts
+    start = next((a for a in entry.get("args") or [] if not str(a).startswith("-")), "")
+    target.hidden_code = sources.hidden_code(target.path, str(start))
     target.checks = checks
     return target
 
@@ -182,6 +184,7 @@ def detonate(target: runner.Target, outside: bool | None = True) -> dict:
     raw = runner.detonate(target, outside=outside, mcp_entry=target.entry)
     raw["config_checks"] = checks
     raw["install_scripts"] = getattr(target, "install_scripts", [])
+    raw["hidden_code"] = getattr(target, "hidden_code", [])
     return raw
 
 
@@ -295,6 +298,8 @@ def _phase_label(phase: str, calls: dict) -> str:
 
 # Lookups Python and Node make for themselves (ctypes.util.find_library runs `ldconfig -p`).
 _HARMLESS_PROGRAM = re.compile(r"^(?:/usr)?(?:/s?bin/)?ldconfig -p$")
+# A download during npm install: a shell running curl or wget, or PowerShell fetching.
+INSTALL_FETCH_RE = re.compile(r"\b(?:curl|wget)\b|Invoke-WebRequest|\biwr\b", re.IGNORECASE)
 _GENERIC_NAMES = {"mcp", "server", "servers", "node", "modules", "node_modules", "dist", "build", "index", "main",
                   "src", "lib", "bin", "js", "mjs", "cjs", "py", "python", "plugin", "site", "run", "cli", "app"}
 
@@ -328,6 +333,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     per_phase: dict = {}
     reads: dict = {}
     writes, programs, nets, local, listen, probes, recon, environ = [], [], [], [], [], [], [], []
+    shells: list = []
     own_exec_seen: set = set()
     exe_of: dict = {}    # process (thread group) -> program it last started, from execve
     for phase, e in _phases(events, trace.get("start_index")):
@@ -369,11 +375,16 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                     writes.append((phase, label, p))
                     hit = True
         elif call in ("execve", "execveat") and e.get("ok"):
+            cmdline = " ".join(str(w) for w in (e.get("argv") or [path]))[:300]
+            if rules.REVERSE_SHELL_RE.search(cmdline):
+                shells.append(f"{cmdline} ({label})")    # every phase, install scripts included
             if e.get("pid") in server_pids and e.get("pid") not in own_exec_seen:
                 own_exec_seen.add(e.get("pid"))
                 continue
-            if phase == "install" and posixpath.basename(path) in _BUILD_TOOLS:
+            if phase == "install" and posixpath.basename(path) in _BUILD_TOOLS \
+                    and not INSTALL_FETCH_RE.search(cmdline):
                 continue    # npm running the package's scripts, and the usual build tools
+                            # (but a shell running curl or wget during install is a download)
             programs.append((phase, label, " ".join(e.get("argv") or [path])[:200]))
             hit = True
         elif call in ("connect", "sendto") and e.get("ip") and e.get("ok") is not None:
@@ -439,6 +450,10 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
         uniq = list(dict.fromkeys(paths))
         findings.append(Finding(rule, sev, title, uniq[:8] + ([f"and {len(uniq) - 8} more"] if len(uniq) > 8 else []),
                                 attack=[tech] if tech else []))
+    if shells:
+        findings.append(Finding("reverse_shell", CRITICAL,
+                                "Opened a reverse shell (a shell controlled over the network)",
+                                list(dict.fromkeys(shells))[:6]))
     programs = [x for x in programs if not _HARMLESS_PROGRAM.match(x[2])]
     if programs:
         fetch = [p for _, _, p in programs if rules.FETCH_CMD_RE.search(p)]
@@ -741,11 +756,28 @@ def _evaluate(result: dict) -> dict:
                                     sorted(set(own))[:5],
                                     why="The server got this key from its env entry and sent it where its "
                                         "tool calls went. Check that the host is the service the server is for."))
+    hidden = [str(h)[:300] for h in result.get("hidden_code") or []]
+    if hidden:
+        findings.append(Finding("obfuscated_code", HIGH, "Ships code that is hidden on purpose (obfuscated)", hidden[:8]))
+    collectors = rules.collection_hosts(out)
+    if collectors:
+        findings.append(Finding("collection_service", HIGH,
+                                "Sent data to a tunnel or data-collection service (ngrok, Pipedream, webhook.site)",
+                                collectors[:6]))
     scripts = result.get("install_scripts") or []
+    planted = [f'{s.get("package")} {name}: {text}' for s in scripts
+               for name, text in sorted((s.get("scripts") or {}).items()) if rules.REVERSE_SHELL_RE.search(str(text))]
+    if planted:
+        # Read from package.json, so it counts even when the sandbox's shell could not run it
+        # (dash has no /dev/tcp): on a person's computer npm may run it with bash.
+        findings.append(Finding("reverse_shell", CRITICAL, "An install script opens a reverse shell",
+                                [p[:300] for p in planted[:6]]))
     if scripts:
         during = [str(ev) for f in findings if f.rule in _RISKY_RULES for ev in f.evidence if "while installing" in str(ev)]
         names = [f'{s.get("package")}: {", ".join(sorted(s.get("scripts") or {}))}' for s in scripts[:6]]
         runs = result.get("install_runs") or []
+        if planted and not during:
+            during = [p[:300] for p in planted[:3]]
         if during:
             findings.append(Finding("mcp_install_script", HIGH, "Its install scripts did risky things",
                                     during[:6] + names[:3]))

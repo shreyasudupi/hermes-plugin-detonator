@@ -677,3 +677,70 @@ def local_folder(plan: Plan, work: Path) -> tuple[Path, dict]:
     rel = script.relative_to(folder).as_posix()
     args = [rel if a == "\0SCRIPT\0" else a for a in plan.args]
     return dest, {"command": plan.command, "args": args, "env": {n: "" for n in plan.env_names}}
+
+
+# ---------------------------------------------------------------------------
+# Code that is hidden on purpose. Dynamic tests only see code that runs; real npm malware
+# often ships a payload that waits for a download, a typo'd script name or a library call
+# that never comes in the sandbox. These signs are read from the files, nothing is run.
+# ---------------------------------------------------------------------------
+OBFUSCATOR_RE = re.compile(r"\b_0x[0-9a-z]{4,8}\b")   # hand-made copies use letters past f too
+NUMBER_RUN_RE = re.compile(r"\d{1,3}(?:\s*,\s*\d{1,3})*")   # one pass, no backtracking blow-up
+
+
+def _long_number_list(text: str, count: int = 2000) -> bool:
+    """True when the text holds a comma-separated list of at least `count` small numbers."""
+    return any(m.group().count(",") >= count for m in NUMBER_RUN_RE.finditer(text) if len(m.group()) > count)
+DECODE_RE = re.compile(r"String\.fromCharCode|\batob\(|Buffer\.from\(")
+CODE_SUFFIXES = (".js", ".mjs", ".cjs")
+MAX_CODE_BYTES = 16_000_000
+
+
+def _code_roots(folder: Path, start: str = "") -> list:
+    """The server's own code and every package with install scripts, never their dependencies."""
+    roots = [folder]
+    nm = folder / "node_modules"
+    if nm.is_dir():
+        for pj in list(nm.glob("*/package.json")) + list(nm.glob("@*/*/package.json")):
+            pkg = pj.parent
+            rel = pkg.relative_to(folder).as_posix()
+            try:
+                meta = json.loads(runner.read_plain_file(pj, 2_000_000, inside=folder))
+            except (OSError, ValueError):
+                continue
+            scripts = meta.get("scripts") if isinstance(meta, dict) else None
+            if (start and start.startswith(rel + "/")) or (
+                    isinstance(scripts, dict) and any(scripts.get(k) for k in INSTALL_SCRIPTS)):
+                roots.append(pkg)
+    return roots
+
+
+def hidden_code(folder: Path, start: str = "", limit: int = 4000) -> list:
+    """Files that look obfuscated on purpose: javascript-obfuscator names (_0x1a2b), or code
+    decoded from a long list of numbers and run. Minified bundles alone do not count."""
+    found, seen = [], 0
+    for root in _code_roots(Path(folder), start):
+        for path in root.rglob("*"):
+            rel_parts = path.relative_to(root).parts
+            if "node_modules" in rel_parts[:-1] or path.suffix not in CODE_SUFFIXES or path.is_symlink():
+                continue
+            seen += 1
+            if seen > limit:
+                return found
+            try:
+                if path.stat().st_size > MAX_CODE_BYTES:
+                    continue
+                text = runner.read_plain_file(path, MAX_CODE_BYTES, inside=folder)
+            except OSError:
+                continue
+            names = len(OBFUSCATOR_RE.findall(text, 0, 2_000_000))
+            why = ""
+            if names >= 200 or (names >= 40 and names * 1024 >= 2 * len(text)):
+                why = f"{names} obfuscator names like _0x1a2b"
+            elif "eval(" in text and DECODE_RE.search(text) and _long_number_list(text):
+                why = "runs code it decodes from a long list of numbers"
+            if why:
+                found.append(f"{path.relative_to(folder).as_posix()} ({path.stat().st_size // 1024} KB): {why}")
+            if len(found) >= 8:
+                return found
+    return found
