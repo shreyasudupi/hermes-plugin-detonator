@@ -702,15 +702,18 @@ def reached_network(result: dict) -> bool:
     fake internet logged, a traced connection to an outside address, or one the in-process
     monitor recorded. A key can leave that way in a form the test cannot read (encrypted)."""
     out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
-    sink = out.get("sink") or {}
+    sink = out.get("sink") if isinstance(out.get("sink"), dict) else {}
     if sink.get("tcp") or sink.get("dns"):
         return True
-    for e in (out.get("trace") or {}).get("events") or []:
+    trace = out.get("trace") if isinstance(out.get("trace"), dict) else {}
+    for e in trace.get("events") or []:
+        if not isinstance(e, dict):
+            continue
         ip = str(e.get("ip") or "")
         if e.get("call") in ("connect", "sendto", "sendmsg") and ip and not e.get("unix") \
                 and not (ip.startswith("127.") or ip == "::1"):
             return True
-    return any(e.get("kind") == "network" and not _is_loopback(e.get("address"))
+    return any(isinstance(e, dict) and e.get("kind") == "network" and not _is_loopback(e.get("address"))
                for e in result.get("events") or [])
 
 
