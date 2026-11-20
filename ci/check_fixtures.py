@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from engine import mcp, rules, runner  # noqa: E402
+from engine import mcp, rules, runner, skill  # noqa: E402
 
 EXPECTED = {
     "clean-notes": "NO_FINDINGS",
@@ -118,6 +118,44 @@ MUST_FIND_MCP = {
     "obfuscated-payload": ("obfuscated_code", "helper.js"),
     "tunnel-beacon": ("collection_service", "ngrok"),
 }
+# Skills (fixtures repo, skills/<name>): /detonate-skill, full test.
+EXPECTED_SKILL = {
+    "clean-notes-skill": "NO_FINDINGS",
+    "honest-api-skill": "NO_FINDINGS",
+    "honest-installer": "LOW_COVERAGE",
+    "missing-tool": "LOW_COVERAGE",
+    "fake-prereq-lure": "DANGEROUS",
+    "key-stealer-skill": "DANGEROUS",
+    "hidden-instructions": "DANGEROUS",
+    "comment-injector": "SUSPICIOUS",
+    "persistence-skill": "DANGEROUS",
+    "reverse-shell-skill": "DANGEROUS",
+    "trojan-helper": "DANGEROUS",
+    "time-bomb-skill": "DANGEROUS",
+    "catch-all-poisoner": "SUSPICIOUS",
+    "packed-script": "REVIEW",
+    "env-dumper-skill": "DANGEROUS",
+    "agent-hijacker": "SUSPICIOUS",
+    "kitchen-sink-setup": "REVIEW",
+    "package-user": "NO_FINDINGS",
+    "background-helper": "REVIEW",
+    "padded-skill": "REVIEW",
+}
+MUST_FIND_SKILL = {
+    "fake-prereq-lure": ("skill_ran_downloaded_code", "203.0.113.7"),
+    "trojan-helper": ("skill_ran_downloaded_code", "203.0.113.8"),
+    "honest-installer": ("skill_ran_downloaded_code", "instructions name"),
+    "honest-api-skill": ("skill_declared_host", "api.weatherx.example.com"),
+    "key-stealer-skill": ("decoy_accessed", ".aws/credentials"),
+    "hidden-instructions": ("skill_hidden_text", "invisible"),
+    "time-bomb-skill": ("time_triggered", ""),
+    "env-dumper-skill": ("secret_sent_out", ""),
+    "reverse-shell-skill": ("reverse_shell", "bash -i"),
+    "persistence-skill": ("persistence", ".bashrc"),
+    "package-user": ("skill_tool_own_config", "npmrc"),
+    "background-helper": ("skill_left_running", "detonator-fixture"),
+    "padded-skill": ("skill_not_fully_read", "SKILL.md"),
+}
 # The trojan's first version (an older commit) must look clean.
 EXPECTED_V1 = {"trojan-update": "NO_FINDINGS"}
 
@@ -130,22 +168,30 @@ def run_mcp(path: pathlib.Path) -> dict:
     return mcp.evaluate(mcp.detonate(mcp.load_folder_entry(str(path))))
 
 
+def run_skill(path: pathlib.Path) -> dict:
+    return skill.evaluate(skill.detonate(skill.SkillTarget(path=path, label=path.name)))
+
+
 def main() -> int:
     checks = [(pathlib.Path(sys.argv[1]), EXPECTED)]
     if (pathlib.Path(sys.argv[1]) / "mcp").is_dir():
         checks.append((pathlib.Path(sys.argv[1]) / "mcp", EXPECTED_MCP))
+    if (pathlib.Path(sys.argv[1]) / "skills").is_dir():
+        checks.append((pathlib.Path(sys.argv[1]) / "skills", EXPECTED_SKILL))
     if len(sys.argv) > 2:
         checks.append((pathlib.Path(sys.argv[2]), EXPECTED_V1))
     failed = 0
     fired = set()
     for root, expected in checks:
         for name, want in expected.items():
-            report = run_mcp(root / name) if expected is EXPECTED_MCP else run(root / name)
+            report = run_mcp(root / name) if expected is EXPECTED_MCP else \
+                run_skill(root / name) if expected is EXPECTED_SKILL else run(root / name)
             got = report["verdict"]
             fired |= {f["rule"] for f in report["findings"]}
             ok = got == want
             must = MUST_FIND.get(name) if expected is EXPECTED else \
-                MUST_FIND_MCP.get(name) if expected is EXPECTED_MCP else None
+                MUST_FIND_MCP.get(name) if expected is EXPECTED_MCP else \
+                MUST_FIND_SKILL.get(name) if expected is EXPECTED_SKILL else None
             if must and not any(f["rule"] == must[0] and (must[1] in f["title"] or any(
                     must[1] in str(e) for e in f.get("evidence") or [])) for f in report["findings"]):
                 ok = False

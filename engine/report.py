@@ -11,6 +11,8 @@ VERDICT_TEXT = {
                   "model or your system) that needs a close look before you install it.",
     "REVIEW": "🟡 REVIEW: nothing clearly malicious, but some behaviour deserves a look.",
     "NO_FINDINGS": "🟢 NO FINDINGS: nothing risky was observed in this run.",
+    "LOW_COVERAGE": "⚪ NOT ENOUGH COVERAGE: nothing risky was seen, but almost nothing could run in the sandbox "
+                    "(commands were missing, failed or only printed help), so this is weak evidence, not a clean result.",
     "ERROR": "⚪ ERROR: the sandbox could not complete the run, so the plugin was NOT tested. Treat it as unknown, not as safe.",
 }
 

@@ -47,8 +47,8 @@ def test_register_matches_manifest():
     ctx = FakeCtx()
     plugin.register(ctx)
     assert set(ctx.tools) == {"detonate_plugin", "detonator_report"}
-    assert set(ctx.commands) == {"detonate", "detonate-mcp"}
-    assert set(ctx.cli) == {"detonate", "detonate-mcp"}
+    assert set(ctx.commands) == {"detonate", "detonate-mcp", "detonate-skill"}
+    assert set(ctx.cli) == {"detonate", "detonate-mcp", "detonate-skill"}
     text = (ROOT / "plugin.yaml").read_text(encoding="utf-8")
     assert "- detonate_plugin" in text and "- detonator_report" in text
 
@@ -260,3 +260,24 @@ def test_link_is_refused_without_o_nofollow_too(tmp_path, monkeypatch):
     except OSError:
         pass
     assert runner.read_plain_file(target) == "{}"
+
+
+def test_skill_command_text_only_runs_nothing_and_cancel_runs_nothing(monkeypatch, tmp_path):
+    plugin = _load_plugin()
+    commands = plugin.commands
+    monkeypatch.setattr(commands, "reports_dir", lambda: tmp_path)
+    folder = tmp_path / "notes-skill"
+    folder.mkdir()
+    (folder / "SKILL.md").write_text("---\nname: notes-skill\ndescription: Summarise notes.\n---\n\n"
+                                     "```bash\ncat notes.txt\n```\n", encoding="utf-8")
+    monkeypatch.setattr(commands.runner, "detonate", lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    ctx = FakeCtx()
+    plugin.register(ctx)
+    handler = ctx.commands["detonate-skill"]
+    assert "Usage" in handler("")
+    ctx.choice = commands.CANCEL
+    assert handler(str(folder)).startswith("Not run")
+    ctx.choice = commands.TEXT_ONLY
+    out = handler(str(folder))
+    assert "Text-only check" in out and "skill" in out and "plugin" not in out.lower()
+    assert list(tmp_path.glob("*-skill-*.md"))

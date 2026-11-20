@@ -28,8 +28,10 @@ from . import static
 SANDBOX_DIR = Path(__file__).resolve().parent.parent / "sandbox"
 IMAGE_REPO = "detonator-sandbox"
 MCP_IMAGE_REPO = "detonator-mcp-sandbox"   # the same sandbox plus Node.js (sandbox/Dockerfile.mcp)
+SKILL_IMAGE_REPO = "detonator-skill-sandbox"   # full Debian + Python + Node (sandbox/Dockerfile.skill)
 RUN_TIMEOUT_S = 180
 MCP_RUN_TIMEOUT_S = 240   # an MCP run may first spend up to 45 s on install scripts
+SKILL_RUN_TIMEOUT_S = 240
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -237,21 +239,21 @@ def docker_check() -> str:
     return "\n".join(lines)
 
 
-def image_tag(mcp: bool = False) -> str:
+def image_tag(mcp: bool = False, skill: bool = False) -> str:
     h = hashlib.sha256()
     for name in sorted(os.listdir(SANDBOX_DIR)):
         p = SANDBOX_DIR / name
         if p.is_file():
             h.update(name.encode())
             h.update(p.read_bytes())
-    return f"{MCP_IMAGE_REPO if mcp else IMAGE_REPO}:{h.hexdigest()[:12]}"
+    return f"{SKILL_IMAGE_REPO if skill else MCP_IMAGE_REPO if mcp else IMAGE_REPO}:{h.hexdigest()[:12]}"
 
 
-def ensure_image(mcp: bool = False) -> str:
-    tag = image_tag(mcp)
+def ensure_image(mcp: bool = False, skill: bool = False) -> str:
+    tag = image_tag(mcp, skill)
     if _run(["docker", "image", "inspect", tag], timeout=30).returncode == 0:
         return tag
-    dockerfile = ["-f", str(SANDBOX_DIR / "Dockerfile.mcp")] if mcp else []
+    dockerfile = ["-f", str(SANDBOX_DIR / ("Dockerfile.skill" if skill else "Dockerfile.mcp"))] if (mcp or skill) else []
     proc = _run(["docker", "build", "-q", *dockerfile, "-t", tag, str(SANDBOX_DIR)], timeout=900)
     if proc.returncode != 0:
         err = proc.stderr.strip()
@@ -261,7 +263,7 @@ def ensure_image(mcp: bool = False) -> str:
     return tag
 
 
-def fetch_github(repo: str, sha: str, workdir: Path, subdir: str | None = None) -> Target:
+def fetch_github(repo: str, sha: str, workdir: Path, subdir: str | None = None, check=None) -> Target:
     """Clone https://github.com/<repo> and check out an exact 40-char SHA.
 
     Git hooks are disabled and submodules are not fetched, so nothing from the
@@ -296,7 +298,7 @@ def fetch_github(repo: str, sha: str, workdir: Path, subdir: str | None = None) 
         raise DetonatorError(f"that commit has no folder called {subdir}. The word after the repo is the "
                              "plugin's folder inside it (branch names are not accepted; leave it out to "
                              "test the newest commit)")
-    check_runnable(path, "that commit" + (f" in {subdir}" if subdir else ""))
+    (check or check_runnable)(path, "that commit" + (f" in {subdir}" if subdir else ""))
     return Target(path=path, label=f"{repo}@{sha[:12]}", repo=repo, sha=sha)
 
 
@@ -445,7 +447,8 @@ def write_accounts(etc_dir: Path, world: dict) -> None:
 
 
 def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, world: dict | None = None,
-                   etc_dir: Path | None = None, monitor_args: list[str] | None = None) -> list[str]:
+                   etc_dir: Path | None = None, monitor_args: list[str] | None = None,
+                   home_exec: bool = False) -> list[str]:
     """The plugin's `docker run`. With the outside monitor, `monitor_args` puts the plugin on the
     fake internet's network (still no real network) and in the tracer's process namespace,
     and the host name comes from the fake internet's container."""
@@ -457,7 +460,10 @@ def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, worl
         *network,
         "--read-only",
         "--tmpfs", "/tmp:rw,size=64m,mode=1777",
-        "--tmpfs", f"{world['home']}:rw,size=32m,uid=10001,gid=10001,mode=0700",
+        # Skills download tools into the home folder and run them, as on a real computer, so their
+        # home allows running files (everything else stays the same).
+        "--tmpfs", f"{world['home']}:rw,{'exec,' if home_exec else ''}size={'96m' if home_exec else '32m'},"
+                   f"uid=10001,gid=10001,mode=0700",
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges",
         "--pids-limit", "128",
@@ -497,7 +503,8 @@ def outside_enabled() -> bool:
     return os.environ.get("DETONATOR_OUTSIDE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None = None) -> dict:
+def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None = None,
+             skill_plan: dict | None = None) -> dict:
     """Run the plugin in a fresh container and return the raw harness result.
 
     By default the outside monitor (engine/outside.py) watches the run from two more
@@ -510,7 +517,7 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
     problem = docker_problem()
     if problem:
         raise DetonatorError(problem)
-    tag = ensure_image(mcp=mcp_entry is not None)
+    tag = ensure_image(mcp=mcp_entry is not None, skill=skill_plan is not None)
     use_outside = outside_enabled() if outside is None else outside
     with tempfile.TemporaryDirectory(prefix="detonator-") as tmp:
         tmp = Path(tmp)
@@ -522,11 +529,15 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
         os.chmod(tmp, 0o700)
         in_dir = tmp / "in"
         in_dir.mkdir()
-        manifest = {} if mcp_entry is not None else load_manifest(plugin_copy)
+        manifest = {} if (mcp_entry is not None or skill_plan is not None) else load_manifest(plugin_copy)
         (in_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         if mcp_entry is not None:
             (in_dir / "mcp.json").write_text(json.dumps(mcp_entry), encoding="utf-8")
             os.chmod(in_dir / "mcp.json", 0o644)
+        if skill_plan is not None:
+            # The commands travel as data in this file and only ever run inside the container.
+            (in_dir / "skill.json").write_text(json.dumps(skill_plan), encoding="utf-8")
+            os.chmod(in_dir / "skill.json", 0o644)
         os.chmod(in_dir, 0o755)
         os.chmod(in_dir / "manifest.json", 0o644)
         out_dir = tmp / "out"
@@ -550,12 +561,14 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
                             if outside is False else "switched off (DETONATOR_OUTSIDE=0)"}
         canary = secrets.token_hex(10).upper()
         (in_dir / "run.json").write_text(json.dumps({"canary": canary, "traced": bool(monitor_args),
-                                                    **({"mode": "mcp"} if mcp_entry is not None else {})}),
+                                                    **({"mode": "mcp"} if mcp_entry is not None else
+                                                       {"mode": "skill"} if skill_plan is not None else {})}),
                                          encoding="utf-8")
         os.chmod(in_dir / "run.json", 0o644)
         if monitor:
             seen_note = {"canary": canary, "home": world["home"]}
-        cmd = docker_run_cmd(tag, plugin_copy, in_dir, out_dir, world, tmp / "etc", monitor_args)
+        cmd = docker_run_cmd(tag, plugin_copy, in_dir, out_dir, world, tmp / "etc", monitor_args,
+                             home_exec=skill_plan is not None)
         if mcp_entry is not None and mcp_entry.get("install"):
             # npm install scripts build into the package's own folder, so this throwaway copy is
             # writable for that run. Writes there after the install phase still count as the
@@ -568,7 +581,8 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
         cmd.insert(3, f"--name={name}")
         try:
             try:
-                proc = _run(cmd, timeout=MCP_RUN_TIMEOUT_S if mcp_entry is not None else RUN_TIMEOUT_S)
+                proc = _run(cmd, timeout=MCP_RUN_TIMEOUT_S if mcp_entry is not None else
+                            SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S)
             except subprocess.TimeoutExpired:
                 _run(["docker", "rm", "-f", name], timeout=30)
                 proc = None
@@ -577,7 +591,8 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
             if monitor:
                 monitor.cleanup()
         if proc is None:
-            limit = MCP_RUN_TIMEOUT_S if mcp_entry is not None else RUN_TIMEOUT_S
+            limit = MCP_RUN_TIMEOUT_S if mcp_entry is not None else \
+                SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S
             return {"fatal": f"sandbox timed out after {limit}s", "outside": seen_outside}
         result_path = out_dir / "result.json"
         if not result_path.is_file() and not result_path.is_symlink():
@@ -598,6 +613,8 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
         result["container_exit_code"] = proc.returncode
         result["image"] = tag
         result["outside"] = seen_outside
+        if skill_plan is not None:
+            return result
         try:
             result["static"] = static.scan(target.path)
         except Exception as exc:  # the read is a coverage aid; never fail the run over it

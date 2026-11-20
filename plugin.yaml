@@ -1,12 +1,13 @@
 name: detonator
-version: "0.4.1"
+version: "0.5.0"
 description: >
-  Security testing sandbox for Hermes plugins and MCP servers. After you approve it, runs a plugin
+  Security testing sandbox for Hermes plugins, MCP servers and skills. After you approve it, runs a plugin
   you did not write at an exact commit inside a disposable Docker container with
   decoy secrets and a fake internet, watched from inside and by an outside tracer,
   then reports what it actually did (key theft, network attempts, shell commands,
   persistence, tool poisoning) versus what it declares. Also tests MCP servers
-  (/detonate-mcp) the same way, acting as Hermes. Advisory only. Requires Docker; runs git and docker commands (see README).
+  (/detonate-mcp) the same way, acting as Hermes, and skills (/detonate-skill): reads SKILL.md for
+  planted instructions and download-and-run lures, and runs its scripts and commands in the sandbox. Advisory only. Requires Docker; runs git and docker commands (see README).
 author: shreyasudupi
 license: MIT
 requires_hermes: ">=0.23.0"
@@ -15,4 +16,4 @@ provides_tools:
   - detonator_report
 provides_hooks: []
 homepage: https://github.com/shreyasudupi/hermes-plugin-detonator
-tags: [security, security-testing, sandbox, malware, supply-chain, docker, mcp]
+tags: [security, security-testing, sandbox, malware, supply-chain, docker, mcp, skills, prompt-injection]

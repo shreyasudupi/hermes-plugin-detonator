@@ -1,4 +1,4 @@
-"""Detonator: dynamic sandbox for Hermes plugins and MCP servers."""
+"""Detonator: dynamic sandbox for Hermes plugins, MCP servers and skills."""
 
 # Hermes imports this file as a package. pytest also imports it bare while
 # collecting tests (no parent package), so only do the relative imports when
@@ -51,4 +51,20 @@ def register(ctx):
         handler_fn=commands.mcp_cli_handler,
         description="Starts an MCP server in a no-network Docker container with decoy secrets, acts as "
                     "Hermes and calls its tools, and reports what it did. Asks for confirmation first.",
+    )
+    ctx.register_command(
+        "detonate-skill",
+        commands.make_skill_slash_handler(ctx),
+        description="Test a skill (a folder, an installed skill's name, or owner/repo/folder@sha) in a "
+                    "disposable Docker sandbox (asks first)",
+        args_hint="<folder> | <skill-name> | <owner/repo/folder@sha>",
+    )
+    ctx.register_cli_command(
+        name="detonate-skill",
+        help="Test a skill in a disposable Docker sandbox",
+        setup_fn=commands.setup_skill_cli,
+        handler_fn=commands.skill_cli_handler,
+        description="Reads a skill's files for planted instructions, then runs its scripts and the commands "
+                    "its instructions show in a no-network Docker container with decoy secrets, and reports "
+                    "what they did. Asks for confirmation first.",
     )

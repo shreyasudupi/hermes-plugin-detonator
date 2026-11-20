@@ -1,19 +1,19 @@
 # Detonator
 
-**A security sandbox for Hermes Agent plugins and MCP servers.**
+**A security sandbox for Hermes Agent plugins, MCP servers and skills.**
 
-![Detonator: a security testing sandbox for Hermes Agent plugins and MCP servers](docs/store/cover.png)
+![Detonator: a security testing sandbox for Hermes Agent plugins, MCP servers and skills](docs/store/cover.png)
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-**Current version: v0.4.1** ([what's new](#versions))
+**Current version: v0.5.0** ([what's new](#versions))
 
 [![Watch the 82-second Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
 ▶️ **[Watch the 82-second demo](https://x.com/shreyasudupi/status/2120289870908465286)**: a real run catching a fake key-stealer plugin, comparing two versions, the clock jump, and the plain-words AI explanation.
 
 Detonator is a security sandbox for [Hermes Agent](https://hermes-agent.nousresearch.com/)
-plugins and MCP servers. You name a plugin (its catalog name, or its GitHub page) and approve the run. It then
+plugins, MCP servers and skills. You name a plugin (its catalog name, or its GitHub page) and approve the run. It then
 loads that plugin inside a disposable Docker container with a fake Hermes home full
 of decoys, fires synthetic hooks and tool calls at it, and reports what the plugin
 actually did compared with what it declares. Each finding says, in plain words, why it
@@ -27,6 +27,11 @@ or writes a fake clean result, is still caught. See [Outside monitor](#outside-m
 New in v0.4: **MCP servers.** `/detonate-mcp <server-name>` tests a server from your Hermes
 config (npm, PyPI or a local script) the same way: in the sandbox, with both monitors, while a
 stand-in for Hermes lists its tools and calls every one. See [Test an MCP server](#test-an-mcp-server).
+
+New in v0.5: **skills.** `/detonate-skill <folder | installed-name | owner/repo/folder@sha>` reads a
+skill's SKILL.md and files for planted instructions and download-and-run lures, then runs its scripts
+and the commands it tells the agent to run, each on its own, in the sandbox with the outside monitor.
+See [Test a skill](#test-a-skill).
 
 Tested on Linux (x86_64), macOS on Apple Silicon (Docker Desktop) and Windows (Docker
 Desktop with WSL 2, in both the `hermes` terminal chat and the Desktop app). Every change runs
@@ -102,6 +107,7 @@ Full report: ~/.hermes/plugin-data/detonator/reports/....md
 | One exact commit, or two to compare | `/detonate <owner/repo> <40-char-sha> [<newer-sha>] [folder]` |
 | An MCP server in your config.yaml | `/detonate-mcp <server-name>` |
 | An MCP server in a folder on your computer | `/detonate-mcp <folder>` (with an `mcp-server.yaml`, see below) |
+| A skill in a folder, installed, or on GitHub | `/detonate-skill <folder>`, `/detonate-skill <installed-name>` or `/detonate-skill <owner/repo/folder@40-char-sha>` |
 
 `[folder]` is only for repos that keep the plugin in a subfolder; catalog names fill it in for
 you. The newest commit is looked up (with `git ls-remote`) only after you approve the run.
@@ -230,6 +236,52 @@ Limits: a server that needs a real account, only acts on specific input, waits f
 than time, or checks the clock in a language other than Python or Node can look clean. A server that needs a program the sandbox lacks (such as
 `git` or a downloaded browser) stops early and is reported as not started. Its code is not yet read for abilities it did not use
 during the run. A clean run is evidence, not proof.
+
+## Test a skill
+
+A Hermes skill is a folder with a `SKILL.md` of instructions, often with scripts next to it. Hermes
+never runs a skill's scripts by itself: the agent reads SKILL.md and runs what it says through its
+terminal tool. So a bad skill does not need bad code. Real malicious skills mostly hide in the text:
+a "prerequisite" that downloads and runs an installer, a base64 line piped to the shell, an order to
+send `~/.ssh` somewhere, or text the user cannot see. `/detonate-skill` checks both the text and
+what running it does.
+
+```
+/detonate-skill <folder>                 # a skill folder with a SKILL.md
+/detonate-skill <installed-name>         # a skill in your Hermes skills folder (copied, never changed)
+/detonate-skill <owner/repo/folder@sha>  # a skill on GitHub at an exact 40-character commit
+```
+
+You choose **Run full test** or **Read the text only**. Detonator:
+
+1. **Reads every file** on your computer without running anything: frontmatter, fenced shell
+   blocks, inline commands, links and hidden text (invisible Unicode tags, zero-width and
+   right-to-left characters, HTML comments). It looks for download-and-run commands, password-zip
+   and fake-installer lures, prompt injection and "always use this skill" text, requests for keys,
+   orders to send files out or change the agent's config, persistence, reverse shells, packed
+   scripts, binaries and links that point outside the folder.
+2. **Installs it in the sandbox** where Hermes keeps skills (`~/.hermes/skills/<name>`, with
+   `HERMES_SKILL_DIR` set) next to the same decoy home a plugin run gets, plus a work folder with
+   harmless sample files. Keys the skill declares get fake values.
+3. **Runs each shell block and command from SKILL.md** on its own, as the agent would, with
+   placeholders such as `<file>` filled with sample files, then **each script** with no arguments
+   and with `--help`. Every step has a 20-second limit and fresh decoys. Small stand-ins for macOS
+   commands (`base64 -D`, `open`, `xattr`, `osascript`) let Mac-only lures run far enough to be seen.
+   The scripts then run again with the clock 400 days ahead.
+4. **Hands out a marked stand-in for downloaded code.** When a command downloads a script or
+   installer, the fake internet answers with a harmless stand-in that only touches a marked file. If
+   that marker then shows up in the trace, the skill ran code it downloaded, and the report says
+   from where.
+
+The report lists what each step did, which hosts the skill contacted that its own text never
+mentions, and which steps could not run. If too few steps ran to say anything (a missing tool, a
+script that needs a real account), the verdict is **NOT ENOUGH COVERAGE**, not a clean result.
+Rules: [docs/RULES.md](docs/RULES.md#skills).
+
+Limits: Detonator does not ask an AI model to follow the skill, so instructions that only an agent
+acting on a task would carry out are judged from the text alone. A step that needs a real account,
+a Mac, Windows or a second download that the fake internet cannot stand in for can look clean. A
+clean run is evidence, not proof.
 
 ## What it checks
 
@@ -423,6 +475,15 @@ Detonator does things a reviewer should know about:
   Proxy values go through a private env file, so a proxy password never shows in `ps`. Nothing downloaded runs
   there or on your machine: the server and its install scripts run only in the sandbox, which uses
   the same image settings as above with a 240-second limit.
+- **Skills (`/detonate-skill`).** For an installed name it reads only `SKILL.md` files under your
+  Hermes `skills/` folder (and its `.hub/quarantine`) and the current project's `.hermes/skills` and
+  `.agents/skills`, to find the folder; the skill is copied into the run folder (links are not
+  followed) and nothing in your skills folder changes. A GitHub skill is fetched at one exact commit
+  like a plugin. Nothing from the skill runs on your machine: the text checks only read it, and its
+  commands run in a container from `sandbox/Dockerfile.skill` (digest-pinned `python:3.11-bookworm`
+  plus `node` copied from a digest-pinned `node` image, so common tools such as `curl`, `git` and
+  `node` exist for the skill to use) with the same settings as above, a 240-second limit, and its fake
+  home allowed to hold runnable files (skills install tools there).
 - **Private run folder.** Each run's temporary folder is readable only by you, so other users
   on the same computer cannot read it or plant files in it.
 - **A different world every run.** Each run gets a random username, home folder
@@ -448,6 +509,14 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
+- **v0.5.0**: Skills. `/detonate-skill <folder | installed-name | owner/repo/folder@sha>` (and
+  `hermes detonate-skill`) reads a Hermes skill for planted instructions, hidden text and
+  download-and-run lures, then runs its scripts and the commands its instructions show, each on its
+  own, in the sandbox with both monitors. The fake internet hands out a marked stand-in for downloaded
+  scripts, so running downloaded code shows in the trace. New verdict NOT ENOUGH COVERAGE when too
+  little ran to judge. 28 new rules. Also for every mode: the outside monitor now names files opened
+  relative to a folder (it used to put them at `/`), and two revoked ATT&CK IDs (T1562, T1562.001)
+  were replaced by T1685. RESULTS_PLACEHOLDER
 - **v0.4.1**: Tested on real malware. Detonator was run on every MCP package in
   [Datadog's malicious software packages dataset](https://github.com/DataDog/malicious-software-packages-dataset)
   (55 npm packages, all removed from npm), which showed blind spots our own test servers never hit. Fixed:
@@ -536,11 +605,13 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
 ## Layout
 
 - `plugin.yaml`, `__init__.py`, `schemas.py`, `tools.py`, `commands.py`: the Hermes
-  plugin (tool, `/detonate` and `/detonate-mcp` slash commands, `hermes detonate` CLIs)
+  plugin (tool, `/detonate`, `/detonate-mcp` and `/detonate-skill` slash commands, `hermes detonate` CLIs)
 - `engine/`: host side (fetch, run Docker, rules, report)
 - `sandbox/`: the container image and the in-container harness
 - `engine/mcp.py`, `engine/mcp_sources.py`, `sandbox/mcp_harness.py`, `sandbox/Dockerfile.mcp`:
   MCP mode (reading the entry, getting the code, the stand-in for Hermes, its rules)
+- `engine/skill.py`, `engine/skill_text.py`, `sandbox/skill_harness.py`, `sandbox/Dockerfile.skill`:
+  skill mode (finding the skill, the text checks, the steps it runs, its rules)
 - `sandbox/monitor/`: the outside monitor image (strace tracer and fake internet)
 - `engine/outside.py`: starts the monitor containers and reads what they saw
 - `tests/`: rule tests, plus integration tests that run harmless plugins in real Docker

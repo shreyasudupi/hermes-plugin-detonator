@@ -238,7 +238,7 @@ RULES = {
         "The plugin did so much that the sandbox's activity log filled up, so part of the run was not kept. "
         "Flooding a monitor is a known way to hide one bad action among thousands of harmless ones. "
         "Only the most repeated kinds of activity were thinned out, so rare actions such as a key read were kept and judged.",
-        ("T1562",), ()),
+        ("T1685",), ()),
     "load_error": Rule("The plugin crashed while loading, so less of it was observed."),
     "coverage_incomplete": Rule(
         "The plugin stopped on a stand-in module, so code after that point was not observed."),
@@ -261,12 +261,12 @@ RULES = {
         "The outside monitor, which the plugin cannot reach, saw the plugin's own process do this, but "
         "Detonator's monitor inside the plugin's process recorded nothing. Honest code does not slip "
         "past the inside monitor; code written to hide from it (or to switch it off) does.",
-        ("T1562.001", "T1106"), ()),
+        ("T1685", "T1106"), ()),
     "result_forged": Rule(
         "Something other than Detonator wrote, removed or linked the sandbox's result file. A plugin that "
         "writes its own result is trying to hand in a fake clean report; one that puts a link there is trying "
         "to make Detonator read some other file instead (Detonator never follows it).",
-        ("T1565.001", "T1562.001"), ()),
+        ("T1565.001", "T1685"), ()),
     "coverage_stubbed_imports": Rule(
         "The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, "
         "and anything done through them (e.g. an HTTP call via httpx) was not observed."),
@@ -325,6 +325,119 @@ RULES.update({
     "mcp_full_trust_third_party": Rule(
         "Hermes trusts MCP servers fully by default and runs their tools without asking. For code you "
         "did not write, `trust: untrusted` makes Hermes ask before each tool that is not read-only."),
+    # ---- skills (/detonate-skill, engine/skill.py and engine/skill_text.py)
+    "skill_fetch_exec": Rule(
+        "Downloading a script and running it straight away (curl ... | bash) runs whatever the server "
+        "sends that day, with all of your keys in reach. Many honest tools install this way from their "
+        "own site; fake \"prerequisites\" that hide the command in base64, or fetch it from a raw "
+        "address or a paste site, are the most common real skill attack.",
+        ("T1105", "T1204.004"), ("AML.T0011.002",)),
+    "skill_installer_lure": Rule(
+        "The skill says you must first download and run a program, often from a password-protected "
+        "archive (the password stops virus scanners from looking inside) or a free web host. Real "
+        "malicious skills use this to install info-stealers; honest skills install tools from package "
+        "managers.",
+        ("T1204.002", "T1027.013"), ("AML.T0011.002", "AML.T0104")),
+    "skill_instruction_injection": Rule(
+        "The skill's text tells the agent to ignore its other instructions, hide what it does from you "
+        "or skip your approval. The agent reads every loaded skill as instructions, and the description "
+        "is shown to the model on every turn.",
+        (), ("AML.T0051.001", "AML.T0110")),
+    "skill_catch_all": Rule(
+        "A skill that asks to be used for every task gets loaded into far more conversations than it "
+        "needs, which is how a poisoned skill reaches the most sessions.",
+        (), ("AML.T0110",)),
+    "skill_hidden_text": Rule(
+        "Invisible characters (Unicode tags, zero-width marks) or HTML comments carry text the model "
+        "reads but a person looking at the skill does not see. Honest skills have no reason to hide "
+        "instructions.",
+        ("T1027",), ("AML.T0068", "AML.T0051.001")),
+    "skill_secret_request": Rule(
+        "The skill points the agent at files that hold keys and passwords (SSH keys, cloud credentials, "
+        "Hermes's .env or auth.json, wallets, browser logins), or asks Hermes to hand it credential files. "
+        "Honest skills declare the one key they need and get it from Hermes.",
+        ("T1552.001",), ("AML.T0055", "AML.T0083")),
+    "skill_exfil_instruction": Rule(
+        "The skill tells the agent to send files or data to an outside address. The agent would do it "
+        "with its own tools, so nothing in the skill's code shows it.",
+        ("T1567",), ("AML.T0086",)),
+    "skill_config_tamper": Rule(
+        "The skill tells the agent to change Hermes's own settings, memory, personality (SOUL.md) or "
+        "safety switches. That can turn off approvals or plant instructions that outlive the skill. "
+        "Setup skills do this honestly; a skill that has no reason to should not.",
+        ("T1685",), ("AML.T0081", "AML.T0080.000")),
+    "skill_persistence_instruction": Rule(
+        "The skill tells the agent to add something that starts on its own (a cron job, a login item, "
+        "a line in your shell start-up file). Once added it keeps running after the chat is over.",
+        ("T1053", "T1546.004"), ()),
+    "skill_agent_tool_abuse": Rule(
+        "The skill tells the agent to use its other tools (messages, memory, scheduled jobs, writing new "
+        "skills) for the skill's own purposes. A skill that writes more skills or schedules itself can "
+        "spread and persist.",
+        (), ("AML.T0053", "AML.T0086")),
+    "skill_reverse_shell_text": Rule(
+        "The skill's files contain a reverse shell: a command that hands control of the computer to "
+        "someone else over the network.",
+        ("T1059.004",), ("AML.T0011.002",)),
+    "skill_destructive_text": Rule(
+        "The skill's files contain a command that wipes the home folder or a disk.",
+        ("T1485",), ("AML.T0101",)),
+    "skill_inline_shell": Rule(
+        "Inline !`command` snippets run on your computer while Hermes loads the skill, before the model "
+        "reads it and without asking. Hermes only runs them when skills.inline_shell is on (off by "
+        "default, never for hub installs).",
+        ("T1059.004",), ("AML.T0011.002",)),
+    "skill_blueprint_cron": Rule(
+        "The skill proposes a scheduled job. If you accept it, Hermes runs it again and again on its own.",
+        ("T1053",), ()),
+    "skill_config_phish": Rule(
+        "The skill asks for a password or key through a plain setting. Hermes stores those settings in "
+        "config.yaml, not as secrets, and honest skills ask for keys through required_environment_variables.",
+        ("T1056.002",), ()),
+    "skill_shadowing": Rule(
+        "The skill steps in when built-in tools are missing (fallback_for_*), so it decides what the agent "
+        "uses in their place."),
+    "skill_binary": Rule(
+        "Compiled programs and archives cannot be read like the rest of the skill, so they could hold "
+        "anything. Honest skills rarely ship them.",
+        ("T1027.002",), ()),
+    "skill_packed_script": Rule(
+        "The skill ships code that decodes and runs hidden code, or is packed into a few huge lines. "
+        "Packing is the trick that let malicious skills slip past static scanners in published research.",
+        ("T1140", "T1027.013"), ()),
+    "skill_unlisted_script": Rule(
+        "Scripts that SKILL.md never mentions. Common in honest skills (helpers); listed so you know "
+        "what else ships. Detonator runs them anyway."),
+    "skill_disguised_code": Rule(
+        "A file named like a document holds code.",
+        ("T1036.008",), ()),
+    "skill_symlink": Rule(
+        "Links inside a skill can point at files elsewhere on your computer. Detonator never follows them."),
+    "skill_ran_downloaded_code": Rule(
+        "During the run a script was downloaded and executed. Detonator's fake internet answered with a "
+        "harmless stand-in that only leaves a mark, and the mark showed up: on your computer, whatever the "
+        "real server sends would have run.",
+        ("T1105", "T1059.004"), ("AML.T0011.002",)),
+    "skill_undeclared_host": Rule(
+        "The skill's scripts or commands contacted hosts that its own text never names. Honest skills "
+        "talk to the services they describe; anything else may be where data goes.",
+        ("T1071.001",), ()),
+    "skill_declared_host": Rule("Network use that matches the hosts the skill's own text names; listed for completeness."),
+    "skill_not_fully_read": Rule(
+        "Files too big or too many to read in full. The agent still reads SKILL.md however long it is, and "
+        "padding a file is a known way to hide instructions from scanners. Detonator reads the start and end "
+        "of a huge SKILL.md and lists what it skipped.", ("T1027.001",), ()),
+    "skill_left_running": Rule(
+        "A command or script left a program running after it ended, outside its own process group (a "
+        "daemon). Detonator kills it before the next step; on a real computer it would keep running.",
+        ("T1543",), ()),
+    "skill_tool_own_config": Rule(
+        "A package tool the skill tells the agent to run (npm, pip, git) used its own settings: npm reads "
+        "~/.npmrc and sends its registry token to its registry, pip and git look in ~/.netrc. That happens on "
+        "every machine, so it is not counted as key theft. Only the real tool counts, and a token from that file "
+        "sent anywhere but the tool's own registry is still reported as a leak. A tool changing its own settings, "
+        "or an `export NAME=value` line added to a shell start-up file as the instructions say, is listed too, "
+        "unless it changes where the tool connects."),
     "server_not_started": Rule(
         "The server did not start or did not answer, so little of it was observed. Servers that need a "
         "real account or extra packages stop early in the sandbox."),

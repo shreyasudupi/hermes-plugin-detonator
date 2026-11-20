@@ -1245,9 +1245,16 @@ def main_mcp():
     mcp_harness.run(sys.modules[__name__])
 
 
+def main_skill():
+    """Skill mode: do what a skill tells the agent to do (sandbox/skill_harness.py)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import skill_harness
+    skill_harness.run(sys.modules[__name__])
+
+
 if __name__ == "__main__":
     try:
-        main_mcp() if _RUN.get("mode") == "mcp" else main()
+        {"mcp": main_mcp, "skill": main_skill}.get(_RUN.get("mode"), main)()
     except Exception:
         _ACTIVE = False
         release_fd()
