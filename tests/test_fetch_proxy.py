@@ -43,7 +43,7 @@ def _echo_server():
 
 def test_windows_names_ignore_case(env):
     env.setattr(s.os, "name", "nt")
-    assert s._env_names(s._PROXY_VARS) == ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")
+    assert s._proxy_var_names(s._PROXY_VARS) == ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")
 
 
 def test_no_proxy_no_args(env):
