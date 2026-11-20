@@ -255,7 +255,9 @@ what running it does.
 /detonate-skill <owner/repo/folder@sha>  # a skill on GitHub at an exact 40-character commit
 ```
 
-You choose **Run full test** or **Read the text only**. Detonator:
+You choose **Run full test** or **Read the text only**. The first full skill test builds a bigger
+sandbox image (Debian with Python and Node.js, about 1.7 GB, built once) so the everyday tools a
+skill calls are really there. Reading the text only needs no image. Detonator:
 
 1. **Reads every file** on your computer without running anything: frontmatter, fenced shell
    blocks, inline commands, links and hidden text (invisible Unicode tags, zero-width and
