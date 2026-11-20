@@ -14,7 +14,7 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 | Rule | Severity | Why it matters | MITRE |
 |---|---|---|---|
 | `decoy_accessed` | critical | Plugins have no reason to open your key files or ask for API keys they did not declare. This is the first step of every credential stealer. | [T1552.001](https://attack.mitre.org/techniques/T1552/001/) [T1552.004](https://attack.mitre.org/techniques/T1552/004/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) [AML.T0083](https://atlas.mitre.org/techniques/AML.T0083) |
-| `own_tool_config_read` | medium (critical as `decoy_accessed` when anything else in the run is high-risk) | It is named for a tool (Kubernetes, Docker, AWS, GitHub, git, npm or PyPI) and opened only that tool's own login file, which it needs to do its job. With your real file, the real key would be in its reach, so install it only if you mean to give it that access. Any other key file, a key sent out or shown to the model, or anything else high-risk in the same run is reported as key theft instead. | [T1552.001](https://attack.mitre.org/techniques/T1552/001/) |
+| `own_tool_config_read` | medium (high when the run also used the network; critical as `decoy_accessed` when anything else in the run is high-risk) | It is named for a tool (Kubernetes, Docker, AWS, GitHub, git, npm or PyPI) and opened only that tool's own login file, which it needs to do its job. With your real file, the real key would be in its reach, so install it only if you mean to give it that access. Any other key file, a key sent out or shown to the model, or anything else high-risk in the same run is reported as key theft instead. If it also used the network, the finding is high: a key could leave in a form the test cannot read. | [T1552.001](https://attack.mitre.org/techniques/T1552/001/) |
 | `browser_or_wallet_read` | critical | Saved browser passwords, cookies and crypto wallets are what info-stealer malware is built to take. | [T1555.003](https://attack.mitre.org/techniques/T1555/003/) [T1005](https://attack.mitre.org/techniques/T1005/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
 | `secret_in_output` | critical | A fake key ended up somewhere it could leave the machine (a model prompt, a tool result, a network address, a command or another tool's input), even when encoded or split up to hide it. A real key would leak the same way. | [T1041](https://attack.mitre.org/techniques/T1041/) [AML.T0057](https://atlas.mitre.org/techniques/AML.T0057) [AML.T0086](https://atlas.mitre.org/techniques/AML.T0086) |
 | `memory_read` | medium | Memory and chat history hold what the agent knows about you. Expected for memory plugins, a privacy leak for anything else. | [T1005](https://attack.mitre.org/techniques/T1005/) |
@@ -34,10 +34,16 @@ run must be that tool's own login file: `~/.kube/config` (kubernetes, kubectl, k
 `~/.docker/config.json` (docker), `~/.aws/credentials` (aws), `~/.config/gh/hosts.yml` or
 `~/.git-credentials` (github, gh), `~/.git-credentials` (git), `~/.npmrc` (npm) and `~/.pypirc` (pypi,
 pip, twine). SSH keys, `~/.netrc`, Hermes's own files, browsers and wallets are never on that list. Reading
-Hermes's `.env`, a browser or wallet file or another process's environment in the same run keeps every read
-as `decoy_accessed`. At the very end, if anything else in the run is high or critical (the key sent out or
+Hermes's `.env`, a browser or wallet file, Hermes's memory or chat history, or another process's environment
+in the same run keeps every read as `decoy_accessed`. If the run reached the network at all (a connection or
+a name lookup), the finding is high, so the verdict is SUSPICIOUS: a key that left encrypted would not be
+recognised. At the very end, if anything else in the run is high or critical (the key sent out or
 shown to the model, a time bomb, a risky install script, any other alarm), the finding is turned back into
 `decoy_accessed`. Skills keep the usual rules.
+
+Known limit: a tool named for Kubernetes that opens the Kubernetes login file and keeps the key for later,
+without sending it or showing it during the test, looks the same as an honest one. That is why the finding
+stays in the report as a REVIEW and is never dropped.
 
 ## Network
 

@@ -399,15 +399,15 @@ no Python code to run, and Detonator says so instead of guessing.
   together they set off every one of the plugin rules, and CI re-checks them on every change. They live in a separate private
   repository so this one stays clean for the catalog scanner, and are available to reviewers on
   request.
-- **MCP servers** are checked against 29 more harmless test servers (Python and Node: poisoned and
+- **MCP servers** are checked against 30 more harmless test servers (Python and Node: poisoned and
   cross-tool descriptions, a rug pull and one that waits for a few uses, a "read-only" tool that
   writes, key stealers, a sampling abuser, a credential phisher, an npm postinstall dropper, a risky
   config, a time bomb that waits 200 days after install, an email tool that adds a hidden Bcc over
   HTTPS, orders hidden in a tool result, an open port and a look-alike tool name, plus six modelled on
   real npm malware: a reverse shell, a key sent to an odd port, a `wallet.dat` hunter, a hidden Bcc
-  that only fires without optional fields, obfuscated code and an ngrok beacon, and four around a
+  that only fires without optional fields, obfuscated code and an ngrok beacon, and five around a
   tool's own login file: an honest Kubernetes helper that reads only `~/.kube/config` (review), one that
-  sends that file's token out, one that also reads the AWS keys, and one that only calls itself
+  sends that file's token out, one that sends it scrambled, one that also reads the AWS keys, and one that only calls itself
   "kubernetes" in its own start-up answer; together with the
   test plugins they set off every plugin and MCP rule) and against official
   servers from the MCP project (memory, filesystem, sequential thinking, everything, fetch, time)
@@ -550,7 +550,8 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   `~/.kube/config` at start-up was rated DANGEROUS) is now REVIEW, with the new `own_tool_config_read`
   rule. The name that counts is the one you chose to install, never the one the server gives itself;
   any other key file, the key sent out or shown to the model, or anything else high-risk in the same
-  run is still key theft. Also fixes a v0.4.0 bug: a server tested by name from `config.yaml` got its
+  run is still key theft. If such a run also used the network it is SUSPICIOUS, since a key
+  that left encrypted would not be recognised. Also fixes a v0.4.0 bug: a server tested by name from `config.yaml` got its
   fake keys under the wrong names instead of the names in its `env:` entry.
 - **v0.4.1**: Tested on real malware. Detonator was run on every MCP package in
   [Datadog's malicious software packages dataset](https://github.com/DataDog/malicious-software-packages-dataset)

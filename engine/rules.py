@@ -47,7 +47,8 @@ RULES = {
         "It is named for a tool (Kubernetes, Docker, AWS, GitHub, git, npm or PyPI) and opened only that "
         "tool's own login file, which it needs to do its job. With your real file, the real key would be in its "
         "reach, so install it only if you mean to give it that access. Any other key file, a key sent out or "
-        "shown to the model, or anything else high-risk in the same run is reported as key theft instead.",
+        "shown to the model, or anything else high-risk in the same run is reported as key theft instead. If it also "
+        "used the network, the finding is high: a key could leave in a form the test cannot read.",
         ("T1552.001",), ()),
     "browser_or_wallet_read": Rule(
         "Saved browser passwords, cookies and crypto wallets are what info-stealer malware is built to take.",
@@ -626,7 +627,7 @@ def evaluate(result: dict) -> dict:
     extra = _outside_findings(result or {})
     full["outside"] = outside_summary(result or {})
     if not extra:
-        return settle_evaluation(full)
+        return settle_evaluation(full, result)
     errored = full["verdict"] == VERDICT_ERROR
     full["findings"] = sorted((full.get("findings") or []) + [f.to_dict() for f in extra],
                               key=lambda f: SEVERITY_ORDER.index(f["severity"]))
@@ -637,7 +638,7 @@ def evaluate(result: dict) -> dict:
         full["summary"] = ("The sandbox harness did not finish, so the in-process record is missing, "
                            "but the outside monitor saw what is listed below.")
     full["verdict"] = verdict
-    return settle_evaluation(full)
+    return settle_evaluation(full, result)
 
 
 # ---------------------------------------------------------------------------
@@ -693,31 +694,62 @@ def own_tool_finding(own: list, evidence: list) -> Finding:
                    list(evidence)[:12])
 
 
-def settle_own_config(findings: list) -> list:
+OWN_CONFIG_NETWORK_SUFFIX = ", and also used the network"
+
+
+def reached_network(result: dict) -> bool:
+    """True when anything in the run reached past this computer: a connection or name lookup the
+    fake internet logged, a traced connection to an outside address, or one the in-process
+    monitor recorded. A key can leave that way in a form the test cannot read (encrypted)."""
+    out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
+    sink = out.get("sink") or {}
+    if sink.get("tcp") or sink.get("dns"):
+        return True
+    for e in (out.get("trace") or {}).get("events") or []:
+        ip = str(e.get("ip") or "")
+        if e.get("call") in ("connect", "sendto", "sendmsg") and ip and not e.get("unix") \
+                and not (ip.startswith("127.") or ip == "::1"):
+            return True
+    return any(e.get("kind") == "network" and not _is_loopback(e.get("address"))
+               for e in result.get("events") or [])
+
+
+def settle_own_config(findings: list, network: bool = False) -> list:
     """Run last, on the finished list of finding dicts. A tool's own login file is only a
-    REVIEW when nothing else in the run is high-risk; otherwise it is key theft as usual."""
+    REVIEW when nothing else in the run is high-risk; otherwise it is key theft as usual. When
+    the run also used the network (and nothing else is high-risk) it is HIGH: the test would not
+    see a key that left encrypted."""
     if not any(f.get("rule") == "own_tool_config_read" for f in findings):
         return findings
-    if not any(f.get("severity") in (CRITICAL, HIGH) for f in findings if f.get("rule") != "own_tool_config_read"):
+    alarm = any(f.get("severity") in (CRITICAL, HIGH) for f in findings if f.get("rule") != "own_tool_config_read")
+    if not alarm and not network:
         return findings
     info = RULES["decoy_accessed"]
     out = []
     for f in findings:
         if f.get("rule") == "own_tool_config_read":
-            m = re.search(r" \(only after the clock moved \d+ days forward\)$", str(f.get("title") or ""))
-            f = {**f, "rule": "decoy_accessed", "severity": CRITICAL,
-                 "title": OWN_CONFIG_SETTLED_TITLE + (m.group(0) if m else ""),
-                 "why": info.why, "attack": list(info.attack), "atlas": list(info.atlas)}
+            title = str(f.get("title") or "")
+            if alarm:
+                m = re.search(r" \(only after the clock moved \d+ days forward\)$", title)
+                f = {**f, "rule": "decoy_accessed", "severity": CRITICAL,
+                     "title": OWN_CONFIG_SETTLED_TITLE + (m.group(0) if m else ""),
+                     "why": info.why, "attack": list(info.attack), "atlas": list(info.atlas)}
+            elif OWN_CONFIG_NETWORK_SUFFIX not in title:
+                f = {**f, "severity": HIGH, "title": title + OWN_CONFIG_NETWORK_SUFFIX}
         out.append(f)
     return sorted(out, key=lambda f: SEVERITY_ORDER.index(f["severity"]))
 
 
-def settle_evaluation(full: dict) -> dict:
+def settle_evaluation(full: dict, result: dict | None = None) -> dict:
     """settle_own_config on a finished evaluation, and the verdict again (an ERROR stays one)."""
     findings = full.get("findings") or []
-    settled = settle_own_config(findings)
+    settled = settle_own_config(findings, network=reached_network(result or {}))
     if settled is findings:
         return full
+    full["findings"] = settled
+    if full.get("verdict") != VERDICT_ERROR:
+        full["verdict"] = _verdict([Finding(**f) for f in settled])
+    return full
     full["findings"] = settled
     if full.get("verdict") != VERDICT_ERROR:
         full["verdict"] = _verdict([Finding(**f) for f in settled])
@@ -843,7 +875,8 @@ def _evaluate(result: dict) -> dict:
     # file, and no other secret, is doing its job; anything worse in the run turns it back into
     # decoy_accessed (settle_own_config, at the end of evaluate()).
     own_files = own_tool_reads(secret_reads, home, identity_words([plugin_name])) \
-        if secret_reads and not env_file_reads and not loot_reads and not of("environ_file_read") else None
+        if secret_reads and not env_file_reads and not loot_reads and not private_reads \
+        and not of("environ_file_read") else None
     if own_files:
         add(own_tool_finding(own_files, secret_reads))
     elif secret_reads:

@@ -424,3 +424,31 @@ def test_identity_words_split_on_anything_but_letters_and_digits():
     assert rules.own_tool_reads([HOME + "/.kube/../.kube/config"], HOME, {"kube"}) == [("Kubernetes", ".kube/config")]
     assert rules.own_tool_reads(["/etc/.kube/config"], HOME, {"kube"}) is None
     assert rules.own_tool_reads([], HOME, {"kube"}) is None
+
+
+def test_own_login_file_plus_network_is_high_not_review():
+    base = [{"rule": "own_tool_config_read", "severity": rules.MEDIUM, "title": "Read the login file", "evidence": []},
+            {"rule": "tool_network", "severity": rules.MEDIUM, "title": "net", "evidence": []}]
+    quiet = rules.settle_evaluation({"verdict": "REVIEW", "findings": [dict(f) for f in base]}, {})
+    assert quiet["verdict"] == "REVIEW"
+    for raw in ({"outside": {"sink": {"dns": [{"name": "x.example.com"}]}}},
+                {"outside": {"sink": {"tcp": [{"host": "x", "port": 443}]}}},
+                {"outside": {"trace": {"events": [{"call": "connect", "ip": "203.0.113.9", "port": 443}]}}},
+                {"events": [{"kind": "network", "address": "('203.0.113.9', 443)"}]}):
+        out = rules.settle_evaluation({"verdict": "REVIEW", "findings": [dict(f) for f in base]}, raw)
+        own = next(f for f in out["findings"] if f["rule"] == "own_tool_config_read")
+        assert out["verdict"] == "SUSPICIOUS" and own["severity"] == rules.HIGH and "used the network" in own["title"]
+        again = rules.settle_evaluation(out, raw)
+        assert again["findings"] == out["findings"]            # settling twice changes nothing
+    local = {"outside": {"trace": {"events": [{"call": "connect", "ip": "127.0.0.1", "port": 53}]}},
+             "events": [{"kind": "network", "address": "('127.0.0.1', 8080)"}]}
+    assert rules.settle_evaluation({"verdict": "REVIEW", "findings": [dict(f) for f in base]}, local)["verdict"] == "REVIEW"
+
+
+def test_own_login_file_plus_memory_read_is_theft():
+    home = "/home/u"
+    kube, mem = f"{home}/.kube/config", f"{home}/.hermes/memories/MEMORY.md"
+    out = rules.evaluate({"manifest": {"name": "kube-tools"}, "home": home, "decoy_paths": [kube, mem],
+                          "decoy_categories": {kube: "secret", mem: "memory"}, "memory_paths": [mem],
+                          "events": [{"kind": "file_read", "path": kube}, {"kind": "file_read", "path": mem}]})
+    assert out["verdict"] == "DANGEROUS" and "own_tool_config_read" not in {f["rule"] for f in out["findings"]}

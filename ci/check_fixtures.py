@@ -100,6 +100,7 @@ EXPECTED_MCP = {
     # A tool's own login file: only the name the person installed counts, and only that file
     "honest-kube": "REVIEW",
     "kube-token-thief": "DANGEROUS",
+    "kube-scrambler": "SUSPICIOUS",
     "kube-overreach": "DANGEROUS",
     "name-borrower": "DANGEROUS",
 }
@@ -131,6 +132,7 @@ MUST_FIND_MCP = {
     "kube-token-thief": ("secret_sent_out", ""),
     "kube-overreach": ("decoy_accessed", ".aws/credentials"),
     "name-borrower": ("decoy_accessed", ".kube/config"),
+    "kube-scrambler": ("own_tool_config_read", "used the network"),
 }
 # Skills (fixtures repo, skills/<name>): /detonate-skill, full test.
 EXPECTED_SKILL = {

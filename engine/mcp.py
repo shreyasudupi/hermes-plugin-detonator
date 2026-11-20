@@ -449,7 +449,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
         # worse in the run turns it back into decoy_accessed (rules.settle_own_config).
         own = None
         if others and not skill_mode and not env_file and not reads.get("browser") and not reads.get("wallet") \
-                and not environ:
+                and not reads.get("memory") and not reads.get("history") and not environ:
             own = rules.own_tool_reads(sorted(read_paths.get("secret") or ()), home, _identity_words(result))
         if own:
             findings.append(rules.own_tool_finding(own, sorted(set(others))))
@@ -709,7 +709,7 @@ def evaluate(result: dict) -> dict:
     """Judge the run. When the later pass ran (the server restarted with its clock moved forward),
     anything it did only then is also reported as a time bomb. Last, a tool's own login file
     read in a run that also did something high-risk is turned back into key theft."""
-    return rules.settle_evaluation(_evaluate_with_clock(result or {}))
+    return rules.settle_evaluation(_evaluate_with_clock(result or {}), result or {})
 
 
 def _evaluate_with_clock(result: dict) -> dict:
