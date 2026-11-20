@@ -52,6 +52,9 @@ EXPECTED = {
     "chat-snooper": "SUSPICIOUS",
     # Clean API plugin: its own declared key to its own API is normal (REVIEW, never worse)
     "honest-api": "REVIEW",
+    # Named for a tool and reading only that tool's own login file: REVIEW; showing its key to the model is theft
+    "docker-status": "REVIEW",
+    "kube-snitch": "DANGEROUS",
 }
 # Fixtures that must be caught by one specific finding, not just reach the verdict
 # some other way: (rule, words that must be in its title).
@@ -64,6 +67,8 @@ MUST_FIND = {
     "output-flooder": ("output_flood", "every turn"),
     "chat-snooper": ("chat_data_sent", ""),
     "result-linker": ("result_forged", "replaced"),
+    "docker-status": ("own_tool_config_read", "Docker"),
+    "kube-snitch": ("secret_in_output", "returned decoy secrets"),
 }
 # MCP servers (fixtures repo, mcp/<name>): python -m engine.mcp mode.
 EXPECTED_MCP = {
@@ -92,6 +97,11 @@ EXPECTED_MCP = {
     "optional-trap": "SUSPICIOUS",
     "obfuscated-payload": "SUSPICIOUS",
     "tunnel-beacon": "SUSPICIOUS",
+    # A tool's own login file: only the name the person installed counts, and only that file
+    "honest-kube": "REVIEW",
+    "kube-token-thief": "DANGEROUS",
+    "kube-overreach": "DANGEROUS",
+    "name-borrower": "DANGEROUS",
 }
 MUST_FIND_MCP = {
     "poisoned-description": ("mcp_tool_poisoning", ""),
@@ -117,6 +127,10 @@ MUST_FIND_MCP = {
     "optional-trap": ("mcp_extra_recipient", ""),
     "obfuscated-payload": ("obfuscated_code", "helper.js"),
     "tunnel-beacon": ("collection_service", "ngrok"),
+    "honest-kube": ("own_tool_config_read", "kube"),
+    "kube-token-thief": ("secret_sent_out", ""),
+    "kube-overreach": ("decoy_accessed", ".aws/credentials"),
+    "name-borrower": ("decoy_accessed", ".kube/config"),
 }
 # Skills (fixtures repo, skills/<name>): /detonate-skill, full test.
 EXPECTED_SKILL = {
@@ -157,6 +171,13 @@ MUST_FIND_SKILL = {
     "background-helper": ("skill_left_running", "detonator-fixture"),
     "padded-skill": ("skill_not_fully_read", "SKILL.md"),
     "utf16-skill": ("skill_odd_encoding", "UTF-16"),
+}
+# Findings a fixture must NOT have, in any mode: a key thief named for its tool must never be
+# let off as only reading its own login file.
+MUST_NOT_FIND = {
+    "kube-token-thief": "own_tool_config_read",
+    "kube-snitch": "own_tool_config_read",
+    "name-borrower": "own_tool_config_read",
 }
 # The trojan's first version (an older commit) must look clean.
 EXPECTED_V1 = {"trojan-update": "NO_FINDINGS"}
@@ -202,6 +223,10 @@ def main() -> int:
                     must[1] in str(e) for e in f.get("evidence") or [])) for f in report["findings"]):
                 ok = False
                 got += f" without a {must[0]} finding mentioning '{must[1]}'"
+            banned = MUST_NOT_FIND.get(name) if expected is not EXPECTED_V1 else None
+            if banned and any(f["rule"] == banned for f in report["findings"]):
+                ok = False
+                got += f" with a {banned} finding it must not have"
             failed += not ok
             print(f"{'ok  ' if ok else 'FAIL'} {name} ({root.name}): expected {want}, got {got}")
     # Every rule must be set off by at least one fixture, so none can break unnoticed.
