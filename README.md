@@ -6,7 +6,7 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-**Current version: v0.4.0** ([what's new](#versions))
+**Current version: v0.4.1** ([what's new](#versions))
 
 [![Watch the 82-second Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
@@ -262,7 +262,7 @@ never run plugin code and which the plugin cannot reach:
   capabilities, so it cannot stop the tracer, and the trace is stored where only the tracer
   can write.
 - **A fake internet.** The plugin's container joins this container's network, which has no
-  real network at all: every address answers locally, every DNS lookup gets a made-up
+  real network at all: every address and every port answers locally, every DNS lookup gets a made-up
   address, plain HTTP gets a short "200 OK", and whatever the plugin sends is logged.
   HTTPS is read too: each run makes its own short-lived test certificate authority inside the
   fake internet, and the sandbox is told to trust it (the standard `SSL_CERT_FILE`,
@@ -284,7 +284,7 @@ file (high when it is that program's own login file, such as pip reading `.netrc
 sandbox, the outside evidence is still judged instead of reporting a bare error.
 
 The outside monitor is on by default and adds a second or two to a run. Its image is built
-once, next to the sandbox image (it installs `strace` from Debian, so the first build needs
+once, next to the sandbox image (it installs `strace` and `iptables` from Debian, so the first build needs
 the internet). If it cannot start, the plugin is still tested by the inside monitor and the
 report says plainly that the outside monitor did not run. To skip it on purpose, pick **Run
 quick test** when `/detonate` asks (or `hermes detonate --quick`); the report then says at the
@@ -336,12 +336,14 @@ no Python code to run, and Detonator says so instead of guessing.
   together they set off every one of the plugin rules, and CI re-checks them on every change. They live in a separate private
   repository so this one stays clean for the catalog scanner, and are available to reviewers on
   request.
-- **MCP servers** are checked against 19 more harmless test servers (Python and Node: poisoned and
+- **MCP servers** are checked against 25 more harmless test servers (Python and Node: poisoned and
   cross-tool descriptions, a rug pull and one that waits for a few uses, a "read-only" tool that
   writes, key stealers, a sampling abuser, a credential phisher, an npm postinstall dropper, a risky
   config, a time bomb that waits 200 days after install, an email tool that adds a hidden Bcc over
-  HTTPS, orders hidden in a tool result, an open port and a look-alike tool name; together with the
-  test plugins they set off all 67 rules) and against official
+  HTTPS, orders hidden in a tool result, an open port and a look-alike tool name, plus six modelled on
+  real npm malware: a reverse shell, a key sent to an odd port, a `wallet.dat` hunter, a hidden Bcc
+  that only fires without optional fields, obfuscated code and an ngrok beacon; together with the
+  test plugins they set off all 70 rules) and against official
   servers from the MCP project (memory, filesystem, sequential thinking, everything, fetch, time)
   and 16 popular third-party ones (Playwright, Puppeteer, GitHub, Notion, Sentry, Supabase,
   Context7, Firecrawl, Exa, Tavily, Brave Search, DuckDuckGo, AWS Documentation, Atlassian, SQLite,
@@ -364,7 +366,8 @@ Detonator does things a reviewer should know about:
 - **Requires Docker.** It runs `docker build` once to build the sandbox image from
   `sandbox/Dockerfile` (a digest-pinned `python:3.11-slim` with nothing extra
   installed; this pulls the base image over the network), and once more for the outside
-  monitor image from `sandbox/monitor/Dockerfile` (the same base plus Debian's `strace`).
+  monitor image from `sandbox/monitor/Dockerfile` (the same base plus Debian's `strace` and
+  `iptables`).
   Each test runs `docker run` for the plugin and for the two monitor containers, then
   `docker wait`, `docker stop` and `docker rm` to clean them up.
 - **Clones code.** For a GitHub target it runs `git init` / `git fetch` / `git checkout`
@@ -396,7 +399,8 @@ Detonator does things a reviewer should know about:
 - **Monitor containers.** Both run `--network none --read-only --cap-drop ALL
   --security-opt no-new-privileges` with small memory and process limits. The tracer adds only
   `SYS_PTRACE` (to attach `strace`). The fake internet adds `NET_ADMIN` (to make every address
-  answer locally inside its own empty network) and `NET_BIND_SERVICE` (to listen on ports such
+  answer locally inside its own empty network, and to load one `iptables` rule there that sends
+  every other port to a catch-all listener) and `NET_BIND_SERVICE` (to listen on ports such
   as 80 and 443), and gives both up once it is listening. To read HTTPS it makes a new
   certificate authority for each run with `openssl` (key kept in the container's private memory,
   never written to disk or shared); only the public certificate is mounted read-only into the
@@ -444,6 +448,18 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
+- **v0.4.1**: Tested on real malware. Detonator was run on every MCP package in
+  [Datadog's malicious software packages dataset](https://github.com/DataDog/malicious-software-packages-dataset)
+  (55 npm packages, all removed from npm), which showed blind spots our own test servers never hit. Fixed:
+  the fake internet now answers every port, not only common ones (real attackers used 2333 and 4433);
+  new `reverse_shell` rule (critical), also read from npm install scripts; `curl`/`wget` downloads during
+  npm install are reported; new `obfuscated_code` and `collection_service` (ngrok, Pipedream,
+  webhook.site) rules; Bitcoin, Electrum and Exodus wallet decoys; and tools are also called with only
+  their required fields, which is how the real postmark-mcp hidden Bcc is caught. On those 55 packages:
+  REVIEW 28 → 11, SUSPICIOUS or worse 25 → 42 (the rest: empty placeholder packages, payloads that
+  never run even on a real install, such as a misspelt `postInstall` script, and servers that need a real
+  account to start). Also fixes a false alarm: a server that rewrites Detonator's tagged test text (as
+  firecrawl-mcp's search does) no longer counts as leaking a key.
 - **v0.4.0**: MCP servers. `/detonate-mcp <server-name | folder>` (and `hermes detonate-mcp`) tests
   an MCP server from your config or a folder in the sandbox with both monitors, acting as Hermes.
   12 new rules (tool poisoning, cross-tool orders, rug pull, read-only lie, sampling, credential

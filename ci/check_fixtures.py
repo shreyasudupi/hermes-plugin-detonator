@@ -86,6 +86,12 @@ EXPECTED_MCP = {
     "open-listener": "SUSPICIOUS",
     "lookalike-name": "SUSPICIOUS",
     "result-injection": "SUSPICIOUS",
+    "reverse-shell": "DANGEROUS",
+    "odd-port-leak": "DANGEROUS",
+    "wallet-hunter": "DANGEROUS",
+    "optional-trap": "SUSPICIOUS",
+    "obfuscated-payload": "SUSPICIOUS",
+    "tunnel-beacon": "SUSPICIOUS",
 }
 MUST_FIND_MCP = {
     "poisoned-description": ("mcp_tool_poisoning", ""),
@@ -105,6 +111,12 @@ MUST_FIND_MCP = {
     "open-listener": ("listener", ""),
     "lookalike-name": ("lookalike_name", ""),
     "result-injection": ("prompt_injection_text", "returned instructions"),
+    "reverse-shell": ("reverse_shell", "/dev/tcp"),
+    "odd-port-leak": ("secret_sent_out", "4433"),
+    "wallet-hunter": ("browser_or_wallet_read", "wallet.dat"),
+    "optional-trap": ("mcp_extra_recipient", ""),
+    "obfuscated-payload": ("obfuscated_code", "helper.js"),
+    "tunnel-beacon": ("collection_service", "ngrok"),
 }
 # The trojan's first version (an older commit) must look clean.
 EXPECTED_V1 = {"trojan-update": "NO_FINDINGS"}
@@ -134,7 +146,8 @@ def main() -> int:
             ok = got == want
             must = MUST_FIND.get(name) if expected is EXPECTED else \
                 MUST_FIND_MCP.get(name) if expected is EXPECTED_MCP else None
-            if must and not any(f["rule"] == must[0] and must[1] in f["title"] for f in report["findings"]):
+            if must and not any(f["rule"] == must[0] and (must[1] in f["title"] or any(
+                    must[1] in str(e) for e in f.get("evidence") or [])) for f in report["findings"]):
                 ok = False
                 got += f" without a {must[0]} finding mentioning '{must[1]}'"
             failed += not ok

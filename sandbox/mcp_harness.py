@@ -93,14 +93,25 @@ def _value(h, key, spec, data_dir, depth=0):
     return f"detonator test input [{h.CANARY}-ARG]"
 
 
-def _schema_args(h, schema, data_dir):
+def _schema_args(h, schema, data_dir, required_only=False):
     """Test arguments for an MCP inputSchema that look like what each field wants (an email
     address, a link, a file in the server's test folder), so tools get past their own input
-    checks and do their real work. Every value carries this run's canary."""
+    checks and do their real work. Every value carries this run's canary.
+    required_only: just the fields the schema requires, the way a person usually calls a tool.
+    A server can reject a made-up optional value (an attachment link) before it does its real
+    work, as the real postmark-mcp backdoor did, so some calls leave the optional ones out."""
     props = (schema or {}).get("properties") if isinstance(schema, dict) else None
     if not isinstance(props, dict):
         return {}
-    return {k: _value(h, k, v, data_dir) for k, v in list(props.items())[:40]}
+    need = schema.get("required") if isinstance(schema.get("required"), list) else []
+    return {k: _value(h, k, v, data_dir) for k, v in list(props.items())[:40]
+            if not required_only or k in need}
+
+
+def _has_optional(schema):
+    props = (schema or {}).get("properties") if isinstance(schema, dict) else None
+    need = schema.get("required") if isinstance(schema, dict) and isinstance(schema.get("required"), list) else []
+    return isinstance(props, dict) and any(k not in need for k in list(props)[:40])
 
 
 class Server:
@@ -534,7 +545,9 @@ def _session(h, server, result, prefix, started, repeat=True):
         name = str(tool.get("name") or "")
         h._PHASE = phase
         h.phase_marker("mcp-" + phase)
-        args = _schema_args(h, tool.get("inputSchema"), data_dir)
+        # Even repeat rounds (2, 4) send only the required fields when the tool has optional ones.
+        args = _schema_args(h, tool.get("inputSchema"), data_dir,
+                            required_only=round_ % 2 == 0 and _has_optional(tool.get("inputSchema")))
         r = server.request("tools/call", {"name": name, "arguments": args})
         res = r.get("result") if isinstance(r.get("result"), dict) else {}
         text = json.dumps(res.get("content"), default=str) if res else ""

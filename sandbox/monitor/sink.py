@@ -7,8 +7,11 @@ connects to, the connection lands on one of the listeners below. It:
 
   * answers every DNS lookup with a made-up address (one per name, so the host can
     tell which name a later connection was for),
-  * accepts TCP connections on the ports malware commonly uses, reads what the
-    plugin sends and answers HTTP with a short "200 OK",
+  * accepts TCP connections on EVERY port: the ports malware commonly uses have their
+    own listeners, and one iptables rule sends every other port to a catch-all
+    listener that asks the kernel which port was meant (real attackers pick ports
+    like 2333 or 4433). It reads what the plugin sends and answers HTTP with a short
+    "200 OK",
   * reads inside HTTPS: it makes a fresh certificate authority for this run only
     (its key never leaves this container) and answers each HTTPS hello with a
     certificate for the name asked for, signed by it. The sandbox trusts that
@@ -41,6 +44,9 @@ KEYS = "/work"                # private tmpfs: the authority's key and the per-n
 MAX_CERTS = 300
 TCP_PORTS = (21, 22, 23, 25, 80, 110, 143, 443, 465, 587, 993, 995, 1080, 1337, 2375, 3128, 4444,
              5000, 5555, 6379, 6667, 8000, 8080, 8443, 8888, 9001, 9050, 31337)
+CATCH_PORT = 65080            # catch-all listener for every port not in TCP_PORTS
+SO_ORIGINAL_DST = 80         # linux/netfilter_ipv4.h
+IPTABLES = ("/usr/sbin/iptables-restore", "/sbin/iptables-restore")
 READ_TIMEOUT_S = 2.0
 MAX_READ = 64 * 1024
 KEEP_BYTES = 4096
@@ -99,6 +105,30 @@ def route_everything_here(family=socket.AF_INET):
     err = struct.unpack("i", reply[16:20])[0]
     if err:
         raise OSError(-err, os.strerror(-err))
+
+
+def send_every_port_here():
+    """Send TCP to any port without its own listener to CATCH_PORT (one nat OUTPUT chain,
+    loaded in a single iptables-restore call). Loopback (127/8) is left alone so a plugin
+    talking to its own local port still works."""
+    exe = next((x for x in IPTABLES if os.path.isfile(x)), None)
+    if exe is None:
+        raise OSError("iptables-restore is not in the monitor image")
+    lines = ["*nat", ":DETONATOR - [0:0]", "-A DETONATOR -d 127.0.0.0/8 -j RETURN"]
+    lines += [f"-A DETONATOR -p tcp --dport {p} -j RETURN" for p in (*TCP_PORTS, CATCH_PORT)]
+    lines += [f"-A DETONATOR -p tcp -j REDIRECT --to-ports {CATCH_PORT}",
+              "-A OUTPUT -p tcp -j DETONATOR", "COMMIT", ""]
+    proc = subprocess.run([exe, "--noflush"], input="\n".join(lines), capture_output=True, text=True,
+                          timeout=20)
+    if proc.returncode != 0:
+        raise OSError((proc.stderr or proc.stdout or "iptables-restore failed").strip()[-300:])
+
+
+def original_destination(conn):
+    """(ip, port) the client asked for before the catch-all rule redirected it."""
+    raw = conn.getsockopt(socket.SOL_IP, SO_ORIGINAL_DST, 16)
+    port, packed = struct.unpack_from("!2xH4s", raw)
+    return socket.inet_ntoa(packed), port
 
 
 # --------------------------------------------------------------------------
@@ -292,6 +322,11 @@ def _read_request(sock, deadline):
 def handle(conn, peer):
     try:
         here = conn.getsockname()
+        if here[1] == CATCH_PORT:
+            try:
+                here = original_destination(conn)
+            except OSError:
+                pass
         deadline = time.monotonic() + READ_TIMEOUT_S
         tls_note = {}
         hello = _peek_hello(conn, deadline) if _TLS["ready"] else b""
@@ -384,7 +419,13 @@ def main():
     udp.bind(("0.0.0.0", 53))
     threading.Thread(target=serve_dns, args=(udp,), daemon=True).start()
     bound = []
-    for port in TCP_PORTS:
+    try:
+        send_every_port_here()
+        notes["every_port"] = True
+    except (OSError, subprocess.SubprocessError) as exc:
+        notes["every_port"] = False
+        notes["every_port_error"] = str(exc)[:300]
+    for port in (*TCP_PORTS, CATCH_PORT) if notes["every_port"] else TCP_PORTS:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:

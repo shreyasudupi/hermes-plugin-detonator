@@ -125,6 +125,8 @@ def test_secret_detection_sees_through_encoding_and_ignores_inputs():
     assert rules._secret_hits(key.encode().hex(), CANARY)
     assert rules._secret_hits("k=sk-" + CANARY.lower() + "-0002", CANARY)
     assert not rules._secret_hits(f"detonator test input [{CANARY}-ARG]", CANARY)
+    assert not rules._secret_hits(f"detonator input {CANARY.lower()} arg", CANARY)
+    assert rules._secret_hits(f"detonator input {CANARY.lower()} 0001", CANARY)
     assert not rules._secret_hits("nothing here", CANARY)
 
 

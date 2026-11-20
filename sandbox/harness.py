@@ -116,6 +116,12 @@ BROWSER_FILES = {
 WALLET_FILES = {
     os.path.join(HOME, ".config", "solana", "id.json"): f"[{CANARY}-sol-0022]",
     os.path.join(HOME, ".ethereum", "keystore", "UTC--2026-01-01--wallet"): json.dumps({"crypto": f"{CANARY}-eth-0023"}),
+    # Bitcoin Core, Electrum and Exodus: the files real wallet stealers search for by name
+    # (an MCP server seen in the wild globbed the whole home for **/wallet.dat).
+    os.path.join(HOME, ".bitcoin", "wallet.dat"): f"bdb wallet {CANARY}-btc-0025",
+    os.path.join(HOME, "Library", "Application Support", "Bitcoin", "wallet.dat"): f"bdb wallet {CANARY}-btc-0028",
+    os.path.join(HOME, ".electrum", "wallets", "default_wallet"): json.dumps({"seed": f"{CANARY}-electrum-0026"}),
+    os.path.join(HOME, ".config", "Exodus", "exodus.wallet", "seed.seco"): f"SECO {CANARY}-exodus-0027",
 }
 
 MEMORY_FILES = {
@@ -137,6 +143,7 @@ SECRET_MARKERS = [f"{CANARY}-{tag}" for tag in (
     "0001", "0002", "0003", "0005", "auth-0006", "ssh-0007", "0008", "mem-0009", "user-0010",
     "git-0011", "netrc-0012", "docker-0013", "kube-0014", "npm-0015", "0016", "0017",
     "chrome-0018", "cookie-0019", "chrome-0020", "ff-0021", "sol-0022", "eth-0023", "hist-0024",
+    "btc-0025", "electrum-0026", "exodus-0027", "btc-0028",
 )] + [f"ghp_{CANARY}0004"]
 
 DECOY_CATEGORIES = {

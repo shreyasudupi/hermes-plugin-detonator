@@ -345,6 +345,7 @@ def parse_sink(path: Path) -> dict:
     return {
         "ready": bool(ready),
         "catch_all": bool(ready and ready.get("catch_all")),
+        "every_port": bool(ready and ready.get("every_port")),
         "dns": [{"name": str(e.get("name"))[:255], "qtype": e.get("qtype")} for e in entries if e.get("kind") == "dns"],
         "tcp": tcp,
         "full": any(e.get("kind") == "log_full" for e in entries),
