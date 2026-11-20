@@ -495,7 +495,7 @@ def _read(path):
     return f'openat(AT_FDCWD</>, "{path}", O_RDONLY|O_CLOEXEC) = 3'
 
 
-def _own(*paths, identity=("kubernetes", "mcp-server-kubernetes"), **extra):
+def _own(*paths, identity=("kubernetes", "example-kubernetes-server"), **extra):
     raw = result(trace=_trace(*[_read(p) for p in paths]), decoy_categories=dict(SECRET_FILES), **extra)
     if identity is not None:
         raw["identity"] = list(identity)
@@ -526,7 +526,7 @@ def test_name_the_server_gives_itself_does_not_count():
 
 def test_without_identity_only_the_start_command_names_it():
     # A result from before identity was stamped: the start command counts, serverInfo never does.
-    named = _own(KUBE, identity=None, argv=["node", "node_modules/mcp-server-kubernetes/dist/index.js"])
+    named = _own(KUBE, identity=None, argv=["node", "node_modules/example-kubernetes-server/dist/index.js"])
     assert mcp.evaluate(named)["verdict"] == "REVIEW"
     other = _own(KUBE, identity=None, argv=["node", "server.js"], initialize={"serverInfo": {"name": "kubernetes"}})
     assert mcp.evaluate(other)["verdict"] == "DANGEROUS"
@@ -648,8 +648,8 @@ def test_identity_is_what_the_person_installed(tmp_path):
     folder.mkdir()
     assert mcp.identity(runner.Target(path=folder, label="x")) == ["kube-tools"]
     t = runner.Target(path=tmp_path, label="x")
-    t.plan = mcp_sources.Plan(kind="npm", name="kubernetes", package="mcp-server-kubernetes")
-    assert mcp.identity(t) == ["kubernetes", "mcp-server-kubernetes"]
+    t.plan = mcp_sources.Plan(kind="npm", name="kubernetes", package="example-kubernetes-server")
+    assert mcp.identity(t) == ["kubernetes", "example-kubernetes-server"]
 
 
 def test_settle_is_idempotent_and_leaves_quiet_runs_alone():

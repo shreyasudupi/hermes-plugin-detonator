@@ -419,8 +419,8 @@ def test_plugin_name_must_hold_the_whole_word():
 
 
 def test_identity_words_split_on_anything_but_letters_and_digits():
-    assert rules.identity_words(["@scope/mcp-server-kubernetes", "K8s_Helper", None]) == \
-        {"scope", "mcp", "server", "kubernetes", "k8s", "helper"}
+    assert rules.identity_words(["@scope/example-kubernetes-server", "K8s_Helper", None]) == \
+        {"scope", "example", "server", "kubernetes", "k8s", "helper"}
     assert rules.own_tool_reads([HOME + "/.kube/../.kube/config"], HOME, {"kube"}) == [("Kubernetes", ".kube/config")]
     assert rules.own_tool_reads(["/etc/.kube/config"], HOME, {"kube"}) is None
     assert rules.own_tool_reads([], HOME, {"kube"}) is None
