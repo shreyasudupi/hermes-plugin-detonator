@@ -319,6 +319,46 @@ def _read_request(sock, deadline):
     return data, is_http
 
 
+# A harmless stand-in for a downloaded script. When something downloads a script (an install
+# script, a .py or .js file) and runs it, the stand-in leaves a mark in the outside trace: it tries
+# to open a file whose name holds this run's marker. Nothing else happens. So "this runs whatever
+# the server sends" is proved without any real second stage. Other requests get the usual {"ok":true}.
+MARKER = "detonator-fetched-" + secrets.token_hex(6)
+_SCRIPT_PATH = re.compile(rb"^[A-Z]+ [^ ?#]*?(?:\.(?:sh|bash|zsh|command|py|js|mjs|cjs|ps1|pl|rb)|/install|/setup|"
+                          rb"/bootstrap|/init|/get|/run)(?:[?#][^ ]*)? HTTP/", re.I)
+
+
+def reply_for(request: bytes):
+    """(body, content type, kind served) for one HTTP request."""
+    first = request.partition(b"\r\n")[0]
+    head = request.partition(b"\r\n\r\n")[0].lower()
+    ua = b""
+    for line in head.split(b"\r\n")[1:]:
+        if line.startswith(b"user-agent:"):
+            ua = line[11:].strip()
+    host = b""
+    for line in head.split(b"\r\n")[1:]:
+        if line.startswith(b"host:"):
+            host = line[5:].strip()
+    path0 = first.split(b" ")[1] if first.count(b" ") >= 2 else b""
+    last = path0.split(b"?")[0].rstrip(b"/").rsplit(b"/", 1)[-1]
+    # curl or wget fetching a bare page that is not an API: the usual shape of `curl URL | bash`.
+    bare = ua.startswith((b"curl/", b"wget/")) and b"." not in last and not re.search(
+        rb"api|graphql|/v\d|json|token|oauth|login|auth|health|status", host + path0, re.I)
+    if not (_SCRIPT_PATH.match(first) or bare):
+        return b'{"ok":true}', b"application/json", None
+    path = first.split(b" ")[1].split(b"?")[0].lower() if b" " in first else b""
+    probe = ("/tmp/" + MARKER).encode()
+    if path.endswith(b".py") or ua.startswith((b"python", b"aiohttp", b"httpx")):
+        return (b"try:\n    open('" + probe + b"')\nexcept OSError:\n    pass\n", b"text/x-python", "python")
+    if path.endswith((b".js", b".mjs", b".cjs")) or ua.startswith((b"node", b"undici", b"axios")):
+        return (b"try{require('fs').openSync('" + probe + b"','r')}catch(e){}\n", b"application/javascript", "js")
+    if path.endswith(b".ps1"):
+        return (b"Test-Path '" + probe + b"' | Out-Null\n", b"text/plain", "powershell")
+    return (b"#!/bin/sh\n: < " + probe + b" 2>/dev/null\n/bin/echo " + MARKER.encode() + b" >/dev/null\n",
+            b"text/x-shellscript", "shell")
+
+
 def handle(conn, peer):
     try:
         here = conn.getsockname()
@@ -365,9 +405,13 @@ def handle(conn, peer):
                 k, _, v = line.partition(b":")
                 if k.strip().lower() == b"host":
                     entry["http_host"] = v.strip().decode("latin-1")[:255]
+            body, ctype, kind = reply_for(data)
+            if kind:
+                entry["served"] = kind
+                entry["marker"] = MARKER
             try:
-                sock.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n"
-                             b"Connection: close\r\n\r\n{\"ok\":true}")
+                sock.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: " + ctype + b"\r\nContent-Length: "
+                             + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
             except OSError:
                 pass
         log("tcp", **entry)
@@ -381,13 +425,41 @@ def handle(conn, peer):
                 pass
 
 
+# Handler threads are capped well under the container's process limit. A run that opens many
+# idle connections must not make thread start fail, because that used to end the port's
+# listening loop and later traffic to the port went unlogged.
+MAX_HANDLERS = 64
+_SLOTS = threading.BoundedSemaphore(MAX_HANDLERS)
+
+
+def _handle_slot(conn, peer):
+    try:
+        handle(conn, peer)
+    finally:
+        _SLOTS.release()
+
+
 def serve_tcp(sock):
     while True:
         try:
             conn, peer = sock.accept()
         except OSError:
             continue
-        threading.Thread(target=handle, args=(conn, peer), daemon=True).start()
+        try:
+            if _SLOTS.acquire(blocking=False):
+                try:
+                    threading.Thread(target=_handle_slot, args=(conn, peer), daemon=True).start()
+                    continue
+                except RuntimeError:
+                    _SLOTS.release()
+            # No free handler: serve this one here with a short timeout, so it is still logged.
+            conn.settimeout(1.0)
+            handle(conn, peer)
+        except Exception:
+            try:
+                conn.close()
+            except OSError:
+                pass
 
 
 def drop_all_capabilities():

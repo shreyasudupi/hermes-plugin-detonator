@@ -263,8 +263,8 @@ def _phases(events: list, start: int | None):
         path = str(e.get("path") or "")
         if e.get("in_harness") and path.startswith(rules._PHASE_PREFIX):
             name = path[len(rules._PHASE_PREFIX):]
-            if name.startswith("mcp-"):
-                phase = name[4:]
+            if name.startswith(("mcp-", "skill-")):
+                phase = name.split("-", 1)[1]
             continue
         yield phase, e
 
@@ -284,6 +284,8 @@ def _call_names(result: dict) -> dict:
 
 def _phase_label(phase: str, calls: dict) -> str:
     phase = phase.replace(":", "-")
+    if phase in calls and not _TOOL_PHASE.match(phase):
+        return str(calls[phase])      # a skill step: "while running scripts/x.py --help" and the like
     late = phase.startswith("late-")
     base = phase[5:] if late else phase
     if _TOOL_PHASE.match(phase):
@@ -330,10 +332,16 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     clock_dir = str((result.get("late") or {}).get("clock_dir") or "")
     clock_dir = clock_dir.rstrip("/") + "/" if re.fullmatch(r"/tmp/clock-[0-9a-f]{12}", clock_dir) else ""
     server_pids = {server_pid, (result.get("late") or {}).get("server_pid")} - {None}
+    server_pids |= {p for p in result.get("own_pids") or [] if isinstance(p, int)}
+    skill_mode = result.get("mode") == "skill"
+    if skill_mode:
+        calls = {**calls, **{str(k): str(v) for k, v in (result.get("step_labels") or {}).items()}}
     per_phase: dict = {}
     reads: dict = {}
     writes, programs, nets, local, listen, probes, recon, environ = [], [], [], [], [], [], [], []
     shells: list = []
+    net_procs = rules.connected_procs(events)
+    unplaced: list = []
     own_exec_seen: set = set()
     exe_of: dict = {}    # process (thread group) -> program it last started, from execve
     for phase, e in _phases(events, trace.get("start_index")):
@@ -371,12 +379,16 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                 recon.append(path)
         elif call in ("unlink", "unlinkat", "rename", "renameat", "renameat2") and e.get("ok"):
             for p in e.get("paths") or []:
+                if p and not p.startswith("/"):
+                    unplaced.append(f"{p} ({label})")    # relative to a folder the trace never named
+                    continue
                 if p and not rules._under(p, allowed + ["/tmp"]):
                     writes.append((phase, label, p))
                     hit = True
         elif call in ("execve", "execveat") and e.get("ok"):
             cmdline = " ".join(str(w) for w in (e.get("argv") or [path]))[:300]
-            if rules.REVERSE_SHELL_RE.search(cmdline):
+            if rules.is_reverse_shell_text(cmdline) or (rules.INTERACTIVE_SHELL_RE.search(cmdline)
+                                                        and e.get("proc", e.get("pid")) in net_procs):
                 shells.append(f"{cmdline} ({label})")    # every phase, install scripts included
             if e.get("pid") in server_pids and e.get("pid") not in own_exec_seen:
                 own_exec_seen.add(e.get("pid"))
@@ -420,6 +432,10 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     if environ:
         findings.append(Finding("environ_file_read", HIGH,
                                 "Read another process's environment, where Hermes's keys live", environ[:5]))
+    if unplaced:
+        findings.append(Finding("write_outside_folder", LOW,
+                                "Renamed or deleted files in a folder the trace could not name",
+                                list(dict.fromkeys(unplaced))[:8]))
     own_names = _own_names(result)
     grouped: dict = {}
     for phase, label, path in writes:
@@ -455,12 +471,24 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                                 "Opened a reverse shell (a shell controlled over the network)",
                                 list(dict.fromkeys(shells))[:6]))
     programs = [x for x in programs if not _HARMLESS_PROGRAM.match(x[2])]
+    if programs and skill_mode:
+        # A skill is a set of commands, so starting programs is what it is for. They are listed;
+        # what they did (files, network, keys) is judged by the other rules.
+        fetch = [f"{p} ({label})" for _, label, p in programs if rules.FETCH_CMD_RE.search(p)]
+        if fetch:
+            findings.append(Finding("remote_code_fetch", LOW, "Downloaded files or installed packages", fetch[:6]))
+        findings.append(Finding("command_run", INFO, "Programs its scripts and commands started",
+                                list(dict.fromkeys(f"{p} ({label})" for _, label, p in programs))[:12]))
+        programs = []
     if programs:
         fetch = [p for _, _, p in programs if rules.FETCH_CMD_RE.search(p)]
         if fetch:
             findings.append(Finding("remote_code_fetch", HIGH, "Downloaded or installed code while running", fetch[:5]))
         findings.append(Finding("command_run", HIGH, "Started other programs",
                                 [f"{p} ({label})" for _, label, p in programs][:8]))
+    if skill_mode:
+        result["_nets"] = nets      # judged against the hosts the skill names (engine/skill.py)
+        nets = []
     start_nets = [f"{a} ({label})" for phase, label, a in nets if not _TOOL_PHASE.match(phase)]
     tool_nets = [f"{a} ({label})" for phase, label, a in nets if _TOOL_PHASE.match(phase)]
     sink_hosts = rules._connection_lines((out.get("sink") or {}).get("tcp") or [])
@@ -766,7 +794,7 @@ def _evaluate(result: dict) -> dict:
                                 collectors[:6]))
     scripts = result.get("install_scripts") or []
     planted = [f'{s.get("package")} {name}: {text}' for s in scripts
-               for name, text in sorted((s.get("scripts") or {}).items()) if rules.REVERSE_SHELL_RE.search(str(text))]
+               for name, text in sorted((s.get("scripts") or {}).items()) if rules.is_reverse_shell_text(str(text))]
     if planted:
         # Read from package.json, so it counts even when the sandbox's shell could not run it
         # (dash has no /dev/tcp): on a person's computer npm may run it with bash.

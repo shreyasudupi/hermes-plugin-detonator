@@ -827,31 +827,38 @@ def _size(value):
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
-# The decoys are opened once, before the plugin loads, and checked later through these
-# open handles plus a stat of the path. So after the plugin has loaded, the harness
-# itself never opens a decoy file again: the outside tracer can count every open of
-# one as the plugin's.
-_DECOY_FDS = {}
+# The harness reads a decoy's content only before the plugin loads and after the plugin-done
+# marker, and closes it straight away: an open handle kept for the whole run would let the
+# plugin read the decoy through it with no open the tracer could see. While the plugin runs,
+# the harness only stats the files (stat is not an open), so the outside tracer can count every
+# open of a decoy in that window as the plugin's.
 
 
-def _digest(path):
+def _stat_sig(path):
     try:
         st = os.stat(path)
     except FileNotFoundError:
         return None
     except OSError as exc:
         return f"error:{exc.errno}"
-    fd = _DECOY_FDS.get(path)
-    if fd is None:
-        try:
-            fd = _DECOY_FDS[path] = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
-        except OSError:
-            return f"{st.st_ino}:{st.st_size}:{st.st_mtime_ns}"
+    return f"{st.st_ino}:{st.st_size}:{st.st_mtime_ns}"
+
+
+def _digest(path):
+    sig = _stat_sig(path)
+    if sig is None or sig.startswith("error:"):
+        return sig
     try:
-        content = os.pread(fd, st.st_size + 1, 0)
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    except OSError:
+        return sig
+    try:
+        content = os.pread(fd, os.fstat(fd).st_size + 1, 0)
     except OSError:
         content = b"<unreadable>"
-    return f"{st.st_ino}:{st.st_size}:{st.st_mtime_ns}:" + hashlib.sha256(content).hexdigest()
+    finally:
+        os.close(fd)
+    return sig + ":" + hashlib.sha256(content).hexdigest()
 
 
 # --------------------------------------------------------------------------
@@ -1185,7 +1192,7 @@ def main():
     clock_runs = []
     for days in (0,) + CLOCK_JUMPS:
         if days and mid is None:
-            mid = {p: _digest(p) for p in ALL_DECOY_PATHS}
+            mid = {p: _stat_sig(p) for p in ALL_DECOY_PATHS}
         set_clock(days)
         fire_hooks(ctx, hook_runs, 1, days)
         fire_middleware(ctx, middleware_runs, 1, days)
@@ -1211,7 +1218,8 @@ def main():
     phase_marker("plugin-done")
 
     after = {p: _digest(p) for p in ALL_DECOY_PATHS}
-    result["decoy_changes_before_clock"] = sorted(p for p in ALL_DECOY_PATHS if before[p] != mid[p])
+    result["decoy_changes_before_clock"] = sorted(
+        p for p in ALL_DECOY_PATHS if ":".join(str(before[p]).split(":")[:3]) != str(mid[p]))
     result["patched_functions"] = changed_patch_targets(patch_snapshot)
     result["stubbed_modules"] = sorted(STUBBED_MODULES)
     result["decoy_changes"] = sorted(p for p in ALL_DECOY_PATHS if before[p] != after[p])
@@ -1245,9 +1253,16 @@ def main_mcp():
     mcp_harness.run(sys.modules[__name__])
 
 
+def main_skill():
+    """Skill mode: do what a skill tells the agent to do (sandbox/skill_harness.py)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import skill_harness
+    skill_harness.run(sys.modules[__name__])
+
+
 if __name__ == "__main__":
     try:
-        main_mcp() if _RUN.get("mode") == "mcp" else main()
+        {"mcp": main_mcp, "skill": main_skill}.get(_RUN.get("mode"), main)()
     except Exception:
         _ACTIVE = False
         release_fd()

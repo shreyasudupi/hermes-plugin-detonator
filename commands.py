@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 if __package__:
-    from .engine import diff, mcp, report, rules, runner, targets
+    from .engine import diff, mcp, report, rules, runner, skill, targets
 
 USAGE = targets.USAGE if __package__ else ""
 APPROVE, QUICK, CANCEL = "run", "run-quick", "cancel"
@@ -312,6 +312,123 @@ def mcp_cli_handler(args) -> int:
         print(f"Detonator could not run: {exc}", file=sys.stderr)
         return 2
     return 0
+
+
+# --------------------------------------------------------------------------------------
+# Skills: /detonate-skill
+# --------------------------------------------------------------------------------------
+TEXT_ONLY = "text-only"
+SKILL_FULL_HELP = ("reads the skill, then runs its scripts and the commands its instructions show inside the "
+                   "sandbox, watched by the outside monitor; usually under a minute")
+SKILL_TEXT_HELP = ("reads the skill's files only and runs nothing: catches planted instructions, hidden text and "
+                   "download-and-run commands, but not what the scripts do")
+SKILL_USAGE = ("Usage: /detonate-skill <folder> | <installed-skill-name> | <owner/repo/folder@commit-sha>\n"
+               "  <folder>: a skill folder with a SKILL.md\n"
+               "  <installed-skill-name>: a skill in your Hermes skills folder (copied, never changed)\n"
+               "  <owner/repo/folder@sha>: a skill on GitHub at an exact 40-character commit")
+
+
+def skill_approval_question(spec: str) -> str:
+    return (
+        f"Detonate the skill '{spec}'? Detonator will read its files (nothing runs on your computer), then copy "
+        "it into a disposable Docker container with fake secrets and no real network, install it there as "
+        "Hermes would, and run its scripts and the shell commands its instructions tell the agent to run, "
+        "each on its own, while a tracer and a fake internet watch from outside. Your real keys and files are "
+        "never given to it."
+    )
+
+
+def run_skill_detonation(spec: str, text_only: bool = False):
+    work = tempfile.mkdtemp(prefix="detonator-skill-")
+    try:
+        target = skill.resolve(spec, Path(work))
+        raw = skill.detonate(target, text_only=text_only)
+        evaluation = skill.evaluate(raw)
+        markdown = skill.render(target.label, evaluation, raw)
+        tag = re.sub(r"[^A-Za-z0-9_.-]", "_", target.label)[-60:]
+        path = reports_dir() / f"{time.strftime('%Y%m%d-%H%M%S')}-skill-{tag}.md"
+        path.write_text(markdown, encoding="utf-8")
+        _write_summary_json(path, f"skill {target.label}"[:300], target.sha, None, evaluation)
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    return evaluation, markdown, path
+
+
+def skill_summary(evaluation: dict, path: Path) -> str:
+    text = summary(evaluation, path).replace(report.test_mode(evaluation.get("outside")), skill.test_mode(evaluation), 1)
+    if (evaluation.get("outside") or {}).get("chosen_off"):
+        text = text.replace(report.NOT_CHECKED, "Text-only check: the skill's scripts and commands were not run.")
+    layers = evaluation.get("layers") or []
+    if layers:
+        text = text.replace("Full report:", "Checked:\n" + "\n".join(f"- {x.split(':')[0]}: "
+                            f"{x.split(':', 1)[1].strip()[:140]}" for x in layers) + "\nFull report:", 1)
+    for a, b in (("the plugin's", "the skill's"), ("the plugin", "the skill"), ("a plugin", "a skill")):
+        text = text.replace(a, b)
+    return text
+
+
+def make_skill_slash_handler(ctx):
+    def handle(raw_args: str = "", **_kwargs) -> str:
+        spec = (raw_args or "").strip()
+        if spec.lower() in ("", "help"):
+            return SKILL_USAGE
+        choice = ctx.ask_choice(
+            skill_approval_question(spec),
+            [
+                {"value": APPROVE, "label": "Run full test", "description": SKILL_FULL_HELP},
+                {"value": TEXT_ONLY, "label": "Read the text only", "description": SKILL_TEXT_HELP},
+                {"value": CANCEL, "label": "Cancel"},
+            ],
+        )
+        if choice not in (APPROVE, TEXT_ONLY):
+            return ("Not run: Detonator needs your explicit approval, and none was given "
+                    "(cancelled, timed out, or no one could be asked).")
+        try:
+            evaluation, _md, path = run_skill_detonation(spec, text_only=choice == TEXT_ONLY)
+            return skill_summary(evaluation, path)
+        except skill.SkillError as exc:
+            return f"Detonator could not run: {exc}"
+        except (runner.DetonatorError, LookupError) as exc:
+            return f"Detonator could not run: {exc}"
+        except Exception as exc:  # never crash the session
+            return f"Detonator failed unexpectedly: {type(exc).__name__}: {exc}"
+
+    return handle
+
+
+def setup_skill_cli(subparser):
+    subparser.add_argument("skill", metavar="folder-or-name",
+                           help="a skill folder, an installed skill's name, or owner/repo/folder@<commit-sha>")
+    subparser.add_argument("--text-only", dest="text_only", action="store_true",
+                           help="text-only: " + SKILL_TEXT_HELP)
+
+
+def skill_cli_handler(args) -> int:
+    spec = args.skill
+    if not sys.stdin.isatty():
+        print("Refusing to run: Detonator needs an interactive yes from you, and stdin is not a terminal.",
+              file=sys.stderr)
+        return 2
+    print(skill_approval_question(spec))
+    text_only = bool(getattr(args, "text_only", False))
+    print(("Text-only check: " + SKILL_TEXT_HELP) if text_only else ("Full test: " + SKILL_FULL_HELP +
+                                                                      ". Add --text-only to read it without running it."))
+    try:
+        answer = input("Type 'yes' to run: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer not in ("yes", "y"):
+        print("Cancelled.")
+        return 1
+    try:
+        evaluation, markdown, path = run_skill_detonation(spec, text_only=text_only)
+    except (skill.SkillError, runner.DetonatorError, LookupError) as exc:
+        print(f"Detonator could not run: {exc}", file=sys.stderr)
+        return 2
+    print(markdown)
+    print(f"\nSaved to {path}")
+    return {"DANGEROUS": 3, "SUSPICIOUS": 3, "ERROR": 2}.get(evaluation["verdict"], 0)
 
 
 def setup_cli(subparser):

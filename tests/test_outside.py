@@ -295,3 +295,16 @@ def test_a_kill_that_returns_zero_is_still_caught():
     raw = {"fatal": "no result (exit 143)", "outside": {**_result()["outside"], "trace": _parsed(killed)}}
     assert [f for f in rules._outside_findings(raw) if f.rule == "monitor_tamper"]
     assert rules._kill_signal({"detail": "7, 0)  = 0"}) == "0"
+
+
+def test_paths_relative_to_a_folder_are_placed_in_that_folder():
+    log = ('7 03:35:33.600000 openat(AT_FDCWD</>, "/home/u/work", O_RDONLY|O_DIRECTORY) = 4\n'
+           '7 03:35:33.610000 openat(4, "notes.txt", O_RDONLY) = 5\n'
+           '7 03:35:33.620000 openat(AT_FDCWD</home/u/work/repo>, "x", O_RDONLY) = 6\n'
+           '7 03:35:33.630000 rename("config.lock", "config") = 0\n'
+           '8 03:35:33.640000 openat(AT_FDCWD</>, "/dev/null", O_WRONLY) = 4\n'
+           '8 03:35:33.650000 unlinkat(4, "a", 0) = 0\n')
+    ev = outside.parse_strace(log, None)["events"]
+    assert ev[1]["path"] == "/home/u/work/notes.txt"
+    assert ev[3]["paths"] == ["/home/u/work/repo/config.lock", "/home/u/work/repo/config"]
+    assert ev[5].get("unresolved") and ev[5]["paths"] == ["a"]     # a file fd is never used as a folder

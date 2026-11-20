@@ -6,7 +6,7 @@ running, skip to [step 3](#3-install-detonator-one-command).
 **What Detonator does:** you name a Hermes plugin (by its catalog name or GitHub link) or an MCP server from your Hermes config. It runs it inside
 a throwaway Docker container with no network and fake secrets, then tells you what the plugin
 actually did (read keys, reached for the network, ran commands, planted start-up files...).
-For MCP servers the command is `/detonate-mcp <server-name>`; see the [README](../README.md#test-an-mcp-server).
+For MCP servers the command is `/detonate-mcp <server-name>`; see the [README](../README.md#test-an-mcp-server). For skills it is `/detonate-skill <name>`; see [Test a skill](../README.md#test-a-skill).
 It always asks before running anything.
 
 ## 1. Install Docker
@@ -53,11 +53,20 @@ What the three parts do:
 `hermes plugins install detonator` installs the version the Hermes catalog has reviewed and pinned
 (Nous reviews every update). **Want a different tagged version?** Pick a tag on the
 [Releases page](https://github.com/shreyasudupi/hermes-plugin-detonator/releases) and install that
-copy yourself (macOS or Linux; replace `<tag>`):
+copy yourself (replace `<tag>`).
+
+**macOS or Linux:**
 
 ```bash
 git clone --branch <tag> --depth 1 https://github.com/shreyasudupi/hermes-plugin-detonator ~/.hermes/plugins/detonator
 hermes plugins enable detonator && hermes gateway stop
+```
+
+**Windows PowerShell** (Hermes keeps its files in `%LOCALAPPDATA%\hermes` on Windows, not `~/.hermes`):
+
+```powershell
+git clone --branch <tag> --depth 1 https://github.com/shreyasudupi/hermes-plugin-detonator "$env:LOCALAPPDATA\hermes\plugins\detonator"
+hermes plugins enable detonator; hermes gateway stop
 ```
 
 We don't offer a one-line installer that pipes a downloaded script into your shell, on purpose: a
@@ -140,6 +149,20 @@ Detonator downloads its npm or PyPI package (install scripts off), starts it in 
 keys, calls every tool the way Hermes would, and reports what the server told the model and what it
 did. A server whose code is in a folder works too: `/detonate-mcp <folder>`, with an
 `mcp-server.yaml` next to it (see the README).
+
+## 8. Test a skill
+
+Skills are folders of instructions (a `SKILL.md`) and scripts that the agent follows. To check one
+before the agent uses it:
+
+```
+/detonate-skill <installed-skill-name>
+```
+
+or a folder (`/detonate-skill <folder>`) or a skill on GitHub at an exact commit
+(`/detonate-skill <owner/repo/folder@sha>`). Pick **Read the text only** for a check that runs
+nothing, or **Run full test** to also run its scripts and the commands it tells the agent to run,
+inside the sandbox. See the [README](../README.md#test-a-skill).
 
 ## Next
 

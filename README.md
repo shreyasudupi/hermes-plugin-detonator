@@ -1,19 +1,19 @@
 # Detonator
 
-**A security sandbox for Hermes Agent plugins and MCP servers.**
+**A security sandbox for Hermes Agent plugins, MCP servers and skills.**
 
-![Detonator: a security testing sandbox for Hermes Agent plugins and MCP servers](docs/store/cover.png)
+![Detonator: a security testing sandbox for Hermes Agent plugins, MCP servers and skills](docs/store/cover.png)
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-**Current version: v0.4.1** ([what's new](#versions))
+**Current version: v0.5.0** ([what's new](#versions))
 
 [![Watch the 82-second Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
 ▶️ **[Watch the 82-second demo](https://x.com/shreyasudupi/status/2120289870908465286)**: a real run catching a fake key-stealer plugin, comparing two versions, the clock jump, and the plain-words AI explanation.
 
 Detonator is a security sandbox for [Hermes Agent](https://hermes-agent.nousresearch.com/)
-plugins and MCP servers. You name a plugin (its catalog name, or its GitHub page) and approve the run. It then
+plugins, MCP servers and skills. You name a plugin (its catalog name, or its GitHub page) and approve the run. It then
 loads that plugin inside a disposable Docker container with a fake Hermes home full
 of decoys, fires synthetic hooks and tool calls at it, and reports what the plugin
 actually did compared with what it declares. Each finding says, in plain words, why it
@@ -27,6 +27,11 @@ or writes a fake clean result, is still caught. See [Outside monitor](#outside-m
 New in v0.4: **MCP servers.** `/detonate-mcp <server-name>` tests a server from your Hermes
 config (npm, PyPI or a local script) the same way: in the sandbox, with both monitors, while a
 stand-in for Hermes lists its tools and calls every one. See [Test an MCP server](#test-an-mcp-server).
+
+New in v0.5: **skills.** `/detonate-skill <folder | installed-name | owner/repo/folder@sha>` reads a
+skill's SKILL.md and files for planted instructions and download-and-run lures, then runs its scripts
+and the commands it tells the agent to run, each on its own, in the sandbox with the outside monitor.
+See [Test a skill](#test-a-skill).
 
 Tested on Linux (x86_64), macOS on Apple Silicon (Docker Desktop) and Windows (Docker
 Desktop with WSL 2, in both the `hermes` terminal chat and the Desktop app). Every change runs
@@ -92,6 +97,8 @@ after that a run takes seconds:
 Full report: ~/.hermes/plugin-data/detonator/reports/....md
 ```
 
+(That run was on a Mac. On Windows the report path starts with `%LOCALAPPDATA%\hermes` instead.)
+
 ## Using it in Hermes
 
 | You want to test | Type |
@@ -102,6 +109,7 @@ Full report: ~/.hermes/plugin-data/detonator/reports/....md
 | One exact commit, or two to compare | `/detonate <owner/repo> <40-char-sha> [<newer-sha>] [folder]` |
 | An MCP server in your config.yaml | `/detonate-mcp <server-name>` |
 | An MCP server in a folder on your computer | `/detonate-mcp <folder>` (with an `mcp-server.yaml`, see below) |
+| A skill in a folder, installed, or on GitHub | `/detonate-skill <folder>`, `/detonate-skill <installed-name>` or `/detonate-skill <owner/repo/folder@40-char-sha>` |
 
 `[folder]` is only for repos that keep the plugin in a subfolder; catalog names fill it in for
 you. The newest commit is looked up (with `git ls-remote`) only after you approve the run.
@@ -117,8 +125,9 @@ Detonator always asks you before it runs anything. If no one can answer (a cron
 job, a hook, a non-interactive or unattended run), it refuses instead of running.
 There is no flag that skips the question. The `detonate_plugin` tool lets the
 agent suggest a run (by catalog name or repo), but it only returns the `/detonate` command for you to run.
-Reports are saved under `<HERMES_HOME>/plugin-data/detonator/reports/` (`~/.hermes` on macOS and
-Linux, `%LOCALAPPDATA%\hermes` on Windows).
+Your Hermes home is `~/.hermes` on macOS and Linux and `%LOCALAPPDATA%\hermes` on Windows (or
+wherever `HERMES_HOME` points). Reports are saved in its `plugin-data/detonator/reports/` folder,
+and `/detonate-mcp <server-name>` reads the server's entry from its `config.yaml`.
 
 ### Docker problems
 
@@ -231,6 +240,54 @@ than time, or checks the clock in a language other than Python or Node can look 
 `git` or a downloaded browser) stops early and is reported as not started. Its code is not yet read for abilities it did not use
 during the run. A clean run is evidence, not proof.
 
+## Test a skill
+
+A Hermes skill is a folder with a `SKILL.md` of instructions, often with scripts next to it. Hermes
+never runs a skill's scripts by itself: the agent reads SKILL.md and runs what it says through its
+terminal tool. So a bad skill does not need bad code. Real malicious skills mostly hide in the text:
+a "prerequisite" that downloads and runs an installer, a base64 line piped to the shell, an order to
+send `~/.ssh` somewhere, or text the user cannot see. `/detonate-skill` checks both the text and
+what running it does.
+
+```
+/detonate-skill <folder>                 # a skill folder with a SKILL.md
+/detonate-skill <installed-name>         # a skill in your Hermes skills folder (copied, never changed)
+/detonate-skill <owner/repo/folder@sha>  # a skill on GitHub at an exact 40-character commit
+```
+
+You choose **Run full test** or **Read the text only**. The first full skill test builds a bigger
+sandbox image (Debian with Python and Node.js, about 1.7 GB, built once) so the everyday tools a
+skill calls are really there. Reading the text only needs no image. Detonator:
+
+1. **Reads every file** on your computer without running anything: frontmatter, fenced shell
+   blocks, inline commands, links and hidden text (invisible Unicode tags, zero-width and
+   right-to-left characters, HTML comments, files saved as UTF-16 or Latin-1). It looks for download-and-run commands, password-zip
+   and fake-installer lures, prompt injection and "always use this skill" text, requests for keys,
+   orders to send files out or change the agent's config, persistence, reverse shells, packed
+   scripts, binaries and links that point outside the folder.
+2. **Installs it in the sandbox** where Hermes keeps skills (`~/.hermes/skills/<name>`, with
+   `HERMES_SKILL_DIR` set) next to the same decoy home a plugin run gets, plus a work folder with
+   harmless sample files. Keys the skill declares get fake values.
+3. **Runs each shell block and command from SKILL.md** on its own, as the agent would, with
+   placeholders such as `<file>` filled with sample files, then **each script** with no arguments
+   and with `--help`. Every step has a 20-second limit and fresh decoys. Small stand-ins for macOS
+   commands (`base64 -D`, `open`, `xattr`, `osascript`) let Mac-only lures run far enough to be seen.
+   The scripts then run again with the clock 400 days ahead.
+4. **Hands out a marked stand-in for downloaded code.** When a command downloads a script or
+   installer, the fake internet answers with a harmless stand-in that only touches a marked file. If
+   that marker then shows up in the trace, the skill ran code it downloaded, and the report says
+   from where.
+
+The report lists what each step did, which hosts the skill contacted that its own text never
+mentions, and which steps could not run. If too few steps ran to say anything (a missing tool, a
+script that needs a real account), the verdict is **NOT ENOUGH COVERAGE**, not a clean result.
+Rules: [docs/RULES.md](docs/RULES.md#skills).
+
+Limits: Detonator does not ask an AI model to follow the skill, so instructions that only an agent
+acting on a task would carry out are judged from the text alone. A step that needs a real account,
+a Mac, Windows or a second download that the fake internet cannot stand in for can look clean. A
+clean run is evidence, not proof.
+
 ## What it checks
 
 | Severity → verdict | Examples |
@@ -304,15 +361,20 @@ your machine, never executed) and compares it with what actually ran. Abilities 
 exist in the code but stayed quiet are reported as `dormant_code`: secret-file paths or
 start-up locations at **REVIEW**, with a note when the code also checks the date; shell,
 string-built code and network calls as low/info notes, because honest tools often have
-those on paths a synthetic test does not reach. Across the whole catalog, 37 of 1,043
+those on paths a synthetic test does not reach. Across the whole catalog (measured on v0.2.1, Nov 2026), 37 of 1,043
 plugins get a REVIEW verdict from this check alone (28 of them also check the date).
 
 **The report is advisory evidence, not proof.** Sandbox-aware code, triggers other than
 time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still
 evade it. The outside monitor sees what the kernel does, not what the plugin meant: it reads
 inside HTTPS only when the program trusts the run's test authority (code that ships its own
-certificate list does not), a plugin can notice it is being traced, and reads through file handles the
-sandbox itself opened are not seen. A clean report does not mean a plugin is safe.
+certificate list does not), and a plugin can notice it is being traced. A clean report does not mean a plugin is safe.
+
+**On Linux the sandbox shares your computer's kernel.** Docker containers are not virtual
+machines: Detonator drops every capability, runs read-only and as an unprivileged user, but a
+kernel bug could still let code out. On macOS and Windows, Docker Desktop runs containers inside
+its own virtual machine, which adds a wall. For code you strongly suspect, use a throwaway
+machine or VM.
 
 The sandbox image has no Hermes and no third-party packages. When a plugin imports one
 (`tools.registry`, `httpx`, ...), Detonator gives it an inert stand-in so the rest of the
@@ -323,7 +385,7 @@ no Python code to run, and Detonator says so instead of guessing.
 
 ## How it was tested
 
-- **Every change** runs over 270 tests in CI, including real Docker sandbox runs, plus Hermes's own
+- **Every change** runs over 340 tests in CI, including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
 - **Detection** is checked against 34 harmless test plugins (fake keys, reserved TEST-NET
   addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,
@@ -343,13 +405,23 @@ no Python code to run, and Detonator says so instead of guessing.
   HTTPS, orders hidden in a tool result, an open port and a look-alike tool name, plus six modelled on
   real npm malware: a reverse shell, a key sent to an odd port, a `wallet.dat` hunter, a hidden Bcc
   that only fires without optional fields, obfuscated code and an ngrok beacon; together with the
-  test plugins they set off all 70 rules) and against official
+  test plugins they set off every plugin and MCP rule) and against official
   servers from the MCP project (memory, filesystem, sequential thinking, everything, fetch, time)
   and 16 popular third-party ones (Playwright, Puppeteer, GitHub, Notion, Sentry, Supabase,
   Context7, Firecrawl, Exa, Tavily, Brave Search, DuckDuckGo, AWS Documentation, Atlassian, SQLite,
   git), which must come out clean or review: 8 no findings and 14 review across all 22, none worse. Stress tests cover servers that hang, flood output, list
   5,000 tools, start hundreds of programs, kill the stand-in for Hermes, or hang in an install script.
-- **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
+- **Skills** are checked against 20 harmless test skills (fake "prerequisite" installers, base64
+  piped to the shell, instructions in invisible Unicode, a key stealer, persistence, a reverse shell,
+  a time bomb, a daemon left running, a padded SKILL.md, plus honest skills that must stay clean), on
+  250 honest skills from Anthropic, OpenAI and Nous (all no findings on the text checks), and in the
+  cloud sandbox only on [Datadog's malicious skills](https://github.com/DataDog/malicious-software-packages-dataset).
+  On the 49 real malicious skills held back while the rules were written, 28 come out suspicious
+  or dangerous (10 dangerous); 13 get NOT ENOUGH COVERAGE (too little of them could run: 5 need a
+  second download from a live server, 4 act only through an AI model, 1 is macOS-only); the other 8
+  are missed, half of them instructions that only a model following them would act on. The split was fixed before tuning, but these samples had been read while the rules were
+  designed, so this is not a clean benchmark.
+- **The whole catalog** (measured on v0.2.1, Nov 2026, with 45 rules and before the outside monitor): Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
   their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
   first pass had 7 dangerous results; each was checked by hand, all were false alarms, and the
   rules were tuned. Only totals are published, never plugin names. "Suspicious" usually means risky but
@@ -380,8 +452,8 @@ Detonator does things a reviewer should know about:
   nothing keeps running on your machine.
 - **Network.** Only for `git ls-remote`, `git fetch`, the one-time image builds and, for
   `/detonate-mcp`, downloading the server's npm or PyPI package (in its own container, see below). A catalog name
-  is looked up with Hermes's own catalog reader, which may refresh Hermes's cached catalog. No container gets a real
-  network: the monitor containers run with `--network none`, and the plugin's container
+  is looked up with Hermes's own catalog reader, which may refresh Hermes's cached catalog. No container that runs the tested code gets a real
+  network (only the download container described below does, and it runs nothing): the monitor containers run with `--network none`, and the plugin's container
   shares the fake internet's network, which only answers locally.
 - **Credentials.** Detonator never reads your `.env`, `auth.json` or any credential store,
   and reads nothing else from your real Hermes home except, for `/detonate-mcp <server-name>`, that
@@ -423,6 +495,15 @@ Detonator does things a reviewer should know about:
   Proxy values go through a private env file, so a proxy password never shows in `ps`. Nothing downloaded runs
   there or on your machine: the server and its install scripts run only in the sandbox, which uses
   the same image settings as above with a 240-second limit.
+- **Skills (`/detonate-skill`).** For an installed name it reads only `SKILL.md` files under your
+  Hermes `skills/` folder (and its `.hub/quarantine`) and the current project's `.hermes/skills` and
+  `.agents/skills`, to find the folder; the skill is copied into the run folder (links are not
+  followed) and nothing in your skills folder changes. A GitHub skill is fetched at one exact commit
+  like a plugin. Nothing from the skill runs on your machine: the text checks only read it, and its
+  commands run in a container from `sandbox/Dockerfile.skill` (digest-pinned `python:3.11-bookworm`
+  plus `node` copied from a digest-pinned `node` image, so common tools such as `curl`, `git` and
+  `node` exist for the skill to use) with the same settings as above, a 240-second limit, and its fake
+  home allowed to hold runnable files (skills install tools there).
 - **Private run folder.** Each run's temporary folder is readable only by you, so other users
   on the same computer cannot read it or plant files in it.
 - **A different world every run.** Each run gets a random username, home folder
@@ -448,6 +529,18 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
+- **v0.5.0**: Skills. `/detonate-skill <folder | installed-name | owner/repo/folder@sha>` (and
+  `hermes detonate-skill`) reads a Hermes skill for planted instructions, hidden text and
+  download-and-run lures, then runs its scripts and the commands its instructions show, each on its
+  own, in the sandbox with both monitors. The fake internet hands out a marked stand-in for downloaded
+  scripts, so running downloaded code shows in the trace. New verdict NOT ENOUGH COVERAGE when too
+  little ran to judge. 28 new rules. Also for every mode: the outside monitor now names files opened
+  relative to a folder (it used to put them at `/`), and two revoked ATT&CK IDs (T1562, T1562.001)
+  were replaced by T1685. This release also carries
+  the v0.4.1 work below, which was never released on its own. Other fixes: the decoy files are no
+  longer held open during a plugin run (a plugin could have read them through those handles without
+  an open the tracer sees), `reverse_shell` counts a plain `bash -i` only when that shell connects
+  out, and the fake internet keeps logging a port under a flood of idle connections.
 - **v0.4.1**: Tested on real malware. Detonator was run on every MCP package in
   [Datadog's malicious software packages dataset](https://github.com/DataDog/malicious-software-packages-dataset)
   (55 npm packages, all removed from npm), which showed blind spots our own test servers never hit. Fixed:
@@ -536,11 +629,13 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
 ## Layout
 
 - `plugin.yaml`, `__init__.py`, `schemas.py`, `tools.py`, `commands.py`: the Hermes
-  plugin (tool, `/detonate` and `/detonate-mcp` slash commands, `hermes detonate` CLIs)
+  plugin (tool, `/detonate`, `/detonate-mcp` and `/detonate-skill` slash commands, `hermes detonate` CLIs)
 - `engine/`: host side (fetch, run Docker, rules, report)
 - `sandbox/`: the container image and the in-container harness
 - `engine/mcp.py`, `engine/mcp_sources.py`, `sandbox/mcp_harness.py`, `sandbox/Dockerfile.mcp`:
   MCP mode (reading the entry, getting the code, the stand-in for Hermes, its rules)
+- `engine/skill.py`, `engine/skill_text.py`, `sandbox/skill_harness.py`, `sandbox/Dockerfile.skill`:
+  skill mode (finding the skill, the text checks, the steps it runs, its rules)
 - `sandbox/monitor/`: the outside monitor image (strace tracer and fake internet)
 - `engine/outside.py`: starts the monitor containers and reads what they saw
 - `tests/`: rule tests, plus integration tests that run harmless plugins in real Docker

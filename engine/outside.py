@@ -232,6 +232,8 @@ def parse_strace(text: str, harness_pid) -> dict:
     children: dict[int, int] = {}                      # child pid -> parent pid
     tgid: dict[int, int] = {}                          # thread id -> process id
     pending: dict[int, str] = {}                       # unfinished call text per pid
+    fds: dict[int, dict] = {}                          # process id -> fd -> path (strace cannot always name fds)
+    cwd: dict[int, str] = {}                           # process id -> last working folder strace showed
     events: list[dict] = []
     for raw in text.splitlines():
         m = _LINE.match(raw)
@@ -262,6 +264,9 @@ def parse_strace(text: str, harness_pid) -> dict:
                     group.add(child)
             else:
                 children[child] = pid
+                fds[child] = dict(fds.get(tgid.get(pid, pid), {}))   # a forked process inherits open files
+                if tgid.get(pid, pid) in cwd:
+                    cwd[child] = cwd[tgid.get(pid, pid)]
             continue
         ev = {"pid": pid, "proc": tgid.get(pid, pid), "in_harness": pid in group, "call": call, "ok": ok}
         if err:
@@ -272,10 +277,24 @@ def parse_strace(text: str, harness_pid) -> dict:
                 continue
             path = _unescape(sm.group(1))
             dm = _DIRFD.match(args)
+            table = fds.setdefault(ev["proc"], {})
             if not path.startswith("/"):
-                base = dm.group(1) if dm else "/"
+                base = dm.group(1) if dm else None
+                if base is None:
+                    num = re.match(r"^(\d+), ", args)
+                    base = table.get(int(num.group(1))) if num else None
+                if base is None:
+                    ev["unresolved"] = True     # relative to a folder the trace never saw opened
+                    base = "/"
                 path = posixpath.join(base, path)
             ev["path"] = posixpath.normpath(path)
+            if ok and ret.isdigit():
+                if "O_DIRECTORY" in args or "O_PATH" in args:
+                    table[int(ret)] = ev["path"]       # only folders: a reused file fd must not become a base
+                else:
+                    table.pop(int(ret), None)
+            if dm and dm.group(0).startswith("AT_FDCWD") and dm.group(1):
+                cwd[ev["proc"]] = dm.group(1)
             ev["write"] = call == "creat" or any(f in args for f in _WRITE_FLAGS)
         elif call in ("execve", "execveat"):
             strs = _STR.findall(args)
@@ -299,7 +318,24 @@ def parse_strace(text: str, harness_pid) -> dict:
             sm = _STR.search(args)
             ev["detail"] = _unescape(sm.group(1)) if sm else ""
         elif call in ("unlink", "unlinkat", "rename", "renameat", "renameat2", "symlink", "symlinkat", "link", "linkat"):
-            ev["paths"] = [_unescape(s) for s in _STR.findall(args)[:2]]
+            table = fds.get(ev["proc"], {})
+            paths = []
+            for dm2 in re.finditer(r'(?:(AT_FDCWD|\d+)(?:<([^>]*)>)?, )?"((?:[^"\\]|\\.)*)"', args):
+                p = _unescape(dm2.group(3))
+                if not p.startswith("/"):
+                    if dm2.group(1):
+                        base = dm2.group(2) or (table.get(int(dm2.group(1))) if dm2.group(1).isdigit()
+                                                else cwd.get(ev["proc"]))
+                    else:
+                        base = cwd.get(ev["proc"])
+                    if base:
+                        p = posixpath.normpath(posixpath.join(base, p))
+                    else:
+                        ev["unresolved"] = True
+                paths.append(p)
+                if len(paths) == 2:
+                    break
+            ev["paths"] = paths
         events.append(ev)
     started = _first_marker(events, "plugin-start")
     done = _first_marker(events, "plugin-done")

