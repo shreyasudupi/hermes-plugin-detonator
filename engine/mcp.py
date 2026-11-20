@@ -340,6 +340,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     reads: dict = {}
     writes, programs, nets, local, listen, probes, recon, environ = [], [], [], [], [], [], [], []
     shells: list = []
+    net_procs = rules.connected_procs(events)
     own_exec_seen: set = set()
     exe_of: dict = {}    # process (thread group) -> program it last started, from execve
     for phase, e in _phases(events, trace.get("start_index")):
@@ -382,7 +383,8 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                     hit = True
         elif call in ("execve", "execveat") and e.get("ok"):
             cmdline = " ".join(str(w) for w in (e.get("argv") or [path]))[:300]
-            if rules.REVERSE_SHELL_RE.search(cmdline):
+            if rules.is_reverse_shell_text(cmdline) or (rules.INTERACTIVE_SHELL_RE.search(cmdline)
+                                                        and e.get("proc", e.get("pid")) in net_procs):
                 shells.append(f"{cmdline} ({label})")    # every phase, install scripts included
             if e.get("pid") in server_pids and e.get("pid") not in own_exec_seen:
                 own_exec_seen.add(e.get("pid"))
@@ -784,7 +786,7 @@ def _evaluate(result: dict) -> dict:
                                 collectors[:6]))
     scripts = result.get("install_scripts") or []
     planted = [f'{s.get("package")} {name}: {text}' for s in scripts
-               for name, text in sorted((s.get("scripts") or {}).items()) if rules.REVERSE_SHELL_RE.search(str(text))]
+               for name, text in sorted((s.get("scripts") or {}).items()) if rules.is_reverse_shell_text(str(text))]
     if planted:
         # Read from package.json, so it counts even when the sandbox's shell could not run it
         # (dash has no /dev/tcp): on a person's computer npm may run it with bash.

@@ -494,9 +494,41 @@ ENV_REDIRECT = {"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"
 # Command lines that open a reverse shell: bash's /dev/tcp, an interactive shell started by a
 # program (sh -i), netcat or socat running a program for the far end, the mkfifo + nc trick,
 # and Python's pty.spawn.
-REVERSE_SHELL_RE = re.compile(r"/dev/(?:tcp|udp)/[^\s/]+/\d+|(?:^|[\s/'\"(])(?:ba|da|z|k)?sh\s+-i\b|"
-                              r"\bn(?:c|cat|etcat)\b[^\n]{0,80}\s-[ec]\s|\bsocat\b[^\n]{0,160}\bexec:|"
-                              r"\bmkfifo\b[^\n]{0,160}\bnc\b|\bpty\.spawn\(", re.IGNORECASE)
+# A shell wired to a connection. `bash -i` alone is only an interactive shell (an honest terminal
+# tool starts one), so it counts only next to a network sign: the same text names a socket, or
+# (in the trace) the same process connected out. The redirect in `bash -i >& /dev/tcp/...` is done
+# by the shell itself, so its command line shows only `bash -i`; the connect shows the rest.
+_STRONG_SHELL = (r"/dev/(?:tcp|udp)/[^\s/]+/\d+|\bn(?:c|cat|etcat)\b[^\n]{0,80}\s-[ec]\s|"
+                 r"\bsocat\b[^\n]{0,160}\bexec:|\bmkfifo\b[^\n]{0,160}\bnc\b|\bpty\.spawn\(")
+STRONG_SHELL_RE = re.compile(_STRONG_SHELL, re.IGNORECASE)
+INTERACTIVE_SHELL_RE = re.compile(r"(?:^|[\s/'\"(])(?:ba|da|z|k)?sh\s+-i\b", re.IGNORECASE)
+_NET_SIGN_RE = re.compile(r"/dev/(?:tcp|udp)/|\bsocket\b|\bconnect\(|\bn(?:c|cat|etcat)\b|\bsocat\b", re.IGNORECASE)
+REVERSE_SHELL_RE = re.compile(_STRONG_SHELL + r"|(?:^|[\s/'\"(])(?:ba|da|z|k)?sh\s+-i\b", re.IGNORECASE)
+
+
+def is_reverse_shell_text(text: str) -> bool:
+    """For script text and command lines that carry their own redirects."""
+    t = str(text or "")
+    return bool(STRONG_SHELL_RE.search(t) or (INTERACTIVE_SHELL_RE.search(t) and _NET_SIGN_RE.search(t)))
+
+
+def connected_procs(events) -> set:
+    """Processes that connected out (anything but the system's own name lookups)."""
+    return {e.get("proc", e.get("pid")) for e in events
+            if e.get("call") == "connect" and e.get("ok") and e.get("ip") and e.get("port") != 53}
+
+
+def trace_reverse_shells(events) -> list:
+    """Command lines from the trace that open a reverse shell: a strong sign in the command line,
+    or an interactive shell whose own process connected out."""
+    net = connected_procs(events)
+    out = []
+    for e in events:
+        if e.get("call") in ("execve", "execveat") and e.get("ok"):
+            cmd = " ".join(str(w) for w in (e.get("argv") or [e.get("path")]))[:300]
+            if is_reverse_shell_text(cmd) or (INTERACTIVE_SHELL_RE.search(cmd) and e.get("proc", e.get("pid")) in net):
+                out.append(cmd)
+    return out
 
 
 COLLECTOR_RE = re.compile(r"(?:^|\.)(?:ngrok(?:-free)?\.(?:app|io|dev)|ngrok\.com|pipedream\.net|webhook\.site|"
@@ -515,7 +547,7 @@ def collection_hosts(out: dict) -> list:
 
 def reverse_shell_hits(texts) -> list:
     """The command lines (or script texts) that open a reverse shell."""
-    return [str(t)[:300] for t in texts if t and REVERSE_SHELL_RE.search(str(t))]
+    return [str(t)[:300] for t in texts if t and is_reverse_shell_text(str(t))]
 
 
 FETCH_CMD_RE = re.compile(r"\b(?:pip3?|uv|poetry)\b[^\n]{0,40}\binstall\b|\bcurl\b|\bwget\b|"
@@ -1423,6 +1455,8 @@ def _outside_findings_raw(result: dict) -> list:
             if path == _RESULT_FILE and e.get("write") and e.get("ok"):
                 forged.append((j, e))
                 continue
+            if e.get("in_harness") and trace.get("done_index") is not None and j > trace["done_index"]:
+                continue    # the harness checking the decoys after the run (it reads them only then)
             if not sensitive(path):
                 continue
             if not e.get("in_harness"):
@@ -1450,8 +1484,7 @@ def _outside_findings_raw(result: dict) -> list:
             # its world are Detonator's own monitors.
             tamper.append(f'{call}({str(e.get("detail")).split(")")[0][:40]}) refused')
     hidden = list(dict.fromkeys(hidden))
-    shells = reverse_shell_hits(" ".join(str(w) for w in (e.get("argv") or [e.get("path")]))
-                                for e in plugin_events if e.get("call") in ("execve", "execveat") and e.get("ok"))
+    shells = trace_reverse_shells(plugin_events)
     if shells:
         findings.append(Finding("reverse_shell", CRITICAL,
                                 "Opened a reverse shell (a shell controlled over the network)",

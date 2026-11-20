@@ -356,15 +356,20 @@ your machine, never executed) and compares it with what actually ran. Abilities 
 exist in the code but stayed quiet are reported as `dormant_code`: secret-file paths or
 start-up locations at **REVIEW**, with a note when the code also checks the date; shell,
 string-built code and network calls as low/info notes, because honest tools often have
-those on paths a synthetic test does not reach. Across the whole catalog, 37 of 1,043
+those on paths a synthetic test does not reach. Across the whole catalog (measured on v0.2.1, Nov 2026), 37 of 1,043
 plugins get a REVIEW verdict from this check alone (28 of them also check the date).
 
 **The report is advisory evidence, not proof.** Sandbox-aware code, triggers other than
 time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still
 evade it. The outside monitor sees what the kernel does, not what the plugin meant: it reads
 inside HTTPS only when the program trusts the run's test authority (code that ships its own
-certificate list does not), a plugin can notice it is being traced, and reads through file handles the
-sandbox itself opened are not seen. A clean report does not mean a plugin is safe.
+certificate list does not), and a plugin can notice it is being traced. A clean report does not mean a plugin is safe.
+
+**On Linux the sandbox shares your computer's kernel.** Docker containers are not virtual
+machines: Detonator drops every capability, runs read-only and as an unprivileged user, but a
+kernel bug could still let code out. On macOS and Windows, Docker Desktop runs containers inside
+its own virtual machine, which adds a wall. For code you strongly suspect, use a throwaway
+machine or VM.
 
 The sandbox image has no Hermes and no third-party packages. When a plugin imports one
 (`tools.registry`, `httpx`, ...), Detonator gives it an inert stand-in so the rest of the
@@ -375,7 +380,7 @@ no Python code to run, and Detonator says so instead of guessing.
 
 ## How it was tested
 
-- **Every change** runs over 270 tests in CI, including real Docker sandbox runs, plus Hermes's own
+- **Every change** runs over 340 tests in CI, including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
 - **Detection** is checked against 34 harmless test plugins (fake keys, reserved TEST-NET
   addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,
@@ -395,13 +400,13 @@ no Python code to run, and Detonator says so instead of guessing.
   HTTPS, orders hidden in a tool result, an open port and a look-alike tool name, plus six modelled on
   real npm malware: a reverse shell, a key sent to an odd port, a `wallet.dat` hunter, a hidden Bcc
   that only fires without optional fields, obfuscated code and an ngrok beacon; together with the
-  test plugins they set off all 70 rules) and against official
+  test plugins they set off every plugin and MCP rule) and against official
   servers from the MCP project (memory, filesystem, sequential thinking, everything, fetch, time)
   and 16 popular third-party ones (Playwright, Puppeteer, GitHub, Notion, Sentry, Supabase,
   Context7, Firecrawl, Exa, Tavily, Brave Search, DuckDuckGo, AWS Documentation, Atlassian, SQLite,
   git), which must come out clean or review: 8 no findings and 14 review across all 22, none worse. Stress tests cover servers that hang, flood output, list
   5,000 tools, start hundreds of programs, kill the stand-in for Hermes, or hang in an install script.
-- **The whole catalog**: Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
+- **The whole catalog** (measured on v0.2.1, Nov 2026, with 45 rules and before the outside monitor): Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
   their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
   first pass had 7 dangerous results; each was checked by hand, all were false alarms, and the
   rules were tuned. Only totals are published, never plugin names. "Suspicious" usually means risky but
@@ -432,8 +437,8 @@ Detonator does things a reviewer should know about:
   nothing keeps running on your machine.
 - **Network.** Only for `git ls-remote`, `git fetch`, the one-time image builds and, for
   `/detonate-mcp`, downloading the server's npm or PyPI package (in its own container, see below). A catalog name
-  is looked up with Hermes's own catalog reader, which may refresh Hermes's cached catalog. No container gets a real
-  network: the monitor containers run with `--network none`, and the plugin's container
+  is looked up with Hermes's own catalog reader, which may refresh Hermes's cached catalog. No container that runs the tested code gets a real
+  network (only the download container described below does, and it runs nothing): the monitor containers run with `--network none`, and the plugin's container
   shares the fake internet's network, which only answers locally.
 - **Credentials.** Detonator never reads your `.env`, `auth.json` or any credential store,
   and reads nothing else from your real Hermes home except, for `/detonate-mcp <server-name>`, that
@@ -514,7 +519,7 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   download-and-run lures, then runs its scripts and the commands its instructions show, each on its
   own, in the sandbox with both monitors. The fake internet hands out a marked stand-in for downloaded
   scripts, so running downloaded code shows in the trace. New verdict NOT ENOUGH COVERAGE when too
-  little ran to judge. 28 new rules. Also for every mode: the outside monitor now names files opened
+  little ran to judge. 27 new rules. Also for every mode: the outside monitor now names files opened
   relative to a folder (it used to put them at `/`), and two revoked ATT&CK IDs (T1562, T1562.001)
   were replaced by T1685. RESULTS_PLACEHOLDER
 - **v0.4.1**: Tested on real malware. Detonator was run on every MCP package in

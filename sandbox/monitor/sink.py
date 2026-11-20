@@ -425,13 +425,41 @@ def handle(conn, peer):
                 pass
 
 
+# Handler threads are capped well under the container's process limit. A run that opens many
+# idle connections must not make thread start fail, because that used to end the port's
+# listening loop and later traffic to the port went unlogged.
+MAX_HANDLERS = 64
+_SLOTS = threading.BoundedSemaphore(MAX_HANDLERS)
+
+
+def _handle_slot(conn, peer):
+    try:
+        handle(conn, peer)
+    finally:
+        _SLOTS.release()
+
+
 def serve_tcp(sock):
     while True:
         try:
             conn, peer = sock.accept()
         except OSError:
             continue
-        threading.Thread(target=handle, args=(conn, peer), daemon=True).start()
+        try:
+            if _SLOTS.acquire(blocking=False):
+                try:
+                    threading.Thread(target=_handle_slot, args=(conn, peer), daemon=True).start()
+                    continue
+                except RuntimeError:
+                    _SLOTS.release()
+            # No free handler: serve this one here with a short timeout, so it is still logged.
+            conn.settimeout(1.0)
+            handle(conn, peer)
+        except Exception:
+            try:
+                conn.close()
+            except OSError:
+                pass
 
 
 def drop_all_capabilities():
