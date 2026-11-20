@@ -361,6 +361,15 @@ def test_thousands_of_unclosed_fences_read_quickly(tmp_path):
     assert time.monotonic() - t < 10
 
 
+def test_windows_line_ends_give_plain_commands(tmp_path):
+    d = make(tmp_path, "x")
+    (d / "SKILL.md").write_bytes(b"---\r\nname: demo\r\ndescription: A demo skill.\r\n---\r\n\r\n"
+                                 b"```bash\r\necho a\r\necho b\r\n```\r\n")
+    sk = st.read_skill(d)
+    assert sk.front.get("name") == "demo"
+    assert [b["code"] for b in sk.blocks] == ["echo a\necho b\n"]
+
+
 def test_fence_closes_only_on_its_own_marker(tmp_path):
     sk = st.read_skill(make(tmp_path, "````bash\necho a\n```\necho b\n````\n\n~~~sh\necho c\n~~~\n"))
     codes = [b["code"] for b in sk.blocks]

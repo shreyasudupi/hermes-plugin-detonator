@@ -44,7 +44,9 @@ def fenced_blocks(text: str):
     """(start offset, end offset, language, code) for each fenced block, in one pass over the lines
     (a regex here was quadratic on thousands of unclosed fences). A block closes at a line holding
     only the same fence character, at least as many times; an unclosed one runs to the end, as in
-    CommonMark."""
+    CommonMark. Code comes back with Windows line ends turned into plain newlines, so a SKILL.md
+    saved on Windows gives the same commands (bash would read a stray carriage return as part of
+    the command)."""
     out, pos, open_ = [], 0, None
     for line in text.splitlines(keepends=True):
         stripped = line.strip()
@@ -55,12 +57,16 @@ def fenced_blocks(text: str):
         else:
             ch, n = open_[1][0], len(open_[1])
             if stripped and set(stripped) == {ch} and len(stripped) >= n:
-                out.append((open_[0], pos + len(line), open_[2], text[open_[3]:pos]))
+                out.append((open_[0], pos + len(line), open_[2], _lf(text[open_[3]:pos])))
                 open_ = None
         pos += len(line)
     if open_ is not None:
-        out.append((open_[0], len(text), open_[2], text[open_[3]:]))
+        out.append((open_[0], len(text), open_[2], _lf(text[open_[3]:])))
     return out
+
+
+def _lf(code: str) -> str:
+    return code.replace("\r\n", "\n")
 _INLINE_SHELL_RE = re.compile(r"!`([^`\n]{1,500})`")
 _INLINE_CODE_RE = re.compile(r"(?<![!`])`([^`\n]{3,400})`(?!`)")
 _COMMENT_RE = re.compile(r"<!--(.*?)-->", re.S)
