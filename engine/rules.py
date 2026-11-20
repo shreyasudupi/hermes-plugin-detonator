@@ -427,6 +427,10 @@ RULES.update({
         "Files too big or too many to read in full. The agent still reads SKILL.md however long it is, and "
         "padding a file is a known way to hide instructions from scanners. Detonator reads the start and end "
         "of a huge SKILL.md and lists what it skipped.", ("T1027.001",), ()),
+    "skill_odd_encoding": Rule(
+        "SKILL.md (or another text file) is not plain UTF-8: UTF-16, a one-byte encoding such as Latin-1, "
+        "or stray NUL bytes. The agent may still read it, while tools that expect UTF-8 see nothing, so it is "
+        "a way to hide instructions. Detonator decodes it and checks the text anyway.", ("T1027",), ()),
     "skill_left_running": Rule(
         "A command or script left a program running after it ended, outside its own process group (a "
         "daemon). Detonator kills it before the next step; on a real computer it would keep running.",

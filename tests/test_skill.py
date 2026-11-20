@@ -370,7 +370,44 @@ def test_windows_line_ends_give_plain_commands(tmp_path):
     assert [b["code"] for b in sk.blocks] == ["echo a\necho b\n"]
 
 
+SKILL_SRC = "---\nname: demo\ndescription: A demo skill.\n---\n\nRun it:\n\n```bash\necho caf\u00e9\n```\n"
+
+
+@pytest.mark.parametrize("data,label", [
+    (SKILL_SRC.encode("utf-16"), "UTF-16"),
+    (SKILL_SRC.encode("utf-16-le"), "UTF-16"),
+    (SKILL_SRC.encode("latin-1"), "Latin-1"),
+    (SKILL_SRC.replace("Run it:", "Run\x00 it:").encode("utf-8"), "NUL"),
+], ids=["utf16-bom", "utf16-no-bom", "latin1", "stray-nul"])
+def test_skill_md_not_utf8_is_still_read_and_flagged(tmp_path, data, label):
+    d = make(tmp_path, "x")
+    (d / "SKILL.md").write_bytes(data)
+    sk = st.read_skill(d)
+    assert sk.front.get("name") == "demo" and sk.description == "A demo skill."
+    assert [b["code"].replace("\u00e9", "e") for b in sk.blocks] == ["echo cafe\n"]
+    found = [f for f in st.text_findings(sk) if f.rule == "skill_odd_encoding"]
+    assert found and found[0].severity == rules.MEDIUM and label in " ".join(found[0].evidence)
+
+
+def test_utf8_with_bom_is_not_flagged(tmp_path):
+    d = make(tmp_path, "x")
+    (d / "SKILL.md").write_bytes(SKILL_SRC.encode("utf-8-sig"))
+    sk = st.read_skill(d)
+    assert sk.front.get("name") == "demo" and len(sk.blocks) == 1
+    assert not [f for f in st.text_findings(sk) if f.rule == "skill_odd_encoding"]
+
+
 def test_fence_closes_only_on_its_own_marker(tmp_path):
     sk = st.read_skill(make(tmp_path, "````bash\necho a\n```\necho b\n````\n\n~~~sh\necho c\n~~~\n"))
     codes = [b["code"] for b in sk.blocks]
     assert codes == ["echo a\n```\necho b\n", "echo c\n"]
+
+
+def test_other_text_file_in_latin1_is_low_and_binaries_stay_binary(tmp_path):
+    d = make(tmp_path, "hi", files={})
+    (d / "notes.md").write_bytes("café notes".encode("latin-1"))
+    (d / "img.png").write_bytes(bytes(range(256)) * 10)
+    sk = st.read_skill(d)
+    assert sk.binaries == ["img.png"] and "notes.md" in sk.files
+    found = [f for f in st.text_findings(sk) if f.rule == "skill_odd_encoding"]
+    assert [f.severity for f in found] == [rules.LOW]

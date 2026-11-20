@@ -84,6 +84,7 @@ class Skill:
     binaries: list = field(default_factory=list)    # rel paths that are not text
     scripts: list = field(default_factory=list)     # rel paths of code files
     skipped: list = field(default_factory=list)     # (rel, why) not read: too big, links, ...
+    odd_encoding: list = field(default_factory=list)  # (rel, label) text that is not plain UTF-8
     blocks: list = field(default_factory=list)      # {"file", "lang", "code", "line"} fenced shell blocks
     inline: list = field(default_factory=list)      # {"file", "code"} `inline` commands
 
@@ -115,6 +116,41 @@ def _is_text(data: bytes) -> bool:
         return True
     except UnicodeDecodeError as exc:
         return exc.start > 65000     # cut in the middle of a character at the end of the sample
+
+
+def _decode_odd(data: bytes, must: bool) -> tuple[str, str] | None:
+    """Text that is not plain UTF-8: UTF-16 (with or without a byte-order mark), UTF-8 with stray NUL
+    bytes, or a one-byte encoding such as Latin-1. The agent may still read such a file, and an
+    unusual encoding is also a way to keep text away from scanners, so it is decoded and labelled
+    rather than skipped as binary. `must` (SKILL.md) always gives text; other files only when the
+    result looks like text."""
+    sample = data[:8192]
+    cands = []
+    if sample[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        cands.append(("utf-16", "UTF-16"))
+    elif len(sample) >= 4:
+        even, odd = sample[0::2], sample[1::2]
+        if odd.count(0) > len(odd) * 0.3 and even.count(0) < len(even) * 0.05:
+            cands.append(("utf-16-le", "UTF-16"))
+        elif even.count(0) > len(even) * 0.3 and odd.count(0) < len(odd) * 0.05:
+            cands.append(("utf-16-be", "UTF-16"))
+    for codec, label in cands:
+        text = data.decode(codec, "replace")
+        if text.count("\ufffd") < max(4, len(text) // 50):
+            return text.lstrip("\ufeff"), label
+    stripped = data.replace(b"\x00", b"")
+    nul = len(stripped) != len(data)
+    try:
+        text, label = stripped.decode("utf-8"), "UTF-8 with NUL bytes"
+    except UnicodeDecodeError:
+        text, label = stripped.decode("latin-1"), "Latin-1 or another one-byte encoding"
+        if nul:
+            label += ", with NUL bytes"
+    if not must:
+        bad = sum(1 for c in text[:8192] if (ord(c) < 32 and c not in "\t\r\n\f") or 0x7f <= ord(c) < 0xa0)
+        if bad > len(text[:8192]) * 0.02:
+            return None
+    return text.lstrip("\ufeff"), label
 
 
 def read_skill(folder: Path) -> Skill:
@@ -155,9 +191,16 @@ def read_skill(folder: Path) -> Skill:
         total += size
         ext = path.suffix.lower()
         if not _is_text(data):
-            sk.binaries.append(rel)
-            continue
-        text = data.decode("utf-8", "replace")
+            odd = None
+            if path.name == SKILL_FILE or ext in TEXT_EXT or ext in CODE_EXT:
+                odd = _decode_odd(data, path.name == SKILL_FILE)
+            if odd is None:
+                sk.binaries.append(rel)
+                continue
+            text, label = odd
+            sk.odd_encoding.append((rel, label))
+        else:
+            text = data.decode("utf-8", "replace")
         sk.files[rel] = text
         first = text[:2].startswith("#!")
         if ext in CODE_EXT or first:
@@ -769,6 +812,16 @@ def text_findings(sk: Skill) -> list[Finding]:
     if partly:
         findings.append(Finding("skill_not_fully_read", INFO, "Long documents were read only at their start and end",
                                 partly[:6]))
+    if sk.odd_encoding:
+        main = [f"{r} ({lab})" for r, lab in sk.odd_encoding if posixpath.basename(r) == SKILL_FILE]
+        rest = [f"{r} ({lab})" for r, lab in sk.odd_encoding if posixpath.basename(r) != SKILL_FILE]
+        if main:
+            findings.append(Finding("skill_odd_encoding", MEDIUM,
+                                    "SKILL.md is not plain UTF-8 text (read anyway; an odd encoding can hide "
+                                    "text from scanners)", main + rest[:5]))
+        else:
+            findings.append(Finding("skill_odd_encoding", LOW, "Some files are not plain UTF-8 text (read anyway)",
+                                    rest[:6] + ([f"and {len(rest) - 6} more"] if len(rest) > 6 else [])))
     if sk.skipped:
         links = [f"{r} ({why})" for r, why in sk.skipped if "link" in why]
         if links:

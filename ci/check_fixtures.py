@@ -140,6 +140,7 @@ EXPECTED_SKILL = {
     "package-user": "NO_FINDINGS",
     "background-helper": "REVIEW",
     "padded-skill": "REVIEW",
+    "utf16-skill": "REVIEW",
 }
 MUST_FIND_SKILL = {
     "fake-prereq-lure": ("skill_ran_downloaded_code", "203.0.113.7"),
@@ -155,6 +156,7 @@ MUST_FIND_SKILL = {
     "package-user": ("skill_tool_own_config", "npmrc"),
     "background-helper": ("skill_left_running", "detonator-fixture"),
     "padded-skill": ("skill_not_fully_read", "SKILL.md"),
+    "utf16-skill": ("skill_odd_encoding", "UTF-16"),
 }
 # The trojan's first version (an older commit) must look clean.
 EXPECTED_V1 = {"trojan-update": "NO_FINDINGS"}

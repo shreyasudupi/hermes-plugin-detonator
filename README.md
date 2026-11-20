@@ -261,7 +261,7 @@ skill calls are really there. Reading the text only needs no image. Detonator:
 
 1. **Reads every file** on your computer without running anything: frontmatter, fenced shell
    blocks, inline commands, links and hidden text (invisible Unicode tags, zero-width and
-   right-to-left characters, HTML comments). It looks for download-and-run commands, password-zip
+   right-to-left characters, HTML comments, files saved as UTF-16 or Latin-1). It looks for download-and-run commands, password-zip
    and fake-installer lures, prompt injection and "always use this skill" text, requests for keys,
    orders to send files out or change the agent's config, persistence, reverse shells, packed
    scripts, binaries and links that point outside the folder.
@@ -534,7 +534,7 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   download-and-run lures, then runs its scripts and the commands its instructions show, each on its
   own, in the sandbox with both monitors. The fake internet hands out a marked stand-in for downloaded
   scripts, so running downloaded code shows in the trace. New verdict NOT ENOUGH COVERAGE when too
-  little ran to judge. 27 new rules. Also for every mode: the outside monitor now names files opened
+  little ran to judge. 28 new rules. Also for every mode: the outside monitor now names files opened
   relative to a folder (it used to put them at `/`), and two revoked ATT&CK IDs (T1562, T1562.001)
   were replaced by T1685. This release also carries
   the v0.4.1 work below, which was never released on its own. Other fixes: the decoy files are no
