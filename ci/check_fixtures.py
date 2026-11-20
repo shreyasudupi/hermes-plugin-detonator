@@ -186,6 +186,10 @@ def main() -> int:
     fired = set()
     for root, expected in checks:
         for name, want in expected.items():
+            if not (root / name).is_dir():
+                failed += 1
+                print(f"FAIL {name} ({root.name}): fixture folder missing (is the fixtures repo up to date?)")
+                continue
             report = run_mcp(root / name) if expected is EXPECTED_MCP else \
                 run_skill(root / name) if expected is EXPECTED_SKILL else run(root / name)
             got = report["verdict"]
