@@ -43,6 +43,13 @@ RULES = {
         "Plugins have no reason to open your key files or ask for API keys they did not declare. "
         "This is the first step of every credential stealer.",
         ("T1552.001", "T1552.004"), ("AML.T0055", "AML.T0083")),
+    "own_tool_config_read": Rule(
+        "It is named for a tool (Kubernetes, Docker, AWS, GitHub, git, npm or PyPI) and opened only that "
+        "tool's own login file, which it needs to do its job. With your real file, the real key would be in its "
+        "reach, so install it only if you mean to give it that access. Any other key file, a key sent out or "
+        "shown to the model, or anything else high-risk in the same run is reported as key theft instead. If it also "
+        "used the network, the finding is high: a key could leave in a form the test cannot read.",
+        ("T1552.001",), ()),
     "browser_or_wallet_read": Rule(
         "Saved browser passwords, cookies and crypto wallets are what info-stealer malware is built to take.",
         ("T1555.003", "T1005"), ("AML.T0055",)),
@@ -620,7 +627,7 @@ def evaluate(result: dict) -> dict:
     extra = _outside_findings(result or {})
     full["outside"] = outside_summary(result or {})
     if not extra:
-        return full
+        return settle_evaluation(full, result)
     errored = full["verdict"] == VERDICT_ERROR
     full["findings"] = sorted((full.get("findings") or []) + [f.to_dict() for f in extra],
                               key=lambda f: SEVERITY_ORDER.index(f["severity"]))
@@ -631,6 +638,124 @@ def evaluate(result: dict) -> dict:
         full["summary"] = ("The sandbox harness did not finish, so the in-process record is missing, "
                            "but the outside monitor saw what is listed below.")
     full["verdict"] = verdict
+    return settle_evaluation(full, result)
+
+
+# ---------------------------------------------------------------------------
+# A tool's own login file (own_tool_config_read). Shared by plugin and MCP mode.
+# ---------------------------------------------------------------------------
+# (family shown in the title, name words that mean the tool, its login files under the home folder).
+# Only files a tool must read to work at all. SSH keys, ~/.netrc, Hermes's own files, browsers,
+# wallets, memory and chat history are never in here: reading them keeps the usual rules.
+OWN_TOOL_FAMILIES = (
+    ("Kubernetes", frozenset({"kubernetes", "kubectl", "k8s", "kube", "helm"}), (".kube/config",)),
+    ("Docker", frozenset({"docker"}), (".docker/config.json",)),
+    ("AWS", frozenset({"aws"}), (".aws/credentials",)),
+    ("GitHub", frozenset({"github", "gh"}), (".config/gh/hosts.yml", ".git-credentials")),
+    ("Git", frozenset({"git"}), (".git-credentials",)),
+    ("npm", frozenset({"npm"}), (".npmrc",)),
+    ("PyPI", frozenset({"pypi", "pip", "twine"}), (".pypirc",)),
+)
+OWN_CONFIG_SETTLED_TITLE = ("Opened decoy key and credential files (its own tool's login file, in a run that "
+                            "also did something high-risk)")
+
+
+def identity_words(names) -> set:
+    """Whole words of the names the person chose to install (config entry, package, folder,
+    plugin name): split on anything but letters and digits, lower case. Never what the code
+    says about itself."""
+    words = set()
+    for n in names or []:
+        words |= {w for w in re.split(r"[^a-z0-9]+", str(n or "").lower()) if w}
+    return words
+
+
+def own_tool_reads(paths, home, words) -> list | None:
+    """[(family, path relative to home)] when EVERY path is a login file of a tool the words
+    name; None when any one is not (or nothing was read)."""
+    if not paths or not home or not words:
+        return None
+    found = []
+    for path in paths:
+        norm = posixpath.normpath(str(path))
+        if not _under(norm, [home]):
+            return None
+        rel = posixpath.relpath(norm, posixpath.normpath(home))
+        fam = next((f for f, names, files in OWN_TOOL_FAMILIES if names & words and rel in files), None)
+        if fam is None:
+            return None
+        found.append((fam, rel))
+    return list(dict.fromkeys(found))
+
+
+def own_tool_finding(own: list, evidence: list) -> Finding:
+    where = "; ".join(f"{fam}: ~/{rel}" for fam, rel in own)
+    return Finding("own_tool_config_read", MEDIUM, f"Read the login file of the tool it is for ({where})",
+                   list(evidence)[:12])
+
+
+OWN_CONFIG_NETWORK_SUFFIX = ", and also used the network"
+
+
+def reached_network(result: dict) -> bool:
+    """True when anything in the run reached past this computer: a connection or name lookup the
+    fake internet logged, a traced connection to an outside address, or one the in-process
+    monitor recorded. A key can leave that way in a form the test cannot read (encrypted)."""
+    out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
+    sink = out.get("sink") if isinstance(out.get("sink"), dict) else {}
+    if sink.get("tcp") or sink.get("dns"):
+        return True
+    trace = out.get("trace") if isinstance(out.get("trace"), dict) else {}
+    for e in trace.get("events") or []:
+        if not isinstance(e, dict):
+            continue
+        ip = str(e.get("ip") or "")
+        if e.get("call") in ("connect", "sendto", "sendmsg") and ip and not e.get("unix") \
+                and not (ip.startswith("127.") or ip == "::1"):
+            return True
+    return any(isinstance(e, dict) and e.get("kind") == "network" and not _is_loopback(e.get("address"))
+               for e in result.get("events") or [])
+
+
+def settle_own_config(findings: list, network: bool = False) -> list:
+    """Run last, on the finished list of finding dicts. A tool's own login file is only a
+    REVIEW when nothing else in the run is high-risk; otherwise it is key theft as usual. When
+    the run also used the network (and nothing else is high-risk) it is HIGH: the test would not
+    see a key that left encrypted."""
+    if not any(f.get("rule") == "own_tool_config_read" for f in findings):
+        return findings
+    alarm = any(f.get("severity") in (CRITICAL, HIGH) for f in findings if f.get("rule") != "own_tool_config_read")
+    if not alarm and not network:
+        return findings
+    info = RULES["decoy_accessed"]
+    out = []
+    for f in findings:
+        if f.get("rule") == "own_tool_config_read":
+            title = str(f.get("title") or "")
+            if alarm:
+                m = re.search(r" \(only after the clock moved \d+ days forward\)$", title)
+                f = {**f, "rule": "decoy_accessed", "severity": CRITICAL,
+                     "title": OWN_CONFIG_SETTLED_TITLE + (m.group(0) if m else ""),
+                     "why": info.why, "attack": list(info.attack), "atlas": list(info.atlas)}
+            elif OWN_CONFIG_NETWORK_SUFFIX not in title:
+                f = {**f, "severity": HIGH, "title": title + OWN_CONFIG_NETWORK_SUFFIX}
+        out.append(f)
+    return sorted(out, key=lambda f: SEVERITY_ORDER.index(f["severity"]))
+
+
+def settle_evaluation(full: dict, result: dict | None = None) -> dict:
+    """settle_own_config on a finished evaluation, and the verdict again (an ERROR stays one)."""
+    findings = full.get("findings") or []
+    settled = settle_own_config(findings, network=reached_network(result or {}))
+    if settled is findings:
+        return full
+    full["findings"] = settled
+    if full.get("verdict") != VERDICT_ERROR:
+        full["verdict"] = _verdict([Finding(**f) for f in settled])
+    return full
+    full["findings"] = settled
+    if full.get("verdict") != VERDICT_ERROR:
+        full["verdict"] = _verdict([Finding(**f) for f in settled])
     return full
 
 
@@ -749,7 +874,15 @@ def _evaluate(result: dict) -> dict:
     hermes_env = posixpath.join(hermes_home, ".env") if hermes_home else None
     env_file_reads = [p for p in secret_reads if p == hermes_env]
     secret_reads = [p for p in secret_reads if p != hermes_env]
-    if secret_reads:
+    # A plugin named for a tool (kube-tools, docker-status) that opened only that tool's own login
+    # file, and no other secret, is doing its job; anything worse in the run turns it back into
+    # decoy_accessed (settle_own_config, at the end of evaluate()).
+    own_files = own_tool_reads(secret_reads, home, identity_words([plugin_name])) \
+        if secret_reads and not env_file_reads and not loot_reads and not private_reads \
+        and not of("environ_file_read") else None
+    if own_files:
+        add(own_tool_finding(own_files, secret_reads))
+    elif secret_reads:
         add(Finding("decoy_accessed", CRITICAL, "Read decoy secret files (keys, tokens, .env)", secret_reads))
     if env_file_reads:
         add(Finding("hermes_env_read", HIGH, "Read Hermes's .env file, where your API keys are kept",
@@ -1119,7 +1252,8 @@ def _evaluate(result: dict) -> dict:
     # own key). Together with a reach for the network or another theft it is the
     # stealer pattern, so it goes back to critical.
     seen = {f.rule for f in findings}
-    if seen & {"undeclared_network", "secret_in_output", "decoy_accessed", "browser_or_wallet_read"}:
+    if seen & {"undeclared_network", "secret_in_output", "decoy_accessed", "own_tool_config_read",
+               "browser_or_wallet_read"}:
         for f in findings:
             if f.rule in ("hermes_env_read", "undeclared_env_read") or (
                     f.rule == "environ_file_read" and f.severity == HIGH):
@@ -1155,7 +1289,7 @@ def _dormant(static, findings, events, stubbed) -> list:
         "network": "network" in kinds,
         "dynamic_code": "hidden_code" in kinds or any(
             e.get("kind") == "dynamic_code" and e.get("by") == "plugin" for e in events),
-        "secret_paths": bool(rules_seen & {"decoy_accessed", "hermes_env_read", "undeclared_env_read", "environ_file_read", "browser_or_wallet_read", "decoy_dir_listed"}),
+        "secret_paths": bool(rules_seen & {"decoy_accessed", "own_tool_config_read", "hermes_env_read", "undeclared_env_read", "environ_file_read", "browser_or_wallet_read", "decoy_dir_listed"}),
         "persistence": "persistence" in rules_seen,
     }
     stubbed_top = {str(m).split(".")[0] for m in stubbed}
@@ -2054,8 +2188,8 @@ _CLAIMS = (
     ("never touches keys",
      re.compile(r"\b(?:never|does not|doesn't|won't|will not) (?:read|access|touch|collect|see|store)s? "
                 r"(?:your |any )?(?:api )?(?:keys|credentials|secrets|tokens|passwords)\b", re.I),
-     {"decoy_accessed", "hermes_env_read", "undeclared_env_read", "environ_file_read", "env_enumerated",
-      "browser_or_wallet_read", "secret_in_output"}, "it went after keys"),
+     {"decoy_accessed", "own_tool_config_read", "hermes_env_read", "undeclared_env_read", "environ_file_read",
+      "env_enumerated", "browser_or_wallet_read", "secret_in_output"}, "it went after keys"),
 )
 # "no network calls besides the cargo build", "no network at load; the tool calls api.x.com"
 _CLAIM_QUALIFIED = re.compile(r"^[^.;\n]{0,40}\b(?:besides|except|other than|beyond|apart from|outside|of its own|"

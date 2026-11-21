@@ -54,6 +54,20 @@ def test_unsupported_entries_raise(entry):
         src.plan_entry("x", entry)
 
 
+def test_env_names_are_the_entry_env_keys():
+    # The proxy helper once had the same name and shadowed this one, so the sandbox got fake keys
+    # named "command", "args", ... instead of the entry's own env names.
+    p = src.plan_entry("x", {"command": "npx", "args": ["-y", "pkg@1.0.0"], "env": {"FOO_KEY": "v"}})
+    assert p.env_names == ["FOO_KEY"]
+    assert src.plan_entry("x", {"command": "npx", "args": ["-y", "pkg@1.0.0"]}).env_names == []
+
+
+@pytest.mark.parametrize("env", [["FOO_KEY"], "FOO_KEY=v", {"not a name": "v"}, {"1BAD": "v"}])
+def test_bad_env_raises(env):
+    with pytest.raises(src.SourceError):
+        src.plan_entry("x", {"command": "npx", "args": ["-y", "pkg@1.0.0"], "env": env})
+
+
 # ---- config_checks: what is wrong with the entry -------------------------------------
 def checks(name, entry):
     plan = None

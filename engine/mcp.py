@@ -51,7 +51,7 @@ _RECON_NAMES = {"shadow", "gshadow", "sudoers", "machine-id"}
 _CACHE_DIRS = (".cache", ".npm")
 _BUILD_TOOLS = {"npm", "npm-cli.js", "node", "sh", "dash", "bash", "node-gyp", "node-gyp.js", "make", "cc", "gcc",
                 "g++", "c++", "python3", "python", "uname"}
-_RISKY_RULES = {"decoy_accessed", "hermes_env_read", "browser_or_wallet_read", "environ_file_read", "memory_read",
+_RISKY_RULES = {"decoy_accessed", "own_tool_config_read", "hermes_env_read", "browser_or_wallet_read", "environ_file_read", "memory_read",
                 "persistence", "agent_config_modified", "write_outside_folder", "command_run", "remote_code_fetch",
                 "undeclared_network", "listener", "secret_sent_out", "sandbox_check", "recon", "reverse_shell"}
 
@@ -172,6 +172,19 @@ def fake_value(canary: str, i: int) -> str:
     return f"sk-det-{canary}-env{i}"
 
 
+def identity(target: runner.Target) -> list:
+    """What the person chose to install, stamped on the result on this side (the server cannot
+    change it): the config entry's name, the npm or PyPI package, and a folder target's own
+    folder name. Never the name the server gives itself."""
+    plan = getattr(target, "plan", None)
+    names = []
+    if plan is not None:
+        names += [str(plan.name or ""), str(plan.package or "")]
+    else:
+        names.append(Path(target.path).resolve().name)
+    return [n[:200] for n in names if n]
+
+
 def detonate(target: runner.Target, outside: bool | None = True) -> dict:
     """Run the server in the sandbox. A remote server is not run: only its entry is checked."""
     checks = [list(c) for c in getattr(target, "checks", [])]
@@ -182,6 +195,7 @@ def detonate(target: runner.Target, outside: bool | None = True) -> dict:
         return {"mode": "mcp", "remote": True, "config_checks": checks, "outside": {"ran": False,
                 "reason": "remote server: it runs on someone else's computer, so only its entry was checked"}}
     raw = runner.detonate(target, outside=outside, mcp_entry=target.entry)
+    raw["identity"] = identity(target)
     raw["config_checks"] = checks
     raw["install_scripts"] = getattr(target, "install_scripts", [])
     raw["hidden_code"] = getattr(target, "hidden_code", [])
@@ -318,6 +332,14 @@ def _own_names(result: dict) -> set:
     return words
 
 
+def _identity_words(result: dict) -> set:
+    """Words of what the person installed (stamped by detonate()); for an older result, the
+    start command only. Not the server's own serverInfo name: the server picks that."""
+    if isinstance(result.get("identity"), list):
+        return rules.identity_words(result["identity"])
+    return rules.identity_words([str(a) for a in (result.get("argv") or [])[:4]])
+
+
 def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     """What the server and the programs it started did, from the outside trace."""
     findings: list[Finding] = []
@@ -338,6 +360,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
         calls = {**calls, **{str(k): str(v) for k, v in (result.get("step_labels") or {}).items()}}
     per_phase: dict = {}
     reads: dict = {}
+    read_paths: dict = {}    # category -> the plain paths read, for the own-login-file check
     writes, programs, nets, local, listen, probes, recon, environ = [], [], [], [], [], [], [], []
     shells: list = []
     net_procs = rules.connected_procs(events)
@@ -369,6 +392,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                     hit = True
             elif path in categories:
                 reads.setdefault(categories[path], []).append(f"{path} ({label})")
+                read_paths.setdefault(categories[path], set()).add(path)
                 hit = True
             elif rules._ENVIRON_PATH.match(path) and "/self/" not in path and "/thread-self/" not in path:
                 environ.append(f"{path} ({label})")
@@ -420,7 +444,16 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
         if env_file:
             findings.append(Finding("hermes_env_read", HIGH, "Read Hermes's .env file, where your API keys are kept",
                                     env_file[:5]))
-        if others:
+        # A server named for a tool (by what the person installed) that opened only that tool's
+        # own login file, in every phase, and nothing else secret: REVIEW, not theft. Anything
+        # worse in the run turns it back into decoy_accessed (rules.settle_own_config).
+        own = None
+        if others and not skill_mode and not env_file and not reads.get("browser") and not reads.get("wallet") \
+                and not reads.get("memory") and not reads.get("history") and not environ:
+            own = rules.own_tool_reads(sorted(read_paths.get("secret") or ()), home, _identity_words(result))
+        if own:
+            findings.append(rules.own_tool_finding(own, sorted(set(others))))
+        elif others:
             findings.append(Finding("decoy_accessed", CRITICAL, "Opened decoy key and credential files",
                                     sorted(set(others))[:12]))
     if reads.get("browser") or reads.get("wallet"):
@@ -674,8 +707,12 @@ def _before_late(result: dict) -> dict:
 
 def evaluate(result: dict) -> dict:
     """Judge the run. When the later pass ran (the server restarted with its clock moved forward),
-    anything it did only then is also reported as a time bomb."""
-    result = result or {}
+    anything it did only then is also reported as a time bomb. Last, a tool's own login file
+    read in a run that also did something high-risk is turned back into key theft."""
+    return rules.settle_evaluation(_evaluate_with_clock(result or {}), result or {})
+
+
+def _evaluate_with_clock(result: dict) -> dict:
     full = _evaluate(result)
     late = result.get("late") or {}
     days = int(late.get("clock_days") or 0)
@@ -820,7 +857,8 @@ def _evaluate(result: dict) -> dict:
                                  "stderr: " + str(result.get("stderr_tail") or "")[-300:]]))
     findings = _merge(findings)
     seen = {f.rule for f in findings}
-    if seen & {"undeclared_network", "tool_network", "secret_sent_out", "decoy_accessed", "browser_or_wallet_read"}:
+    if seen & {"undeclared_network", "tool_network", "secret_sent_out", "decoy_accessed", "own_tool_config_read",
+               "browser_or_wallet_read"}:
         for f in findings:
             if f.rule in ("hermes_env_read", "environ_file_read") and f.severity == HIGH:
                 f.severity = CRITICAL

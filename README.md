@@ -387,24 +387,28 @@ no Python code to run, and Detonator says so instead of guessing.
 
 - **Every change** runs over 340 tests in CI, including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
-- **Detection** is checked against 34 harmless test plugins (fake keys, reserved TEST-NET
+- **Detection** is checked against 36 harmless test plugins (fake keys, reserved TEST-NET
   addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,
   prompt injection, tool poisoning, a rug pull, a backdoor port, a config hijack, a log flood, a
   trojan update, a date-triggered time bomb, a sleeper thread, a plugin that reads keys through C
   code to dodge the inside monitor and one that forges a clean result (both caught only from
   outside), one that swaps the result file for a link, an encoded key leak, an argument swapper, a model-request redirector, look-alike tool
-  names, an output flood, a chat snooper and a plugin whose description lies, plus honest and
-  grey-area plugins that must not be flagged as dangerous. All 34 get their expected verdict,
+  names, an output flood, a chat snooper, a plugin whose description lies and a Kubernetes helper that
+  shows its login file's key to the model, plus honest and grey-area plugins (one a Docker helper that reads
+  only Docker's own login file) that must not be flagged as dangerous. All 36 get their expected verdict,
   together they set off every one of the plugin rules, and CI re-checks them on every change. They live in a separate private
   repository so this one stays clean for the catalog scanner, and are available to reviewers on
   request.
-- **MCP servers** are checked against 25 more harmless test servers (Python and Node: poisoned and
+- **MCP servers** are checked against 30 more harmless test servers (Python and Node: poisoned and
   cross-tool descriptions, a rug pull and one that waits for a few uses, a "read-only" tool that
   writes, key stealers, a sampling abuser, a credential phisher, an npm postinstall dropper, a risky
   config, a time bomb that waits 200 days after install, an email tool that adds a hidden Bcc over
   HTTPS, orders hidden in a tool result, an open port and a look-alike tool name, plus six modelled on
   real npm malware: a reverse shell, a key sent to an odd port, a `wallet.dat` hunter, a hidden Bcc
-  that only fires without optional fields, obfuscated code and an ngrok beacon; together with the
+  that only fires without optional fields, obfuscated code and an ngrok beacon, and five around a
+  tool's own login file: an honest Kubernetes helper that reads only `~/.kube/config` (review), one that
+  sends that file's token out, one that sends it scrambled, one that also reads the AWS keys, and one that only calls itself
+  "kubernetes" in its own start-up answer; together with the
   test plugins they set off every plugin and MCP rule) and against official
   servers from the MCP project (memory, filesystem, sequential thinking, everything, fetch, time)
   and 16 popular third-party ones (Playwright, Puppeteer, GitHub, Notion, Sentry, Supabase,
@@ -534,13 +538,21 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   download-and-run lures, then runs its scripts and the commands its instructions show, each on its
   own, in the sandbox with both monitors. The fake internet hands out a marked stand-in for downloaded
   scripts, so running downloaded code shows in the trace. New verdict NOT ENOUGH COVERAGE when too
-  little ran to judge. 28 new rules. Also for every mode: the outside monitor now names files opened
+  little ran to judge. 29 new rules. Also for every mode: the outside monitor now names files opened
   relative to a folder (it used to put them at `/`), and two revoked ATT&CK IDs (T1562, T1562.001)
   were replaced by T1685. This release also carries
   the v0.4.1 work below, which was never released on its own. Other fixes: the decoy files are no
   longer held open during a plugin run (a plugin could have read them through those handles without
   an open the tracer sees), `reverse_shell` counts a plain `bash -i` only when that shell connects
   out, and the fake internet keeps logging a port under a flood of idle connections.
+  Fewer false alarms on honest tools: a plugin or MCP server named for Kubernetes, Docker, AWS, GitHub,
+  git, npm or PyPI that opens only that tool's own login file (an honest Kubernetes MCP server reading
+  `~/.kube/config` at start-up was rated DANGEROUS) is now REVIEW, with the new `own_tool_config_read`
+  rule. The name that counts is the one you chose to install, never the one the server gives itself;
+  any other key file, the key sent out or shown to the model, or anything else high-risk in the same
+  run is still key theft. If such a run also used the network it is SUSPICIOUS, since a key
+  that left encrypted would not be recognised. Also fixes a v0.4.0 bug: a server tested by name from `config.yaml` got its
+  fake keys under the wrong names instead of the names in its `env:` entry.
 - **v0.4.1**: Tested on real malware. Detonator was run on every MCP package in
   [Datadog's malicious software packages dataset](https://github.com/DataDog/malicious-software-packages-dataset)
   (55 npm packages, all removed from npm), which showed blind spots our own test servers never hit. Fixed:

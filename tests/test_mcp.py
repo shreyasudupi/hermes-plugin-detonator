@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from engine import mcp, outside
+from engine import mcp, outside, rules
 
 CANARY = "0123456789ABCDEF0123"
 HOME = "/home/alex"
@@ -482,3 +482,181 @@ def test_leak_evidence_names_the_port_once():
                      "data": f"POST /c HTTP/1.1\r\nhost: 203.0.113.7:4433\r\n\r\nsk-{CANARY}-0002"}], "dns": []}
     ev = rules_of(result(sink=sink))["secret_sent_out"]["evidence"][0]
     assert "203.0.113.7:4433 " in ev and ":4433:4433" not in ev
+
+
+# ---- a tool's own login file (own_tool_config_read) ---------------------------------------
+KUBE, AWS, DOCKER = f"{HOME}/.kube/config", f"{HOME}/.aws/credentials", f"{HOME}/.docker/config.json"
+GH, GITCRED = f"{HOME}/.config/gh/hosts.yml", f"{HOME}/.git-credentials"
+SECRET_FILES = {p: "secret" for p in (f"{HOME}/.hermes/.env", f"{HOME}/.ssh/id_ed25519", KUBE, AWS, DOCKER, GH,
+                                      GITCRED)}
+
+
+def _read(path):
+    return f'openat(AT_FDCWD</>, "{path}", O_RDONLY|O_CLOEXEC) = 3'
+
+
+def _own(*paths, identity=("kubernetes", "example-kubernetes-server"), **extra):
+    raw = result(trace=_trace(*[_read(p) for p in paths]), decoy_categories=dict(SECRET_FILES), **extra)
+    if identity is not None:
+        raw["identity"] = list(identity)
+    return raw
+
+
+def test_server_named_for_kubernetes_reading_only_its_kube_config_is_review():
+    ev = mcp.evaluate(_own(KUBE))
+    found = {f["rule"]: f for f in ev["findings"]}
+    assert ev["verdict"] == "REVIEW" and "decoy_accessed" not in found
+    own = found["own_tool_config_read"]
+    assert own["severity"] == "medium"
+    assert own["title"] == "Read the login file of the tool it is for (Kubernetes: ~/.kube/config)"
+    assert own["attack"] == ["T1552.001"] and KUBE in own["evidence"][0]
+
+
+def test_name_without_the_tool_word_is_still_theft():
+    ev = mcp.evaluate(_own(KUBE, identity=("weather", "weather-mcp")))
+    assert ev["verdict"] == "DANGEROUS" and "decoy_accessed" in {f["rule"] for f in ev["findings"]}
+
+
+def test_name_the_server_gives_itself_does_not_count():
+    raw = _own(KUBE, identity=("helper", "./helper"), initialize={"serverInfo": {"name": "kubernetes"}})
+    ev = mcp.evaluate(raw)
+    assert ev["verdict"] == "DANGEROUS"
+    assert "own_tool_config_read" not in {f["rule"] for f in ev["findings"]}
+
+
+def test_without_identity_only_the_start_command_names_it():
+    # A result from before identity was stamped: the start command counts, serverInfo never does.
+    named = _own(KUBE, identity=None, argv=["node", "node_modules/example-kubernetes-server/dist/index.js"])
+    assert mcp.evaluate(named)["verdict"] == "REVIEW"
+    other = _own(KUBE, identity=None, argv=["node", "server.js"], initialize={"serverInfo": {"name": "kubernetes"}})
+    assert mcp.evaluate(other)["verdict"] == "DANGEROUS"
+
+
+def test_own_file_plus_another_key_file_is_theft_of_both():
+    ev = mcp.evaluate(_own(KUBE, AWS))
+    stolen = next(f for f in ev["findings"] if f["rule"] == "decoy_accessed")
+    assert ev["verdict"] == "DANGEROUS" and stolen["severity"] == "critical"
+    assert any(AWS in e for e in stolen["evidence"]) and any(KUBE in e for e in stolen["evidence"])
+    assert "own_tool_config_read" not in {f["rule"] for f in ev["findings"]}
+
+
+def test_own_file_plus_hermes_env_is_theft():
+    ev = mcp.evaluate(_own(KUBE, f"{HOME}/.hermes/.env"))
+    rules_found = {f["rule"] for f in ev["findings"]}
+    assert ev["verdict"] == "DANGEROUS" and {"decoy_accessed", "hermes_env_read"} <= rules_found
+    assert "own_tool_config_read" not in rules_found
+
+
+def test_own_file_plus_another_process_environment_is_theft():
+    ev = mcp.evaluate(_own(KUBE, "/proc/1/environ"))
+    assert ev["verdict"] == "DANGEROUS" and "own_tool_config_read" not in {f["rule"] for f in ev["findings"]}
+
+
+def test_own_file_whose_key_is_sent_out_is_theft():
+    sink = {"tcp": [{"host": "203.0.113.7", "port": 80, "bytes": 90, "data": f"POST /c\r\n\r\ntoken: {CANARY}-kube-0014"}],
+            "dns": []}
+    ev = mcp.evaluate(_own(KUBE, sink=sink))
+    found = {f["rule"]: f for f in ev["findings"]}
+    assert ev["verdict"] == "DANGEROUS" and "secret_sent_out" in found and "own_tool_config_read" not in found
+    assert found["decoy_accessed"]["severity"] == "critical"
+    assert found["decoy_accessed"]["title"] == rules.OWN_CONFIG_SETTLED_TITLE
+    assert found["decoy_accessed"]["why"] == rules.RULES["decoy_accessed"].why
+
+
+def test_own_file_whose_key_is_shown_to_the_model_is_theft():
+    calls = [{"index": 0, "tool": "add", "returned": f"token: {CANARY}-kube-0014", "returned_size": 30}]
+    ev = mcp.evaluate(_own(KUBE, calls=calls))
+    found = {f["rule"] for f in ev["findings"]}
+    assert ev["verdict"] == "DANGEROUS" and {"secret_in_output", "decoy_accessed"} <= found
+    assert "own_tool_config_read" not in found
+
+
+def test_own_file_with_any_other_high_finding_is_theft():
+    raw = result(trace=_trace(_read(KUBE), 'bind(4, {sa_family=AF_INET, sin_port=htons(4444), '
+                                           'sin_addr=inet_addr("0.0.0.0")}, 16) = 0'),
+                 decoy_categories=dict(SECRET_FILES), identity=["kube-tools"])
+    ev = mcp.evaluate(raw)
+    found = {f["rule"] for f in ev["findings"]}
+    assert "listener" in found and "decoy_accessed" in found and "own_tool_config_read" not in found
+    assert ev["verdict"] == "DANGEROUS"
+
+
+def test_own_file_read_by_an_install_script_is_theft():
+    trace = ('7 13:00:00.000001 openat(AT_FDCWD</>, "/detonator-phase/plugin-start", O_RDONLY) = -1 ENOENT\n'
+             '7 13:00:00.000002 openat(AT_FDCWD</>, "/detonator-phase/mcp-install", O_RDONLY) = -1 ENOENT\n'
+             '7 13:00:00.000003 vfork() = 40\n'
+             '40 13:00:00.000004 execve("/usr/bin/sh", ["sh", "-c", "node setup.js"], 0x1 /* 5 vars */) = 0\n'
+             f'40 13:00:00.000005 {_read(KUBE)}\n'
+             '7 13:00:00.000006 openat(AT_FDCWD</>, "/detonator-phase/mcp-start", O_RDONLY) = -1 ENOENT\n')
+    raw = result(trace=trace, decoy_categories=dict(SECRET_FILES), identity=["kube-tools"],
+                 install_scripts=[{"package": "kube-tools", "scripts": {"postinstall": "node setup.js"}}],
+                 install_runs=[{"cmd": ["npm", "rebuild"]}])
+    ev = mcp.evaluate(raw)
+    found = {f["rule"]: f for f in ev["findings"]}
+    assert found["mcp_install_script"]["severity"] == "high"
+    assert "decoy_accessed" in found and "own_tool_config_read" not in found and ev["verdict"] == "DANGEROUS"
+
+
+def test_own_file_read_only_after_the_clock_moved_is_a_time_bomb():
+    raw = _late([_read(KUBE)])
+    raw["decoy_categories"] = dict(SECRET_FILES)
+    raw["identity"] = ["kubernetes"]
+    ev = mcp.evaluate(raw)
+    found = {f["rule"]: f for f in ev["findings"]}
+    assert "time_triggered" in found and "own_tool_config_read" not in found
+    assert found["decoy_accessed"]["title"].startswith(rules.OWN_CONFIG_SETTLED_TITLE)
+    assert "400 days" in found["decoy_accessed"]["title"] and ev["verdict"] == "DANGEROUS"
+
+
+def test_own_file_in_both_passes_is_still_review():
+    raw = _late([_read(KUBE)])
+    raw["outside"]["trace"] = outside.parse_strace(
+        _trace(_read(KUBE)) + LATE_MARK + f"30 13:00:01.000010 {_read(KUBE)}\n", 7)
+    raw["decoy_categories"] = dict(SECRET_FILES)
+    raw["identity"] = ["kubernetes"]
+    assert mcp.evaluate(raw)["verdict"] == "REVIEW"
+
+
+def test_skill_mode_keeps_the_usual_rule():
+    raw = _own(KUBE, identity=("kubernetes",))
+    raw["mode"] = "skill"
+    found, _ = mcp._behaviour(raw, raw["outside"])
+    assert [f.rule for f in found if f.rule in ("decoy_accessed", "own_tool_config_read")] == ["decoy_accessed"]
+    assert next(f for f in found if f.rule == "decoy_accessed").severity == "critical"
+
+
+@pytest.mark.parametrize("identity,path,verdict", [
+    (["kubeflowish"], KUBE, "DANGEROUS"),         # a whole word only
+    (["mcp-kube-tools"], KUBE, "REVIEW"),
+    (["k8s_helper"], KUBE, "REVIEW"),
+    (["gh"], GH, "REVIEW"),
+    (["ghost"], GH, "DANGEROUS"),
+    (["github-mcp"], GITCRED, "REVIEW"),
+    (["git-tools"], GH, "DANGEROUS"),             # git owns ~/.git-credentials, not the gh CLI's file
+    (["docker-status"], DOCKER, "REVIEW"),
+    (["docker-status"], KUBE, "DANGEROUS"),       # another tool's file
+    (["aws-docs"], AWS, "REVIEW"),
+    (["kubernetes"], f"{HOME}/.ssh/id_ed25519", "DANGEROUS"),
+])
+def test_tool_words_are_whole_words(identity, path, verdict):
+    assert mcp.evaluate(_own(path, identity=identity))["verdict"] == verdict
+
+
+def test_identity_is_what_the_person_installed(tmp_path):
+    from engine import mcp_sources, runner
+    folder = tmp_path / "kube-tools"
+    folder.mkdir()
+    assert mcp.identity(runner.Target(path=folder, label="x")) == ["kube-tools"]
+    t = runner.Target(path=tmp_path, label="x")
+    t.plan = mcp_sources.Plan(kind="npm", name="kubernetes", package="example-kubernetes-server")
+    assert mcp.identity(t) == ["kubernetes", "example-kubernetes-server"]
+
+
+def test_settle_is_idempotent_and_leaves_quiet_runs_alone():
+    own = rules.own_tool_finding([("Kubernetes", ".kube/config")], [KUBE]).to_dict()
+    quiet = [own, rules.Finding("tool_network", "medium", "x").to_dict()]
+    assert rules.settle_own_config(quiet) is quiet
+    loud = [own, rules.Finding("listener", "high", "x").to_dict()]
+    once = rules.settle_own_config(loud)
+    assert [f["rule"] for f in once] == ["decoy_accessed", "listener"]
+    assert rules.settle_own_config(once) == once
