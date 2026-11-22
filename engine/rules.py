@@ -1116,13 +1116,14 @@ def _evaluate(result: dict) -> dict:
                             "A plugin has no reason to touch your system scheduler."))
 
     touched = [(e["path"], "write") for e in of("file_write")]
+    links = links_unseen(result)
     touched += [(str(e.get("path")), str(e.get("op"))) for e in of("file_modify")]
     buckets: dict = {}
     for path, op in touched:
         if _under(path, allowed_writes) or path in decoy_paths:
             continue  # decoy changes are judged below
         label = path if op == "write" else f"{op} {path}"
-        rule, sev, tech = _classify_write(path, op, home, hermes_home, plugin_dir, manifest.get("name"))
+        rule, sev, tech = _classify_write(path, op, home, hermes_home, plugin_dir, manifest.get("name"), links)
         b = buckets.setdefault((rule, sev), {"evidence": set(), "attack": set()})
         b["evidence"].add(label)
         if tech:
@@ -1315,7 +1316,18 @@ def _dormant(static, findings, events, stubbed) -> list:
     return out
 
 
-def _classify_write(path: str, op: str, home, hermes_home, plugin_dir, name=None):
+def links_unseen(result: dict) -> bool:
+    """False only when the outside tracer watched the whole run and saw no symbolic link made.
+    A link can make any folder a site folder, so without that a .pth file anywhere stays persistence."""
+    out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
+    trace = out.get("trace") if isinstance(out.get("trace"), dict) else {}
+    if not out.get("ran") or trace.get("start_index") is None or (out.get("tracer") or {}).get("truncated"):
+        return True
+    return any(isinstance(e, dict) and e.get("call") in ("symlink", "symlinkat")
+               for e in (trace.get("events") or [])[trace["start_index"] + 1:])
+
+
+def _classify_write(path: str, op: str, home, hermes_home, plugin_dir, name=None, links=True):
     """(rule, severity, extra ATT&CK id) for a write/modify outside the allowed folders."""
     norm = posixpath.normpath(path)
     base = posixpath.basename(norm)
@@ -1325,7 +1337,10 @@ def _classify_write(path: str, op: str, home, hermes_home, plugin_dir, name=None
         for marker, tech in PERSISTENCE_TECHNIQUES:
             if marker in norm:
                 return "persistence", CRITICAL, tech
-        if base.endswith(".pth") or base in PY_STARTUP:
+        # Python runs .pth files only from site folders; a model file such as resnet50.pth elsewhere
+        # is data. Unless the run may have made a link (links_unseen), when any .pth counts.
+        site = links or any(part.lower() in ("site-packages", "dist-packages") for part in norm.split("/")[:-1])
+        if (base.endswith(".pth") and site) or base in PY_STARTUP:
             return "persistence", CRITICAL, "T1546.018"
         if home and _under(norm, [home]) and posixpath.relpath(norm, home) in SHELL_RC:
             return "persistence", CRITICAL, "T1546.004"
