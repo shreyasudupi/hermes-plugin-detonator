@@ -214,11 +214,12 @@ def _metadata(tool: dict) -> dict:
             if tool.get(k) is not None}
 
 
-# Emoji sequences use invisible characters on their own: a zero-width joiner between two emoji
-# (family, profession and flag emoji), a variation selector, and the tag letters of the England,
-# Scotland and Wales flags. An arrow from U+2194 to U+2199 counts as an emoji only with U+FE0F after
-# it, as in the head-shake emoji. Only these exact shapes are taken out; any other invisible
-# character, or one next to something that is not an emoji, is checked as before.
+# Emoji sequences use invisible characters on their own. What is taken out before the hidden-character
+# check: a zero-width joiner between two characters in the emoji and symbol ranges of _EMOJI (the first
+# may carry one variation selector, U+FE0E or U+FE0F), with an arrow from U+2194 to U+2199 counting as
+# one of those characters only when U+FE0F follows it; and the tag letters of the England, Scotland and
+# Wales flags. Any other invisible character, or a joiner next to anything else, is checked as before,
+# and the wording checks (orders to the model) run on the text unchanged.
 _EMOJI = "\u2300-\u23ff\u2600-\u27bf\u2b00-\u2bff\U0001f000-\U0001faff"
 _EMOJI_ARROW = "[\u2194-\u2199]\ufe0f"
 _EMOJI_JOINER = re.compile(f"([{_EMOJI}][\ufe0e\ufe0f]?|{_EMOJI_ARROW})\u200d(?=[{_EMOJI}]|{_EMOJI_ARROW})")
@@ -373,6 +374,9 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     clock_dir = str((result.get("late") or {}).get("clock_dir") or "")
     clock_dir = clock_dir.rstrip("/") + "/" if re.fullmatch(r"/tmp/clock-[0-9a-f]{12}", clock_dir) else ""
     server_pids = {server_pid, (result.get("late") or {}).get("server_pid")} - {None}
+    # The server's own pids, for the environ check below (MCP server mode only; skill steps are
+    # judged as in v0.5.0).
+    environ_own = {str(p) for p in server_pids}
     server_pids |= {p for p in result.get("own_pids") or [] if isinstance(p, int)}
     skill_mode = result.get("mode") == "skill"
     if skill_mode:
@@ -414,8 +418,10 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                 read_paths.setdefault(categories[path], set()).add(path)
                 hit = True
             elif rules._ENVIRON_PATH.match(path) and "/self/" not in path and "/thread-self/" not in path \
-                    and path.split("/")[2] not in {str(p) for p in {e.get("pid"), e.get("proc")} | server_pids}:
-                # /proc/<its own pid>/environ is its own environment, like /proc/self/environ
+                    and (skill_mode or path.split("/")[2] not in
+                         {str(p) for p in {e.get("pid"), e.get("proc")} - {None}} | environ_own):
+                # An MCP server process reading /proc/<its own pid or the server's>/environ reads its
+                # own environment, like /proc/self/environ.
                 environ.append(f"{path} ({label})")
                 hit = True
             elif path.startswith(_SANDBOX_PROBES):
