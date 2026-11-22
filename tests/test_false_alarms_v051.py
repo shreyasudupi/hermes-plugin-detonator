@@ -38,62 +38,7 @@ def test_emoji_joiner_with_an_order_keeps_its_severity():
     assert found["mcp_tool_poisoning"]["severity"] == "critical"
 
 
-# ---- 2. a .pth file outside a site folder -------------------------------------------
-PHOME = "/home/alex"
-
-
-def _plugin_run(*events, links=(), outside=True, truncated=False):
-    trace = {"start_index": 0, "harness_pid": 7,
-             "events": [{"call": "openat", "path": "/detonator-phase/plugin-start", "in_harness": True}] + list(links)}
-    return base(home=PHOME, events=list(events),
-                outside={"ran": True, "home": PHOME, "trace": trace, "sink": {"tcp": [], "dns": []},
-                         "tracer": {"truncated": truncated}} if outside else {"ran": False, "reason": "off"})
-
-
-def _by_rule(out):
-    return {f["rule"]: f for f in out["findings"]}
-
-
-def test_model_weights_file_is_not_persistence():
-    found = _by_rule(rules.evaluate(_plugin_run(ev("file_write", path=PHOME + "/models/resnet50.pth"))))
-    assert "persistence" not in found
-    assert found["write_own_state"]["severity"] == "medium"     # what any other file there gets
-
-
-@pytest.mark.parametrize("path", [
-    PHOME + "/.local/lib/python3.12/site-packages/evil.pth",
-    "/usr/lib/python3/dist-packages/deep/er/evil.pth",
-    "/usr/local/lib/python3.11/site-packages/evil.pth",
-])
-def test_pth_in_a_site_folder_stays_persistence(path):
-    found = _by_rule(rules.evaluate(_plugin_run(ev("file_write", path=path))))
-    assert found["persistence"]["severity"] == "critical"
-
-
-@pytest.mark.parametrize("kw", [
-    {"links": [{"call": "symlink", "paths": ["/home/alex/models", "/home/alex/.local/lib/python3.12/site-packages"]}]},
-    {"outside": False},
-    {"truncated": True},
-])
-def test_pth_anywhere_stays_persistence_when_a_link_may_have_been_made(kw):
-    found = _by_rule(rules.evaluate(_plugin_run(ev("file_write", path=PHOME + "/models/evil.pth"), **kw)))
-    assert found["persistence"]["severity"] == "critical"
-
-
-def test_mcp_model_weights_file_is_not_persistence():
-    trace = _trace(f'openat(AT_FDCWD</>, "{HOME}/models/resnet50.pth", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3')
-    found = rules_of(result(trace=trace))
-    assert "persistence" not in found
-
-
-@pytest.mark.parametrize("extra", ["", 'symlink("/home/alex/stash", "/home/alex/.local/lib/python3.12/site-packages") = 0'])
-def test_mcp_pth_stays_persistence_in_a_site_folder_or_after_a_link(extra):
-    where = "models" if extra else ".local/lib/python3.12/site-packages"
-    lines = ([extra] if extra else []) + [f'openat(AT_FDCWD</>, "{HOME}/{where}/evil.pth", O_WRONLY|O_CREAT, 0666) = 3']
-    assert rules_of(result(trace=_trace(*lines)))["persistence"]["severity"] == "critical"
-
-
-# ---- 3. kill(pid, 0) refused with EPERM ------------------------------------------------
+# ---- 2. kill(pid, 0) refused with EPERM ------------------------------------------------
 
 
 def _tamper(line):
@@ -118,7 +63,7 @@ def test_mcp_existence_probe_refused_is_not_tampering():
     assert rules_of(raw)["monitor_tamper"]["severity"] == "high"
 
 
-# ---- 4. a process reading its own /proc/<pid>/environ ---------------------------------
+# ---- 3. a process reading its own /proc/<pid>/environ ---------------------------------
 def _environ_reader(line, server_pid=20):
     trace = _trace() + line + "\n"
     return rules_of(result(trace=trace, server_pid=server_pid))
@@ -143,7 +88,7 @@ def test_other_environment_files_stay_high(line):
     assert _environ_reader(line)["environ_file_read"]["severity"] == "high"
 
 
-# ---- 6. walking the time-zone database --------------------------------------------------
+# ---- 4. walking the time-zone database --------------------------------------------------
 ZONES = ["/usr/share/zoneinfo"] + [f"/usr/share/zoneinfo/{z}" for z in
                                    ("Africa", "America", "America/Argentina", "America/Indiana", "Antarctica",
                                     "Asia", "Atlantic", "Australia", "Europe", "Indian", "Pacific", "Etc")]
@@ -163,7 +108,7 @@ def test_other_folder_walks_still_count():
     assert "fs_discovery" in rule_names(out)
 
 
-# ---- 8. verdict sentences ----------------------------------------------------------------
+# ---- 5. verdict sentences ----------------------------------------------------------------
 def test_verdict_sentences_say_what_the_severities_are():
     t = report.VERDICT_TEXT
     assert t["NO_FINDINGS"].endswith("no finding of medium severity or worse in this run.")

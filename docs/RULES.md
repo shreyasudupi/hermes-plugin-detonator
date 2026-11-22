@@ -211,7 +211,7 @@ Used by `/detonate-skill`. The text rules read the skill's files on your compute
 | `/etc/cron` | [T1053.003](https://attack.mitre.org/techniques/T1053/003/) |
 | `.ssh/authorized_keys` | [T1098.004](https://attack.mitre.org/techniques/T1098/004/) |
 | shell start-up files (`.bashrc`, `.zshrc`, `.profile`, ...) | [T1546.004](https://attack.mitre.org/techniques/T1546/004/) |
-| Python start-up hooks (`*.pth` in a `site-packages` or `dist-packages` folder, or anywhere when the run may have made a symbolic link; `sitecustomize.py`) | [T1546.018](https://attack.mitre.org/techniques/T1546/018/) |
+| Python start-up hooks (`*.pth`, `sitecustomize.py`) | [T1546.018](https://attack.mitre.org/techniques/T1546/018/) |
 | `crontab`, `systemctl`, `launchctl` commands | [T1053.003](https://attack.mitre.org/techniques/T1053/003/), [T1543](https://attack.mitre.org/techniques/T1543/) |
 
 ## What the sandbox plants

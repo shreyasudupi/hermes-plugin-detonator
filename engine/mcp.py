@@ -489,7 +489,6 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                                 "Renamed or deleted files in a folder the trace could not name",
                                 list(dict.fromkeys(unplaced))[:8]))
     own_names = _own_names(result)
-    links = rules.links_unseen({**result, "outside": out})
     grouped: dict = {}
     for phase, label, path in writes:
         norm = posixpath.normpath(path)
@@ -497,7 +496,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
         if rel and rel[0] in _CACHE_DIRS:
             grouped.setdefault(("write_tmp", LOW, "Wrote to a cache folder", None), []).append(f"{path} ({label})")
             continue
-        rule, sev, tech = rules._classify_write(path, "write", home, hermes_home, "/plugin", links=links)
+        rule, sev, tech = rules._classify_write(path, "write", home, hermes_home, "/plugin")
         app = rel[1] if len(rel) > 2 and rel[0] == ".config" else \
             rel[2] if len(rel) > 3 and rel[:2] in ([".local", "share"], [".local", "state"]) else ""
         if rule == "write_outside_folder" and app and app.lower().lstrip(".") in own_names:
