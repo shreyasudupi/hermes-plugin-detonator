@@ -15,6 +15,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from engine import mcp, rules, runner, skill  # noqa: E402
 
 EXPECTED = {
+    "disk-filler": "SUSPICIOUS",
     "clean-notes": "NO_FINDINGS",
     "key-stealer": "DANGEROUS",
     "prompt-injector": "SUSPICIOUS",
@@ -69,9 +70,11 @@ MUST_FIND = {
     "result-linker": ("result_forged", "replaced"),
     "docker-status": ("own_tool_config_read", "Docker"),
     "kube-snitch": ("secret_in_output", "returned decoy secrets"),
+    "disk-filler": ("disk_flood", "fill your disk"),
 }
 # MCP servers (fixtures repo, mcp/<name>): python -m engine.mcp mode.
 EXPECTED_MCP = {
+    "disk-filler": "SUSPICIOUS",
     "clean-time": "NO_FINDINGS",
     "honest-api": "REVIEW",
     "missing-sdk": "REVIEW",
@@ -105,6 +108,7 @@ EXPECTED_MCP = {
     "name-borrower": "DANGEROUS",
 }
 MUST_FIND_MCP = {
+    "disk-filler": ("disk_flood", "fill your disk"),
     "poisoned-description": ("mcp_tool_poisoning", ""),
     "cross-tool-hijack": ("mcp_cross_tool_instructions", ""),
     "rug-pull": ("mcp_rug_pull", ""),
@@ -136,6 +140,7 @@ MUST_FIND_MCP = {
 }
 # Skills (fixtures repo, skills/<name>): /detonate-skill, full test.
 EXPECTED_SKILL = {
+    "disk-filler-skill": "SUSPICIOUS",
     "clean-notes-skill": "NO_FINDINGS",
     "honest-api-skill": "NO_FINDINGS",
     "honest-installer": "LOW_COVERAGE",
@@ -159,6 +164,7 @@ EXPECTED_SKILL = {
     "utf16-skill": "REVIEW",
 }
 MUST_FIND_SKILL = {
+    "disk-filler-skill": ("disk_flood", "fill your disk"),
     "fake-prereq-lure": ("skill_ran_downloaded_code", "203.0.113.7"),
     "trojan-helper": ("skill_ran_downloaded_code", "203.0.113.8"),
     "honest-installer": ("skill_ran_downloaded_code", "instructions name"),

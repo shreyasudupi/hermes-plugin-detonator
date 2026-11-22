@@ -540,7 +540,7 @@ def evaluate(raw: dict) -> dict:
         findings += [f for f in rules._outside_findings({**raw, "events": [], "outside": stripped})
                      if f.rule == "secret_sent_out"]
         findings += [f for f in rules._outside_findings({**raw, "events": []})
-                     if f.rule in ("result_forged", "monitor_tamper", "log_flood")]
+                     if f.rule in ("result_forged", "monitor_tamper", "log_flood", "disk_flood")]
         collectors = rules.collection_hosts(out)
         if collectors:
             findings.append(Finding("collection_service", HIGH,

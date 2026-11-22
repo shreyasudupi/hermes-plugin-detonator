@@ -15,9 +15,12 @@ Detonator is a security tool, so bypasses matter. Thank you for reporting them.
 ## Known limits
 
 Reports are advisory evidence, not proof. The audit hooks run inside the same Python process as the
-plugin, so a determined plugin could tamper with them or fake a clean result. Time bombs, sandbox
-checks and code paths the synthetic inputs do not trigger can also evade a run. See the README for
-the full list.
+plugin, so a determined plugin could tamper with them or fake a clean result. Since v0.3.0 an outside
+monitor (a tracer and a fake internet, in separate containers the plugin cannot reach) checks that
+record from outside and catches a forged result, but it sees what the kernel does, not what the code
+meant, and work done through io_uring is not traced (current Docker blocks it; the report warns when
+it is allowed). Time bombs, sandbox checks and code paths the synthetic inputs do not trigger can also
+evade a run. See the README for the full list.
 
 On Linux the sandbox containers share the host's kernel (Docker is not a virtual machine), so a
 kernel bug could let tested code out; Docker Desktop on macOS and Windows adds a virtual machine.

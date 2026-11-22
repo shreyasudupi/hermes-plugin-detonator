@@ -117,7 +117,12 @@ def load_folder_entry(path: str) -> runner.Target:
     cfg = data.get("_detonator_config") if isinstance(data, dict) else None
     if cfg:    # a config.yaml plus a server name: check that entry only, run nothing
         name = str(data.get("_detonator_server") or "")
-        raw = sources.read_servers(p / str(cfg)).get(name)
+        # A test switch: the config file must sit inside the tested folder itself (links resolved),
+        # so a tested folder can never make Detonator read some other file on this computer.
+        cfg_path = (p / str(cfg)).resolve()
+        if not cfg_path.is_relative_to(p) or cfg_path == p:
+            raise McpError("_detonator_config must name a file inside the tested folder")
+        raw = sources.read_servers(cfg_path).get(name)
         if raw is None:
             raise McpError(f"no server named '{name}' in {cfg}")
         try:
@@ -825,7 +830,7 @@ def _evaluate(result: dict) -> dict:
                      if f.rule == "secret_sent_out"]
         # A forged result file, or the server tracing or killing Detonator's own process.
         findings += [f for f in rules._outside_findings({**result, "events": []})
-                     if f.rule in ("result_forged", "monitor_tamper", "log_flood")]
+                     if f.rule in ("result_forged", "monitor_tamper", "log_flood", "disk_flood")]
         extra = _extra_recipients(result, out)
         if extra:
             findings.append(Finding("mcp_extra_recipient", HIGH,

@@ -122,11 +122,117 @@ def docker_bin() -> str | None:
     return shutil.which("docker", path=_env()["PATH"])
 
 
+# git settings kept from your own git config when Detonator fetches code: only how to reach the
+# network (proxy) and which certificates to trust. Everything else in your global and system git
+# config is left out, so a filter or helper you installed for your own work (Git LFS, for
+# example) never runs on a repository Detonator downloads.
+_GIT_KEEP_RE = re.compile(r"^(?:https?\.proxy|http\.ssl(?:cainfo|capath|backend)|http\.schannel[a-z]*|"
+                          r"http\.proxysslcainfo)$")
+_git_keep_cache: list[str] | None = None
+
+
+def _git_kept_settings() -> list[str]:
+    """`-c key=value` pairs for the allow-listed settings in your git config (read once)."""
+    global _git_keep_cache
+    if _git_keep_cache is None:
+        keep: list[str] = []
+        try:
+            # Reads config files only; runs nothing from any repository.
+            proc = subprocess.run(["git", "config", "--get-regexp", r"^https?\."], capture_output=True,
+                                  text=True, timeout=20, env=_env(), cwd=tempfile.gettempdir())
+            for line in (proc.stdout or "").splitlines():
+                key, _, value = line.partition(" ")
+                if _GIT_KEEP_RE.match(key.lower()) and "\n" not in value:
+                    keep += ["-c", f"{key}={value}"]
+        except (OSError, subprocess.SubprocessError):
+            pass
+        _git_keep_cache = keep
+    return list(_git_keep_cache)
+
+
+def _git_env(env: dict) -> dict:
+    return {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
 def _run(cmd, timeout=600, **kwargs):
     env = _env()
     if cmd and cmd[0] == "docker":
         cmd = [docker_bin() or "docker", *cmd[1:]]
+    elif cmd and cmd[0] == "git":
+        cmd = ["git", *_git_kept_settings(), *cmd[1:]]
+        env = _git_env(env)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, **kwargs)
+
+
+# Tested code can write to two folders on your disk during a run: the output folder (always) and,
+# in an MCP install run, its own throwaway package copy. Both are deleted afterwards, but a run
+# lasts minutes, so a run that writes more than this is stopped. The result file is capped at
+# RESULT_MAX_BYTES, so an honest run stays far below the output limit.
+OUT_DIR_MAX_BYTES = 256 * 1024 * 1024
+PACKAGE_GROWTH_MAX_BYTES = 512 * 1024 * 1024
+DISK_POLL_S = 0.5
+
+
+def folder_bytes(root: Path, stop_at: int | None = None) -> int:
+    """Bytes used by the files under `root`, never following links. Stops counting once past
+    `stop_at`, so a folder full of tiny files cannot make the check itself slow."""
+    total = 0
+    stack = [str(root)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                for e in it:
+                    try:
+                        st = e.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(e.path)
+                    # Blocks really used, so a sparse file with a huge size does not count as full.
+                    total += st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size
+                    if stop_at is not None and total > stop_at:
+                        return total
+        except OSError:
+            continue
+    return total
+
+
+def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]]):
+    """`_run` for the sandbox's `docker run`, calling `stop()` (which removes the container) as soon
+    as any watched folder grows past its limit. Returns (process result, None or the
+    (folder, limit) that overflowed); raises TimeoutExpired like `_run` when the run timed out."""
+    env = _env()
+    if cmd and cmd[0] == "docker":
+        cmd = [docker_bin() or "docker", *cmd[1:]]
+    import threading
+    import time
+    over: list = []
+    done = threading.Event()
+
+    def watch():
+        while not done.wait(DISK_POLL_S):
+            for folder, limit in limits:
+                if folder_bytes(folder, limit) > limit:
+                    over.append((folder, limit))
+                    try:
+                        stop()
+                    except (OSError, subprocess.SubprocessError):
+                        pass
+                    return
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        proc = None
+    finally:
+        done.set()
+        watcher.join(timeout=35)
+    if proc is None and not over:
+        raise subprocess.TimeoutExpired(cmd, time.monotonic() - started)
+    return proc, (over[0] if over else None)
 
 
 def docker_available() -> bool:
@@ -579,10 +685,17 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
                 for n in filenames:
                     os.chmod(os.path.join(dirpath, n), 0o666 | (os.stat(os.path.join(dirpath, n)).st_mode & 0o111))
         cmd.insert(3, f"--name={name}")
+        limits = [(out_dir, OUT_DIR_MAX_BYTES)]
+        package_start = 0
+        if mcp_entry is not None and mcp_entry.get("install"):
+            package_start = folder_bytes(plugin_copy)
+            limits.append((plugin_copy, package_start + PACKAGE_GROWTH_MAX_BYTES))
+        overflow = None
         try:
             try:
-                proc = _run(cmd, timeout=MCP_RUN_TIMEOUT_S if mcp_entry is not None else
-                            SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S)
+                proc, overflow = _run_watched(cmd, MCP_RUN_TIMEOUT_S if mcp_entry is not None else
+                                              SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S,
+                                              lambda: _run(["docker", "rm", "-f", name], timeout=30), limits)
             except subprocess.TimeoutExpired:
                 _run(["docker", "rm", "-f", name], timeout=30)
                 proc = None
@@ -590,6 +703,13 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
         finally:
             if monitor:
                 monitor.cleanup()
+        if overflow is not None:
+            folder, limit = overflow
+            where = "its own package folder" if folder == plugin_copy else "the sandbox's output folder"
+            grew = limit - (package_start if folder == plugin_copy else 0)
+            return {"fatal": f"sandbox stopped: the tested code wrote more than {grew // (1024 * 1024)} MB "
+                             f"to {where} on your disk, so the run was ended early",
+                    "outside": seen_outside, "disk_flood": "package" if folder == plugin_copy else "out"}
         if proc is None:
             limit = MCP_RUN_TIMEOUT_S if mcp_entry is not None else \
                 SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S

@@ -554,8 +554,10 @@ def fetch_npm(plan: Plan, work: Path) -> Path:
     spec = f"{plan.package}@{plan.version or 'latest'}"
     with _ProxySetup() as proxy:
         _run_fetch(_fetch_cmd(node_image(), work, [
-            "npm", "install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock",
-            "--prefix", "/work", "--", spec], proxy), spec)
+            # No dependency from a git repo or a web address: npm has to run git (and, for git, a
+            # package's prepare step) to get those, outside the sandbox. Registry packages only.
+            "npm", "install", "--ignore-scripts", "--allow-git=none", "--allow-remote=none", "--omit=dev",
+            "--no-audit", "--no-fund", "--no-package-lock", "--prefix", "/work", "--", spec], proxy), spec)
     return work
 
 

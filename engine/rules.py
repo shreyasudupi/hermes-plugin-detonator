@@ -274,6 +274,11 @@ RULES = {
         "writes its own result is trying to hand in a fake clean report; one that puts a link there is trying "
         "to make Detonator read some other file instead (Detonator never follows it).",
         ("T1565.001", "T1685"), ()),
+    "disk_flood": Rule(
+        "Wrote hundreds of megabytes into the sandbox's output folder, which is a real folder on the "
+        "person's disk. Detonator stopped the run. Honest code never writes there; filling the disk "
+        "breaks the computer and can hide what else the run did.",
+        ("T1499",), ("AML.T0029",)),
     "coverage_stubbed_imports": Rule(
         "The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, "
         "and anything done through them (e.g. an HTTP call via httpx) was not observed."),
@@ -1498,6 +1503,11 @@ def _outside_findings(result: dict) -> list:
         # could have put it there (to feed Detonator a report, or another file from this computer).
         findings.append(Finding("result_forged", CRITICAL, "Replaced Detonator's result file with a link "
                                 "(a forged report)", [str(result.get("fatal") or "")[:200]]))
+    if result.get("disk_flood") == "out":
+        # Measured on the host (engine/runner.py), outside anything the tested code can reach.
+        findings.append(Finding("disk_flood", HIGH, "Tried to fill your disk: wrote hundreds of MB to the "
+                                "sandbox's output folder until Detonator stopped the run",
+                                [str(result.get("fatal") or "")[:200]]))
     # Evidence quotes what the plugin sent or named; keep it on one line and out of Markdown code.
     for f in findings:
         f.evidence = [str(x).replace("`", "'").replace("\r", "\\r").replace("\n", "\\n") for x in f.evidence]
@@ -1734,6 +1744,7 @@ def outside_summary(result: dict) -> dict:
         "tracer_problem": tracer.get("error") or (None if start is not None else
                                                   "the tracer did not attach before the plugin loaded"),
         "trace_truncated": bool(tracer.get("truncated")),
+        "io_uring_allowed": tracer.get("io_uring") == "allowed",
         "fake_internet": bool(sink.get("ready")),
         "every_port": bool(sink.get("every_port")),
         "lookups": sorted({_safe_name(e.get("name"), 80) for e in sink.get("dns") or []})[:20],
