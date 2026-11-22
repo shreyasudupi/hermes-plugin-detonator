@@ -470,8 +470,14 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
         if others and not skill_mode and not env_file and not reads.get("browser") and not reads.get("wallet") \
                 and not reads.get("memory") and not reads.get("history") and not environ:
             own = rules.own_tool_reads(sorted(read_paths.get("secret") or ()), home, _identity_words(result))
+        netrc = posixpath.join(home, ".netrc") if home else None
         if own:
             findings.append(rules.own_tool_finding(own, sorted(set(others))))
+        elif netrc and not skill_mode and sorted(read_paths.get("secret") or ()) == [netrc] and not env_file \
+                and not environ and not any(reads.get(k) for k in ("browser", "wallet", "memory", "history")):
+            # ~/.netrc alone (rules.settle_netrc raises it with the network or any other secret)
+            findings.append(Finding("decoy_accessed", MEDIUM, rules.NETRC_ONLY_TITLE, sorted(set(others))[:12],
+                                    why=rules.NETRC_WHY))
         elif others:
             findings.append(Finding("decoy_accessed", CRITICAL, "Opened decoy key and credential files",
                                     sorted(set(others))[:12]))

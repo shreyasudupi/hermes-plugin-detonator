@@ -743,10 +743,47 @@ def settle_own_config(findings: list, network: bool = False) -> list:
     return sorted(out, key=lambda f: SEVERITY_ORDER.index(f["severity"]))
 
 
+# ~/.netrc read with no other secret: Python's requests opens it on its own for every request.
+NETRC_ONLY_TITLE = "Opened ~/.netrc and no other key file"
+NETRC_WHY = ("~/.netrc holds logins for web and FTP servers. HTTP libraries such as Python's requests open it on "
+             "their own for every request, so on its own this is worth a look. If the run also used the network "
+             "it is high, since a key sent encrypted would not be seen; with any other secret taken or sent in "
+             "the same run it is key theft.")
+_NETRC_SETTLED_TITLE = "Read decoy secret files (~/.netrc, in a run that also took or sent other secrets)"
+_OTHER_SECRET_RULES = {"decoy_accessed", "own_tool_config_read", "hermes_env_read", "environ_file_read",
+                       "browser_or_wallet_read", "memory_read", "secret_in_output", "secret_sent_out"}
+
+
+def settle_netrc(findings: list, network: bool = False) -> list:
+    """Run last, on the finished list of finding dicts. ~/.netrc read alone stays medium; high when
+    the run also reached the network; critical next to any critical finding or any other secret
+    read, returned or sent."""
+    netrc = [f for f in findings if f.get("rule") == "decoy_accessed"
+             and str(f.get("title") or "").startswith(NETRC_ONLY_TITLE)]
+    if not netrc:
+        return findings
+    other = any(f not in netrc and (f.get("severity") == CRITICAL or f.get("rule") in _OTHER_SECRET_RULES)
+                for f in findings)
+    if not other and not network:
+        return findings
+    info = RULES["decoy_accessed"]
+    out = []
+    for f in findings:
+        if f in netrc:
+            title = str(f.get("title") or "")
+            f = {**f, "severity": CRITICAL, "title": _NETRC_SETTLED_TITLE + title[len(NETRC_ONLY_TITLE):],
+                 "why": info.why} if other else \
+                {**f, "severity": HIGH, "title": title + OWN_CONFIG_NETWORK_SUFFIX}
+        out.append(f)
+    return sorted(out, key=lambda f: SEVERITY_ORDER.index(f["severity"]))
+
+
 def settle_evaluation(full: dict, result: dict | None = None) -> dict:
-    """settle_own_config on a finished evaluation, and the verdict again (an ERROR stays one)."""
+    """settle_own_config and settle_netrc on a finished evaluation, and the verdict again (an
+    ERROR stays one)."""
     findings = full.get("findings") or []
-    settled = settle_own_config(findings, network=reached_network(result or {}))
+    network = reached_network(result or {})
+    settled = settle_netrc(settle_own_config(findings, network=network), network=network)
     if settled is findings:
         return full
     full["findings"] = settled
@@ -880,8 +917,12 @@ def _evaluate(result: dict) -> dict:
     own_files = own_tool_reads(secret_reads, home, identity_words([plugin_name])) \
         if secret_reads and not env_file_reads and not loot_reads and not private_reads \
         and not of("environ_file_read") else None
+    netrc_only = bool(home) and secret_reads == [posixpath.join(home, ".netrc")] and not env_file_reads \
+        and not loot_reads and not private_reads and not of("environ_file_read")
     if own_files:
         add(own_tool_finding(own_files, secret_reads))
+    elif netrc_only:
+        add(Finding("decoy_accessed", MEDIUM, NETRC_ONLY_TITLE, secret_reads, why=NETRC_WHY))
     elif secret_reads:
         add(Finding("decoy_accessed", CRITICAL, "Read decoy secret files (keys, tokens, .env)", secret_reads))
     if env_file_reads:
