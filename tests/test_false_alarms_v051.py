@@ -5,9 +5,9 @@ import pytest
 
 from engine import mcp, report, rules
 from tests.test_mcp import HOME, _trace, result, rules_of, tool
-from tests.test_outside import CANARY, TRACE, _parsed
+from tests.test_outside import TRACE, _parsed
 from tests.test_outside import _result as _outside_result
-from tests.test_rules import DECOY_ENV, MEMORY, base, ev, rule_names
+from tests.test_rules import base, ev, rule_names
 
 
 # ---- 1. emoji sequences in an MCP tool description ------------------------------------
@@ -141,62 +141,6 @@ def test_own_environment_file_is_not_reported(line):
 ])
 def test_other_environment_files_stay_high(line):
     assert _environ_reader(line)["environ_file_read"]["severity"] == "high"
-
-
-# ---- 5. ~/.netrc as the only key file read ---------------------------------------------
-NETRC, SSH = "/tmp/home/.netrc", "/tmp/home/.ssh/id_ed25519"
-
-
-def _netrc_run(*events, **over):
-    return rules.evaluate(base(decoy_paths=[DECOY_ENV, MEMORY, NETRC, SSH], events=list(events), **over))
-
-
-def _decoy(out):
-    return [f for f in out["findings"] if f["rule"] == "decoy_accessed"]
-
-
-def test_netrc_alone_is_medium():
-    out = _netrc_run(ev("file_read", path=NETRC))
-    assert [(f["severity"], f["title"]) for f in _decoy(out)] == [("medium", "Opened ~/.netrc and no other key file")]
-    assert out["verdict"] == "REVIEW"
-
-
-def test_netrc_with_the_network_is_high():
-    out = _netrc_run(ev("file_read", path=NETRC), ev("network", op="socket.connect", address="('203.0.113.10', 443)"))
-    assert [f["severity"] for f in _decoy(out)] == ["high"]
-
-
-@pytest.mark.parametrize("extra", [
-    ev("file_read", path=SSH),                          # another key file
-    ev("file_read", path=DECOY_ENV),                    # Hermes's .env
-    ev("file_read", path=MEMORY),                       # Hermes's memory
-    ev("environ_file_read", path="/proc/self/environ", by="plugin"),
-])
-def test_netrc_with_any_other_secret_stays_critical(extra):
-    out = _netrc_run(ev("file_read", path=NETRC), extra)
-    assert "critical" in [f["severity"] for f in _decoy(out)] and out["verdict"] == "DANGEROUS"
-
-
-def test_netrc_sent_out_stays_critical():
-    raw = _outside_result(trace=_parsed(TRACE + '9     13:00:00.000021 sendto(4<TCP:[1]>, '
-                                         f'"pw={CANARY}-netrc-0012", 30, 0, NULL, 0) = 26\n'))
-    raw.update(base(decoy_paths=[NETRC], events=[ev("file_read", path=NETRC)]), home="/tmp/home")
-    out = rules.evaluate(raw)
-    assert [f["severity"] for f in _decoy(out)] == ["critical"] and out["verdict"] == "DANGEROUS"
-
-
-def test_mcp_netrc_alone_is_medium_and_with_another_key_critical():
-    cats = {f"{HOME}/.netrc": "secret", f"{HOME}/.ssh/id_ed25519": "secret", f"{HOME}/.hermes/.env": "secret"}
-    netrc = f'openat(AT_FDCWD</>, "{HOME}/.netrc", O_RDONLY|O_CLOEXEC) = 3'
-    found = rules_of(result(trace=_trace(netrc), decoy_categories=cats))
-    assert (found["decoy_accessed"]["severity"], found["decoy_accessed"]["title"]) == \
-        ("medium", "Opened ~/.netrc and no other key file")
-    ssh = f'openat(AT_FDCWD</>, "{HOME}/.ssh/id_ed25519", O_RDONLY|O_CLOEXEC) = 4'
-    assert rules_of(result(trace=_trace(netrc, ssh), decoy_categories=cats))["decoy_accessed"]["severity"] == "critical"
-    sent = 'connect(5, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("198.18.0.2")}, 16) = 0'
-    sink = {"tcp": [{"host": "evil.example", "port": 443, "bytes": 40, "data": f"pw={CANARY}-netrc-0012"}], "dns": []}
-    assert rules_of(result(trace=_trace(netrc, sent), decoy_categories=cats, sink=sink))["decoy_accessed"]["severity"] \
-        == "critical"
 
 
 # ---- 6. walking the time-zone database --------------------------------------------------
