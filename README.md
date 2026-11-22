@@ -534,9 +534,9 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
 - **v0.5.1**: Fewer false alarms, with small changes only. An MCP tool description whose only
-  invisible characters are the ones inside emoji (family, profession and England, Scotland or
-  Wales flag emoji) is no longer tool poisoning. A refused signal 0, which only checks that a
-  process exists, is not tampering. An MCP server process reading its own
+  invisible characters are the ones inside emoji (family, profession, head-shake and England,
+  Scotland or Wales flag emoji) is no longer tool poisoning. A refused signal 0, which only checks
+  that a process exists, is not tampering. An MCP server process reading its own
   `/proc/<pid>/environ` is not reported. Walking the time-zone database (`/usr/share/zoneinfo`) is
   not a folder search. Verdict lines now say exactly what each verdict means, and a remote or
   config-only MCP check says the server was not run.

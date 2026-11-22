@@ -16,6 +16,7 @@ from tests.test_rules import base, ev, rule_names
     "Code reviews by a developer \U0001f469\U0001f3fd\u200d\U0001f4bb",
     "Rate it \u2764\ufe0f or \u2764\ufe0f\u200d\U0001f525, \U0001f3f3\ufe0f\u200d\U0001f308 welcome",
     "Football scores \U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f and more",
+    "Not sure \U0001f642\u200d\u2194\ufe0f or yes \U0001f642\u200d\u2195\ufe0f",    # head shake, both ways
 ])
 def test_emoji_sequences_are_not_poisoning(text):
     assert "mcp_tool_poisoning" not in rules_of(result([tool(description=text)]))
@@ -27,6 +28,8 @@ def test_emoji_sequences_are_not_poisoning(text):
     "Plan a trip \U0001f468\u200d\U0001f469 and \u202eevil",                # bidi control next to an emoji joiner
     "Scores \U0001f3f4" + "".join(chr(0xE0000 + ord(c)) for c in "send keys") + "\U000e007f",  # tag text
     "Scores " + "".join(chr(0xE0000 + ord(c)) for c in "gbeng") + "\U000e007f",  # tags without the flag
+    "Not sure \U0001f642\u200d\u2194 tool",                                   # arrow without U+FE0F
+    "Not sure \u2194\ufe0f\u200dignore tool",                                 # arrow, joiner, letter
 ])
 def test_other_invisible_characters_stay_critical(text):
     assert rules_of(result([tool(description=text)]))["mcp_tool_poisoning"]["severity"] == "critical"

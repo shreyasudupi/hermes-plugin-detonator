@@ -216,10 +216,12 @@ def _metadata(tool: dict) -> dict:
 
 # Emoji sequences use invisible characters on their own: a zero-width joiner between two emoji
 # (family, profession and flag emoji), a variation selector, and the tag letters of the England,
-# Scotland and Wales flags. Only these exact shapes are taken out; any other invisible character,
-# or one next to something that is not an emoji, is checked as before.
+# Scotland and Wales flags. An arrow from U+2194 to U+2199 counts as an emoji only with U+FE0F after
+# it, as in the head-shake emoji. Only these exact shapes are taken out; any other invisible
+# character, or one next to something that is not an emoji, is checked as before.
 _EMOJI = "\u2300-\u23ff\u2600-\u27bf\u2b00-\u2bff\U0001f000-\U0001faff"
-_EMOJI_JOINER = re.compile(f"([{_EMOJI}][\ufe0e\ufe0f]?)\u200d(?=[{_EMOJI}])")
+_EMOJI_ARROW = "[\u2194-\u2199]\ufe0f"
+_EMOJI_JOINER = re.compile(f"([{_EMOJI}][\ufe0e\ufe0f]?|{_EMOJI_ARROW})\u200d(?=[{_EMOJI}]|{_EMOJI_ARROW})")
 _FLAG_TAGS = re.compile("\U0001f3f4\U000e0067\U000e0062(?:\U000e0065\U000e006e\U000e0067|"
                         "\U000e0073\U000e0063\U000e0074|\U000e0077\U000e006c\U000e0073)\U000e007f")
 
