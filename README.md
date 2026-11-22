@@ -6,7 +6,7 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-**Current version: v0.5.0** ([what's new](#versions))
+**Current version: v0.5.1** ([what's new](#versions))
 
 [![Watch the 82-second Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
@@ -90,7 +90,7 @@ check, so a clean quick result is not mistaken for a clean full one. The first r
 after that a run takes seconds:
 
 ```
-🔴 DANGEROUS: the plugin did something stealers and malware do (took or leaked decoy secrets, ...).
+🔴 DANGEROUS: at least one critical finding, for example taken or leaked decoy secrets, autostart persistence or what looks like a reverse shell; see the findings below.
 - [critical] Read Hermes's .env file, where your API keys are kept, and also reached for the network or other secrets (T1552.001, AML.T0055)
   Why: It read your API keys and, in the same run, reached for the network or took other secrets. ...
 - [high] Reached for the network while loading or from a background hook (the sandbox has no real network; nothing left the box) (T1071.001, T1041, AML.T0025)
@@ -533,6 +533,14 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
+- **v0.5.1**: Fewer false alarms, with small changes only. An MCP tool description whose only
+  invisible characters are the ones inside emoji (family, profession, head-shake and England,
+  Scotland or Wales flag emoji) is no longer tool poisoning; an order to the model in a description
+  is still reported as before. A refused existence check (signal 0) on one or two processes is no
+  longer reported; more than two is still reported. An MCP server process reading its own
+  `/proc/<pid>/environ` is not reported (MCP servers only). Walking the time-zone database
+  (`/usr/share/zoneinfo`) is not a folder search. Verdict lines now say exactly what each verdict
+  means, and a clean remote or config-only check now says the server was not run.
 - **v0.5.0**: Skills. `/detonate-skill <folder | installed-name | owner/repo/folder@sha>` (and
   `hermes detonate-skill`) reads a Hermes skill for planted instructions, hidden text and
   download-and-run lures, then runs its scripts and the commands its instructions show, each on its

@@ -932,7 +932,8 @@ def _evaluate(result: dict) -> dict:
                     listed))
     elsewhere = sorted(p for p in listings - set(listed)
                        if not _under(p, allowed_writes + [plugin_dir, "/tmp"]) or (home and _under(p, [home])))
-    elsewhere = [p for p in elsewhere if not _under(p, allowed_writes)]
+    # zoneinfo.available_timezones() walks the time-zone database; that is not a search for files.
+    elsewhere = [p for p in elsewhere if not _under(p, allowed_writes + ["/usr/share/zoneinfo"])]
     if len(elsewhere) >= 10 or "/" in elsewhere:
         add(Finding("fs_discovery", MEDIUM, f"Looked through {len(elsewhere)} folders outside its own",
                     elsewhere[:20]))
@@ -1365,6 +1366,9 @@ def _negated(text: str, m) -> bool:
     return bool(_NEGATION_RE.search(text[sentence_start:m.end()]))
 
 
+HIDDEN_CHARS_HIT = "contains invisible characters (zero-width, bidi or tag characters)"
+
+
 def _injection_hits(value) -> list:
     if value in (None, "", {}, []):
         return []
@@ -1376,7 +1380,7 @@ def _injection_hits(value) -> list:
         start = max(0, m.start() - 40)
         hits.append("…" + text[start:m.end() + 40].replace("\n", " ") + "…")
     if HIDDEN_CHARS_RE.search(text):
-        hits.append("contains invisible characters (zero-width, bidi or tag characters)")
+        hits.append(HIDDEN_CHARS_HIT)
     return hits[:5]
 
 
@@ -1479,6 +1483,12 @@ def _kill_signal(e: dict) -> str:
     return parts[-1].strip() if len(parts) >= 2 else ""
 
 
+def _kill_target(e: dict) -> str:
+    """The process a traced kill, tkill or tgkill call aims at: every argument but the signal."""
+    parts = str(e.get("detail") or "").split(")")[0].split(",")
+    return ",".join(p.strip() for p in parts[:-1])
+
+
 def _outside_findings(result: dict) -> list:
     # Its own decoding budget, so a flood of encoded text inside cannot blind the outside check.
     _leakfind.reset_run_budget()
@@ -1579,6 +1589,10 @@ def _outside_findings_raw(result: dict) -> list:
     hidden, child_reads, forged, tamper = [], [], [], []
     programs = {e.get("proc", e.get("pid")): posixpath.basename(str((e.get("argv") or [e.get("path")])[0] or ""))
                 for e in plugin_events if e.get("call") in ("execve", "execveat") and e.get("ok")}
+    zero_targets = {_kill_target(e) for e in plugin_events
+                    if e.get("call") in ("kill", "tkill", "tgkill") and e.get("error") == "EPERM"
+                    and _kill_signal(e) == "0"}
+    zero_sweep = len(zero_targets) >= 3 or any(t.startswith("-") for t in zero_targets)
     for j, e in enumerate(plugin_events, start + 1):
         call, path = e.get("call"), str(e.get("path") or "")
         if call in _LINK_CALLS and e.get("ok") and _RESULT_FILE in (e.get("paths") or [])[-1:] + \
@@ -1617,9 +1631,12 @@ def _outside_findings_raw(result: dict) -> list:
             # The harness never signals itself (its timeouts use alarms), so this is the plugin
             # ending the whole test early, which leaves no in-process record to judge.
             tamper.append(f'{call}({str(e.get("detail")).split(")")[0][:40]}): ended its own sandbox')
-        elif call in ("kill", "tkill", "tgkill") and e.get("error") == "EPERM":
+        elif call in ("kill", "tkill", "tgkill") and e.get("error") == "EPERM" \
+                and (_kill_signal(e) != "0" or zero_sweep):
             # Signalling a process it is not allowed to touch: the only such processes in
-            # its world are Detonator's own monitors.
+            # its world are Detonator's own monitors. Signal 0 only asks whether a process
+            # exists (lock-file and pid-file checks do that) and does nothing to it, so one or
+            # two such checks are left out; three or more processes is a sweep and counts.
             tamper.append(f'{call}({str(e.get("detail")).split(")")[0][:40]}) refused')
     hidden = list(dict.fromkeys(hidden))
     shells = trace_reverse_shells(plugin_events)

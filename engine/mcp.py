@@ -214,12 +214,32 @@ def _metadata(tool: dict) -> dict:
             if tool.get(k) is not None}
 
 
+# Emoji sequences use invisible characters on their own. What is taken out before the hidden-character
+# check: a zero-width joiner between two characters in the emoji and symbol ranges of _EMOJI (the first
+# may carry one variation selector, U+FE0E or U+FE0F), with an arrow from U+2194 to U+2199 counting as
+# one of those characters only when U+FE0F follows it; and the tag letters of the England, Scotland and
+# Wales flags. Any other invisible character, or a joiner next to anything else, is checked as before,
+# and the wording checks (orders to the model) run on the text unchanged.
+_EMOJI = "\u2300-\u23ff\u2600-\u27bf\u2b00-\u2bff\U0001f000-\U0001faff"
+_EMOJI_ARROW = "[\u2194-\u2199]\ufe0f"
+_EMOJI_JOINER = re.compile(f"([{_EMOJI}][\ufe0e\ufe0f]?|{_EMOJI_ARROW})\u200d(?=[{_EMOJI}]|{_EMOJI_ARROW})")
+_FLAG_TAGS = re.compile("\U0001f3f4\U000e0067\U000e0062(?:\U000e0065\U000e006e\U000e0067|"
+                        "\U000e0073\U000e0063\U000e0074|\U000e0077\U000e006c\U000e0073)\U000e007f")
+
+
+def _without_emoji_joiners(value) -> list:
+    """Every text in the value (as rules._strings reads it), with those emoji characters taken out."""
+    return [_EMOJI_JOINER.sub(r"\1", _FLAG_TAGS.sub("\U0001f3f4", t)) for t in rules._strings(value)]
+
+
 def _description_findings(listing: dict, where: str) -> list:
     out = []
     for tool in listing.get("tools") or []:
         name = rules._safe_name(tool.get("name"), 60)
         meta = _metadata(tool)
         hits = rules._injection_hits(meta)
+        if hits == [rules.HIDDEN_CHARS_HIT] and not rules._injection_hits(_without_emoji_joiners(meta)):
+            hits = []    # no wording hit, and its only invisible characters are the ones inside emoji
         if hits:
             text = " ".join(hits)
             severe = bool(_SECRETISH.search(text) or _HIDING.search(text) or "invisible" in text)
@@ -354,6 +374,9 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     clock_dir = str((result.get("late") or {}).get("clock_dir") or "")
     clock_dir = clock_dir.rstrip("/") + "/" if re.fullmatch(r"/tmp/clock-[0-9a-f]{12}", clock_dir) else ""
     server_pids = {server_pid, (result.get("late") or {}).get("server_pid")} - {None}
+    # The server's own pids, for the environ check below (MCP server mode only; skill steps are
+    # judged as in v0.5.0).
+    environ_own = {str(p) for p in server_pids}
     server_pids |= {p for p in result.get("own_pids") or [] if isinstance(p, int)}
     skill_mode = result.get("mode") == "skill"
     if skill_mode:
@@ -394,7 +417,11 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                 reads.setdefault(categories[path], []).append(f"{path} ({label})")
                 read_paths.setdefault(categories[path], set()).add(path)
                 hit = True
-            elif rules._ENVIRON_PATH.match(path) and "/self/" not in path and "/thread-self/" not in path:
+            elif rules._ENVIRON_PATH.match(path) and "/self/" not in path and "/thread-self/" not in path \
+                    and (skill_mode or path.split("/")[2] not in
+                         {str(p) for p in {e.get("pid"), e.get("proc")} - {None}} | environ_own):
+                # An MCP server process reading /proc/<its own pid or the server's>/environ reads its
+                # own environment, like /proc/self/environ.
                 environ.append(f"{path} ({label})")
                 hit = True
             elif path.startswith(_SANDBOX_PROBES):

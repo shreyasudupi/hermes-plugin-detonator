@@ -139,7 +139,7 @@ def run_comparison(repo: str, old_sha: str, new_sha: str, subdir: str | None, ou
 
 def summary(evaluation: dict, path: Path, commit: str | None = None) -> str:
     verdict = evaluation.get("verdict", "ERROR")
-    lines = [report.VERDICT_TEXT.get(verdict, verdict), report.test_mode(evaluation.get("outside"))]
+    lines = [report.verdict_text(evaluation), report.test_mode(evaluation.get("outside"))]
     if commit:
         lines.append(f"Tested commit: {commit}")
     if not (evaluation.get("outside") or {}).get("ran"):
