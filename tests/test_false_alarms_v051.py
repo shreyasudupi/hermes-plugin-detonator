@@ -66,6 +66,35 @@ def test_mcp_existence_probe_refused_is_not_tampering():
     assert rules_of(raw)["monitor_tamper"]["severity"] == "high"
 
 
+EPERM = "                   = -1 EPERM (Operation not permitted)"
+
+
+def _tamper_lines(lines):
+    body = "".join(f"7     13:00:00.0000{20 + i:02d} {line}\n" for i, line in enumerate(lines))
+    found = rules._outside_findings(_outside_result(trace=_parsed(TRACE + body)))
+    return [f.severity for f in found if f.rule == "monitor_tamper"]
+
+
+@pytest.mark.parametrize("lines", [
+    ["kill(1, 0)" + EPERM, "kill(1, 0)" + EPERM],               # the same pid twice
+    ["kill(1, 0)" + EPERM, "kill(2, 0)" + EPERM],               # two pids
+])
+def test_existence_checks_on_two_processes_are_not_tampering(lines):
+    assert _tamper_lines(lines) == []
+    assert "monitor_tamper" not in rules_of(result(trace=_trace(*lines)))
+
+
+@pytest.mark.parametrize("count", [3, 30])
+def test_existence_check_sweep_is_still_tampering(count):
+    lines = [f"kill({p}, 0)" + EPERM for p in range(1, count + 1)]
+    assert _tamper_lines(lines) == ["high"]
+    assert rules_of(result(trace=_trace(*lines)))["monitor_tamper"]["severity"] == "high"
+
+
+def test_existence_check_on_every_process_is_still_tampering():
+    assert _tamper_lines(["kill(-1, 0)" + EPERM]) == ["high"]
+
+
 # ---- 3. a process reading its own /proc/<pid>/environ ---------------------------------
 def _environ_reader(line, server_pid=20):
     trace = _trace() + line + "\n"
@@ -135,3 +164,18 @@ def test_remote_server_report_says_it_was_not_run():
                         "outside": {"ran": False, "reason": "remote server"}})
     assert ev_["verdict"] == "NO_FINDINGS"
     assert "the server was not run" in mcp.render("x", ev_)
+
+
+@pytest.mark.parametrize("line", [
+    '20 13:00:00.100001 openat(AT_FDCWD</>, "/proc/20/environ", O_RDONLY|O_CLOEXEC) = 3',   # a step, its own pid
+    '20 13:00:00.100001 openat(AT_FDCWD</>, "/proc/31/environ", O_RDONLY|O_CLOEXEC) = 3',   # another step
+])
+def test_skill_steps_reading_environment_files_are_reported_as_in_v050(line):
+    raw = result(trace=_trace() + line + "\n", mode="skill", own_pids=[20, 31], server_pid=None)
+    found, _ = mcp._behaviour(raw, raw["outside"])
+    assert [f.severity for f in found if f.rule == "environ_file_read"] == ["high"]
+
+
+def test_injected_own_pids_do_not_hide_another_process_environment():
+    line = '20 13:00:00.100001 openat(AT_FDCWD</>, "/proc/7/environ", O_RDONLY|O_CLOEXEC) = 3'
+    assert rules_of(result(trace=_trace() + line + "\n", own_pids=[7]))["environ_file_read"]["severity"] == "high"
