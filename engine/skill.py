@@ -508,9 +508,13 @@ def evaluate(raw: dict) -> dict:
     out = raw.get("outside") if isinstance(raw.get("outside"), dict) else {}
     summary = rules.outside_summary(raw) if out.get("ran") else out
     cov = coverage(raw)
+    flood = rules.disk_flood_finding(raw)
+    if flood and not out.get("ran"):
+        findings.append(flood)
     if raw.get("fatal") and not out.get("ran"):
         findings.sort(key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
-        return {"verdict": rules.VERDICT_ERROR, "findings": [f.to_dict() for f in findings],
+        return {"verdict": rules._verdict(findings) if flood else rules.VERDICT_ERROR,
+                "findings": [f.to_dict() for f in findings],
                 "detail": str(raw["fatal"])[:2000], "outside": summary, "coverage": cov, "layers": _layers(raw, cov)}
     if out.get("ran"):
         out, own = _tool_own_config(raw, out)

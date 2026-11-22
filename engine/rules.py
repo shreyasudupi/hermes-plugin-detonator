@@ -275,9 +275,10 @@ RULES = {
         "to make Detonator read some other file instead (Detonator never follows it).",
         ("T1565.001", "T1685"), ()),
     "disk_flood": Rule(
-        "Wrote hundreds of megabytes into the sandbox's output folder, which is a real folder on the "
-        "person's disk. Detonator stopped the run. Honest code never writes there; filling the disk "
-        "breaks the computer and can hide what else the run did.",
+        "Wrote hundreds of megabytes (or tens of thousands of files) into the sandbox's output folder, "
+        "which is a real folder on the person's disk, or printed more than 64 MB. Detonator stopped the "
+        "run. Honest code never does this; filling the disk breaks the computer and can hide what else "
+        "the run did.",
         ("T1499",), ("AML.T0029",)),
     "coverage_stubbed_imports": Rule(
         "The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, "
@@ -1494,6 +1495,19 @@ def _kill_target(e: dict) -> str:
     return ",".join(p.strip() for p in parts[:-1])
 
 
+def disk_flood_finding(result: dict):
+    """The host's own measurement (engine/runner.py), outside anything the tested code can reach,
+    so it counts whether or not the outside monitor ran. A package folder that grew too much in an
+    MCP install run is an error, not a finding (installs can unpack a lot)."""
+    kind = result.get("disk_flood")
+    if kind not in ("out", "streams"):
+        return None
+    title = ("Tried to fill your disk: wrote hundreds of MB to the sandbox's output folder until "
+             "Detonator stopped the run" if kind == "out" else
+             "Tried to fill your disk or memory: printed more than 64 MB until Detonator stopped the run")
+    return Finding("disk_flood", HIGH, title, [str(result.get("fatal") or "")[:200]])
+
+
 def _outside_findings(result: dict) -> list:
     # Its own decoding budget, so a flood of encoded text inside cannot blind the outside check.
     _leakfind.reset_run_budget()
@@ -1503,11 +1517,9 @@ def _outside_findings(result: dict) -> list:
         # could have put it there (to feed Detonator a report, or another file from this computer).
         findings.append(Finding("result_forged", CRITICAL, "Replaced Detonator's result file with a link "
                                 "(a forged report)", [str(result.get("fatal") or "")[:200]]))
-    if result.get("disk_flood") == "out":
-        # Measured on the host (engine/runner.py), outside anything the tested code can reach.
-        findings.append(Finding("disk_flood", HIGH, "Tried to fill your disk: wrote hundreds of MB to the "
-                                "sandbox's output folder until Detonator stopped the run",
-                                [str(result.get("fatal") or "")[:200]]))
+    flood = disk_flood_finding(result)
+    if flood:
+        findings.append(flood)
     # Evidence quotes what the plugin sent or named; keep it on one line and out of Markdown code.
     for f in findings:
         f.evidence = [str(x).replace("`", "'").replace("\r", "\\r").replace("\n", "\\n") for x in f.evidence]
@@ -1745,6 +1757,7 @@ def outside_summary(result: dict) -> dict:
                                                   "the tracer did not attach before the plugin loaded"),
         "trace_truncated": bool(tracer.get("truncated")),
         "io_uring_allowed": tracer.get("io_uring") == "allowed",
+        "io_uring_unknown": tracer.get("io_uring") == "unknown",
         "fake_internet": bool(sink.get("ready")),
         "every_port": bool(sink.get("every_port")),
         "lookups": sorted({_safe_name(e.get("name"), 80) for e in sink.get("dns") or []})[:20],

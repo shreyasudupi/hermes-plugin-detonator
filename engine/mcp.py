@@ -774,9 +774,13 @@ def _evaluate(result: dict) -> dict:
     declared_names = [str(n) for n in result.get("declared_env") or []]
     declared = [fake_value(canary, i) for i in range(len(declared_names))] if canary else []
     summary = rules.outside_summary(result)
-    if result.get("fatal") and not out.get("ran"):
+    flood = rules.disk_flood_finding(result)
+    if result.get("disk_flood") == "package" or (result.get("fatal") and not out.get("ran") and not flood):
         return {"verdict": rules.VERDICT_ERROR, "findings": [], "detail": str(result["fatal"])[:2000],
                 "outside": summary}
+    if flood and not out.get("ran"):
+        return {"verdict": rules._verdict([flood]), "findings": [flood.to_dict()],
+                "detail": str(result["fatal"])[:2000], "outside": summary}
     findings: list[Finding] = [Finding(rule, sev, title, list(ev))
                                for rule, sev, title, ev in (result.get("config_checks") or [])]
     if result.get("remote") or result.get("config_only"):

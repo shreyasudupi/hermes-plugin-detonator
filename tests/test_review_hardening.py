@@ -26,6 +26,9 @@ def _write_gitconfig(home, marker):
         f"\tsmudge = {sys.executable} -c \"open(r'{marker}', 'w')\"\n"
         "\trequired = true\n"
         "[http]\n\tproxy = http://proxy.example:3128\n"
+        "[http \"https://git.example.com/\"]\n\tsslCAInfo = /etc/example-ca.pem\n"
+        "[credential]\n\thelper = store\n"
+        "[url \"https://mirror.example/\"]\n\tinsteadOf = https://github.com/\n"
         "[core]\n\tpager = something-else\n", encoding="utf-8")
 
 
@@ -35,10 +38,14 @@ def test_git_keeps_only_proxy_and_certificate_settings(tmp_path, monkeypatch, fr
     _write_gitconfig(home, tmp_path / "ran")
     monkeypatch.setenv("HOME", str(home))
     kept = runner._git_kept_settings()
-    assert kept == ["-c", "http.proxy=http://proxy.example:3128"]
+    # The system config may add its own TLS settings (Git for Windows does); those are kept too.
+    assert "http.proxy=http://proxy.example:3128" in kept
+    assert not any(k.startswith(("filter.", "core.pager")) for k in kept)
     listing = runner._run(["git", "config", "--list"], cwd=str(tmp_path)).stdout
     assert "filter.lfs" not in listing and "core.pager" not in listing
+    assert "credential.helper" not in listing and "insteadof" not in listing.lower()
     assert "http.proxy=http://proxy.example:3128" in listing
+    assert "http.https://git.example.com/.sslcainfo=/etc/example-ca.pem" in listing.lower()
 
 
 @pytest.mark.skipif(GIT is None, reason="needs git")
@@ -180,16 +187,18 @@ def test_report_warns_when_docker_allows_io_uring():
     assert "io_uring" in lines and "update Docker" in lines
 
 
-def test_no_io_uring_warning_when_blocked_or_unknown():
+def test_no_io_uring_warning_when_blocked_and_a_note_when_unknown():
     from engine import report
-    for state in ("blocked", "unknown", None):
+    for state in ("blocked", None):
         assert "io_uring" not in "\n".join(report.outside_lines(rules.outside_summary(_ran(state))))
+    lines = "\n".join(report.outside_lines(rules.outside_summary(_ran("unknown"))))
+    assert "could not run" in lines and "⚠️" not in lines
 
 
 def test_npm_download_refuses_git_and_web_dependencies(tmp_path, monkeypatch):
     from engine import mcp_sources as sources
     seen = []
-    monkeypatch.setattr(sources, "_run_fetch", lambda cmd, what: seen.append(cmd))
+    monkeypatch.setattr(sources, "_run_fetch", lambda cmd, what, work=None: seen.append(cmd))
 
     class NoProxy:
         def __enter__(self):
@@ -216,3 +225,75 @@ def test_a_flood_of_empty_files_counts_as_full(tmp_path):
     for i in range(300):
         (tmp_path / f"e{i}").touch()
     assert runner.folder_bytes(tmp_path) >= 300 * 4096
+
+
+def test_mcp_package_growth_is_an_error_even_with_the_outside_monitor():
+    raw = {**_flood_result("package"), "outside": {"ran": True, "canary": "C", "trace": {"events": []},
+                                                    "sink": {"ready": True}}}
+    out = mcp._evaluate(raw)
+    assert out["verdict"] == rules.VERDICT_ERROR and not out["findings"]
+
+
+@pytest.mark.parametrize("kind", ["out", "streams"])
+def test_disk_flood_counts_for_mcp_and_skills_without_the_outside_monitor(kind):
+    from engine import skill
+    raw = _flood_result(kind)
+    for out in (mcp._evaluate(raw), skill.evaluate(raw)):
+        assert out["verdict"] == rules.VERDICT_SUSPICIOUS
+        assert [f["rule"] for f in out["findings"]] == ["disk_flood"]
+
+
+@pytest.mark.skipif(not runner._fd_walk_supported() or os.geteuid() == 0,
+                    reason="needs folder handles and a non-root user (root can read any folder)")
+def test_an_unreadable_subfolder_counts_as_full(tmp_path):
+    hidden = tmp_path / "h"
+    hidden.mkdir()
+    (hidden / "f").write_bytes(b"x" * 1000)
+    hidden.chmod(0o300)
+    try:
+        assert runner.folder_bytes(tmp_path, 10_000_000) > 10_000_000
+    finally:
+        hidden.chmod(0o700)
+
+
+def test_a_folder_nested_too_deep_counts_as_full(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "MAX_WATCH_DEPTH", 5)
+    p = tmp_path
+    for _ in range(8):
+        p = p / "d"
+        p.mkdir()
+    assert runner.folder_bytes(tmp_path, 10_000_000) > 10_000_000
+    assert runner.folder_bytes(tmp_path) < 10_000_000      # without a limit it just counts
+
+
+def test_output_flood_is_stopped_and_kept_out_of_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "DISK_POLL_S", 0.05)
+    monkeypatch.setattr(runner, "STREAMS_MAX_BYTES", 2_000_000)
+    stopped = []
+    spam = "import sys, time\nfor _ in range(2000):\n    sys.stdout.write('y' * 65536); sys.stdout.flush(); time.sleep(0.005)\n"
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+
+    def stop():
+        stopped.append(True)
+        proc.kill()
+    out = tmp_path / "out"
+    out.mkdir()
+    result, over = runner._run_watched([sys.executable, "-c", spam], 60, stop, [(out, 10**9)],
+                                       streams=tmp_path / "streams")
+    assert over and over[0] == tmp_path / "streams" and stopped
+    proc.wait(timeout=5)
+
+
+def test_printed_output_comes_back_as_its_last_part(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    code = "import sys; print('x' * 200000); print('the end', file=sys.stderr)"
+    result, over = runner._run_watched([sys.executable, "-c", code], 30, lambda: None, [(out, 10**9)],
+                                       streams=tmp_path / "streams")
+    assert over is None and result.returncode == 0
+    assert len(result.stdout) <= 64 * 1024 and result.stderr.strip() == "the end"
+
+
+def test_sandbox_run_keeps_output_out_of_dockers_log_store(tmp_path):
+    cmd = runner.docker_run_cmd("img", tmp_path, tmp_path, tmp_path)
+    assert cmd[cmd.index("--log-driver") + 1] == "none"

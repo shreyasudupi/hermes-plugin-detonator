@@ -24,8 +24,10 @@ import json
 import os
 import posixpath
 import re
+import secrets
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -522,6 +524,10 @@ class _ProxySetup:
         return False
 
 
+def _fetch_name() -> str:
+    return f"detonator-fetch-{os.getpid()}-{secrets.token_hex(4)}"
+
+
 def _fetch_user() -> str:
     """Download as you (never root), so the downloaded files are yours and the temporary
     folder can be deleted afterwards. Where there is no such user id, the sandbox user."""
@@ -529,17 +535,33 @@ def _fetch_user() -> str:
     return f"{uid}:{gid}" if uid > 0 and gid >= 0 else "10001:10001"
 
 
-def _fetch_cmd(image: str, work: Path, argv: list, proxy_args: list = ()) -> list:
-    return ["docker", "run", "--rm", "--read-only", "--tmpfs", "/tmp:rw,size=512m,mode=1777",
+FETCH_MAX_BYTES = 1024 * 1024 * 1024   # a download bigger than this is stopped
+
+
+def _fetch_cmd(image: str, work: Path, argv: list, proxy_args: list = (), name: str = "") -> list:
+    return ["docker", "run", "--rm", *([f"--name={name}"] if name else []), "--log-driver", "none", "--read-only", "--tmpfs", "/tmp:rw,size=512m,mode=1777",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "256",
             "--memory", "1g", "--cpus", "2", "--user", _fetch_user(), "-e", "HOME=/tmp",
             "-e", "npm_config_cache=/tmp/.npm", "-e", "npm_config_update_notifier=false",
             *proxy_args, "-v", f"{work}:/work:rw", "-w", "/work", "--entrypoint", argv[0], image, *argv[1:]]
 
 
-def _run_fetch(cmd: list, what: str) -> None:
+def _run_fetch(cmd: list, what: str, work: Path | None = None) -> None:
+    name = next((a.split("=", 1)[1] for a in cmd if a.startswith("--name=")), "")
     try:
-        proc = runner._run(cmd, timeout=FETCH_TIMEOUT_S)
+        if work is not None and name:
+            # The download writes into a folder on your disk; stop it if it grows too big.
+            with tempfile.TemporaryDirectory(prefix="detonator-fetch-") as streams:
+                proc, over = runner._run_watched(cmd, FETCH_TIMEOUT_S,
+                                                 lambda: runner._run(["docker", "rm", "-f", name], timeout=30),
+                                                 [(work, FETCH_MAX_BYTES)], streams=Path(streams))
+            if over:
+                raise SourceError(f"could not download {what}: it is bigger than "
+                                  f"{FETCH_MAX_BYTES // (1024 * 1024)} MB, so the download was stopped")
+        else:
+            proc = runner._run(cmd, timeout=FETCH_TIMEOUT_S)
+    except SourceError:
+        raise
     except Exception as exc:
         raise SourceError(f"could not download {what}: {type(exc).__name__}")
     if proc.returncode != 0:
@@ -557,7 +579,8 @@ def fetch_npm(plan: Plan, work: Path) -> Path:
             # No dependency from a git repo or a web address: npm has to run git (and, for git, a
             # package's prepare step) to get those, outside the sandbox. Registry packages only.
             "npm", "install", "--ignore-scripts", "--allow-git=none", "--allow-remote=none", "--omit=dev",
-            "--no-audit", "--no-fund", "--no-package-lock", "--prefix", "/work", "--", spec], proxy), spec)
+            "--no-audit", "--no-fund", "--no-package-lock", "--prefix", "/work", "--", spec], proxy,
+            _fetch_name()), spec, work)
     return work
 
 
@@ -569,8 +592,8 @@ def fetch_pypi(plan: Plan, work: Path) -> Path:
     with _ProxySetup() as proxy:
         _run_fetch(_fetch_cmd(python_image(), work, [
             "python", "-m", "pip", "install", "--only-binary=:all:", "--no-compile", "--no-cache-dir",
-            "--disable-pip-version-check", "--target", "/work/site", "--", spec], proxy),
-            spec + " (only packages published as wheels can be tested)")
+            "--disable-pip-version-check", "--target", "/work/site", "--", spec], proxy, _fetch_name()),
+            spec + " (only packages published as wheels can be tested)", work)
     return work
 
 

@@ -78,6 +78,9 @@ def outside_lines(summary: dict | None) -> list:
         lines.append("- ⚠️ Your Docker lets containers use io_uring, a way to read files and use the network "
                      "that the tracer cannot see. Current Docker versions block it by default; update Docker "
                      "(or its seccomp profile) and test again for a full cross-check.")
+    elif s.get("io_uring_unknown"):
+        lines.append("- The io_uring check could not run, so it is not known whether this Docker blocks it "
+                     "(current Docker versions do).")
     if s.get("trace_truncated"):
         lines.append("- ⚠️ The trace was very long, so its middle was cut; the start and end were kept.")
     if not s.get("fake_internet"):
