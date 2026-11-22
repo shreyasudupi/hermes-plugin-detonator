@@ -1635,9 +1635,10 @@ def _outside_findings_raw(result: dict) -> list:
             # The harness never signals itself (its timeouts use alarms), so this is the plugin
             # ending the whole test early, which leaves no in-process record to judge.
             tamper.append(f'{call}({str(e.get("detail")).split(")")[0][:40]}): ended its own sandbox')
-        elif call in ("kill", "tkill", "tgkill") and e.get("error") == "EPERM":
+        elif call in ("kill", "tkill", "tgkill") and e.get("error") == "EPERM" and _kill_signal(e) != "0":
             # Signalling a process it is not allowed to touch: the only such processes in
-            # its world are Detonator's own monitors.
+            # its world are Detonator's own monitors. Signal 0 only asks whether a process
+            # exists (lock-file and pid-file checks do that) and does nothing to it.
             tamper.append(f'{call}({str(e.get("detail")).split(")")[0][:40]}) refused')
     hidden = list(dict.fromkeys(hidden))
     shells = trace_reverse_shells(plugin_events)

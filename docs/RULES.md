@@ -115,7 +115,9 @@ sent is logged). There is still no real network. The outside monitor runs by def
 | `result_forged` | critical | Something other than Detonator wrote, removed or linked the sandbox's result file. A plugin that writes its own result is trying to hand in a fake clean report; one that puts a link there is trying to make Detonator read some other file instead (Detonator never follows it). | [T1565.001](https://attack.mitre.org/techniques/T1565/001/) [T1685](https://attack.mitre.org/techniques/T1685/) |
 
 The outside monitor also adds evidence to two rules above: `decoy_accessed` when a program the plugin
-started read a decoy file, and `monitor_tamper` when the plugin tried to trace or read another process.
+started read a decoy file, and `monitor_tamper` when the plugin tried to trace or read another process,
+or to signal one it may not touch. A refused signal 0, which only asks whether a process exists (as
+pid-file and lock-file checks do), does not count.
 
 ## MCP servers
 

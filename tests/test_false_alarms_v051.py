@@ -89,3 +89,30 @@ def test_mcp_pth_stays_persistence_in_a_site_folder_or_after_a_link(extra):
     where = "models" if extra else ".local/lib/python3.12/site-packages"
     lines = ([extra] if extra else []) + [f'openat(AT_FDCWD</>, "{HOME}/{where}/evil.pth", O_WRONLY|O_CREAT, 0666) = 3']
     assert rules_of(result(trace=_trace(*lines)))["persistence"]["severity"] == "critical"
+
+
+# ---- 3. kill(pid, 0) refused with EPERM ------------------------------------------------
+from tests.test_outside import TRACE, _parsed  # noqa: E402
+from tests.test_outside import _result as _outside_result  # noqa: E402
+
+
+def _tamper(line):
+    found = rules._outside_findings(_outside_result(trace=_parsed(TRACE + f"7     13:00:00.000020 {line}\n")))
+    return [f.severity for f in found if f.rule == "monitor_tamper"]
+
+
+def test_existence_probe_refused_is_not_tampering():
+    assert _tamper("kill(1, 0)                         = -1 EPERM (Operation not permitted)") == []
+    assert _tamper("tgkill(1, 1, 0)                    = -1 EPERM (Operation not permitted)") == []
+
+
+@pytest.mark.parametrize("sig", ["SIGKILL", "SIGTERM", "SIGSTOP", "SIGUSR1"])
+def test_real_signal_refused_is_still_tampering(sig):
+    assert _tamper(f"kill(1, {sig})                     = -1 EPERM (Operation not permitted)") == ["high"]
+
+
+def test_mcp_existence_probe_refused_is_not_tampering():
+    raw = result(trace=_trace("kill(1, 0)                         = -1 EPERM (Operation not permitted)"))
+    assert "monitor_tamper" not in rules_of(raw)
+    raw = result(trace=_trace("kill(1, SIGKILL)                   = -1 EPERM (Operation not permitted)"))
+    assert rules_of(raw)["monitor_tamper"]["severity"] == "high"
