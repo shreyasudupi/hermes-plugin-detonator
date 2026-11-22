@@ -210,3 +210,9 @@ def test_ci_pins_the_fixtures_commit_and_keeps_the_token_in_one_step():
     assert re.search(r"FIXTURES_REF: [0-9a-f]{40}\n", ci)
     assert ci.count("secrets.FIXTURES_TOKEN") == 2      # the "is it set" check and the checkout step
     assert "FIXTURES_TOKEN: ${{" not in ci             # never in a job-wide environment
+
+
+def test_a_flood_of_empty_files_counts_as_full(tmp_path):
+    for i in range(300):
+        (tmp_path / f"e{i}").touch()
+    assert runner.folder_bytes(tmp_path) >= 300 * 4096

@@ -474,7 +474,9 @@ Detonator does things a reviewer should know about:
 - **Sandbox settings.** `--read-only --cap-drop ALL
   --security-opt no-new-privileges --user 10001:10001 --pids-limit 128 --memory 512m --cpus 1`,
   a 64 MB `/tmp`, a 180-second timeout, a run that writes more than 256 MB to its output folder
-  on your disk is stopped (and reported as `disk_flood`), and an activity log capped at 5,000 events (a flood is
+  on your disk is stopped (and reported as `disk_flood`; the folder is checked five times a second,
+  so a very fast writer can get a few hundred MB further before the stop, and it is deleted after
+  the run), and an activity log capped at 5,000 events (a flood is
   reported, and the most repeated actions are thinned first so rare ones such as a key read are kept).
   With the outside monitor the plugin's container uses the fake internet's network and the tracer's
   process namespace; without it, `--network none`.
@@ -542,7 +544,7 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
 - **v0.5.2**: Hardening from a full project review. A run that writes more than 256 MB into the
-  sandbox's output folder (a real folder on your disk) is stopped within about a second and
+  sandbox's output folder (a real folder on your disk) is stopped within a fraction of a second and
   reported as `disk_flood` (high); an MCP install run whose package folder grows by more than 512 MB
   is stopped as an error. `git` no longer uses your personal git settings when it fetches code
   (only proxy and certificate settings are kept), so a global Git LFS-style filter cannot run on a

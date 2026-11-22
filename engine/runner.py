@@ -170,12 +170,12 @@ def _run(cmd, timeout=600, **kwargs):
 # RESULT_MAX_BYTES, so an honest run stays far below the output limit.
 OUT_DIR_MAX_BYTES = 256 * 1024 * 1024
 PACKAGE_GROWTH_MAX_BYTES = 512 * 1024 * 1024
-DISK_POLL_S = 0.5
+DISK_POLL_S = 0.2   # the first watched folder is checked this often, the others every second
 
 
 def folder_bytes(root: Path, stop_at: int | None = None) -> int:
-    """Bytes used by the files under `root`, never following links. Stops counting once past
-    `stop_at`, so a folder full of tiny files cannot make the check itself slow."""
+    """Disk used under `root` (at least one 4 KB block per entry), never following links. Stops
+    counting once past `stop_at`, so a folder full of tiny files cannot make the check itself slow."""
     total = 0
     stack = [str(root)]
     while stack:
@@ -188,8 +188,11 @@ def folder_bytes(root: Path, stop_at: int | None = None) -> int:
                         continue
                     if stat.S_ISDIR(st.st_mode):
                         stack.append(e.path)
-                    # Blocks really used, so a sparse file with a huge size does not count as full.
-                    total += st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size
+                    # Blocks really used, so a sparse file with a huge size does not count as full;
+                    # every entry costs at least one block, so a flood of empty files (which uses up
+                    # the disk's file slots, not its space) is stopped too.
+                    used = st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size
+                    total += max(used, 4096)
                     if stop_at is not None and total > stop_at:
                         return total
         except OSError:
@@ -210,8 +213,13 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]]):
     done = threading.Event()
 
     def watch():
+        tick = 0
         while not done.wait(DISK_POLL_S):
-            for folder, limit in limits:
+            tick += 1
+            for i, (folder, limit) in enumerate(limits):
+                # A package folder can hold tens of thousands of files, so it is counted less often.
+                if i and tick % max(1, round(1 / DISK_POLL_S)):
+                    continue
                 if folder_bytes(folder, limit) > limit:
                     over.append((folder, limit))
                     try:
