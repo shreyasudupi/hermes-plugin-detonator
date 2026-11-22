@@ -534,16 +534,12 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
 - **v0.5.1**: Fewer false alarms, with small changes only. An MCP tool description whose only
-  invisible characters are the ones inside emoji (family, profession and England, Scotland or Wales
-  flag emoji) is no longer tool poisoning. A `.pth` file counts as persistence only in a
-  `site-packages` or `dist-packages` folder (a model file such as `~/models/resnet50.pth` is judged
-  like any other file there), unless the run may have made a symbolic link. A refused signal 0,
-  which only checks that a process exists, is not tampering. An MCP server process reading its own
-  `/proc/<pid>/environ` is not reported. `~/.netrc` as the only key file read is medium (high when
-  the run also used the network; any other secret taken or sent keeps it critical). Walking the
-  time-zone database (`/usr/share/zoneinfo`) is not a folder search. A read-only MCP tool that only
-  starts a program is not a read-only lie. Verdict lines now say exactly what each verdict means,
-  and a remote or config-only MCP check says the server was not run.
+  invisible characters are the ones inside emoji (family, profession and England, Scotland or
+  Wales flag emoji) is no longer tool poisoning. A refused signal 0, which only checks that a
+  process exists, is not tampering. An MCP server process reading its own
+  `/proc/<pid>/environ` is not reported. Walking the time-zone database (`/usr/share/zoneinfo`) is
+  not a folder search. Verdict lines now say exactly what each verdict means, and a remote or
+  config-only MCP check says the server was not run.
 - **v0.5.0**: Skills. `/detonate-skill <folder | installed-name | owner/repo/folder@sha>` (and
   `hermes detonate-skill`) reads a Hermes skill for planted instructions, hidden text and
   download-and-run lures, then runs its scripts and the commands its instructions show, each on its
