@@ -137,9 +137,10 @@ def _git_kept_settings() -> list[str]:
     if _git_keep_cache is None:
         keep: list[str] = []
         try:
-            # Reads config files only; runs nothing from any repository.
-            proc = subprocess.run(["git", "config", "--get-regexp", r"^https?\."], capture_output=True,
-                                  text=True, timeout=20, env=_env(), cwd=tempfile.gettempdir())
+            # Reads config files only (your own, so not through the cleaned config); runs nothing
+            # from any repository.
+            proc = _run(["git", "config", "--get-regexp", r"^https?\."], timeout=20,
+                        cwd=tempfile.gettempdir(), own_git_config=True)
             for line in (proc.stdout or "").splitlines():
                 key, _, value = line.partition(" ")
                 if _GIT_KEEP_RE.match(key.lower()) and "\n" not in value:
@@ -154,11 +155,11 @@ def _git_env(env: dict) -> dict:
     return {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
 
-def _run(cmd, timeout=600, **kwargs):
+def _run(cmd, timeout=600, own_git_config=False, **kwargs):
     env = _env()
     if cmd and cmd[0] == "docker":
         cmd = [docker_bin() or "docker", *cmd[1:]]
-    elif cmd and cmd[0] == "git":
+    elif cmd and cmd[0] == "git" and not own_git_config:
         cmd = ["git", *_git_kept_settings(), *cmd[1:]]
         env = _git_env(env)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, **kwargs)
@@ -204,9 +205,6 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]]):
     """`_run` for the sandbox's `docker run`, calling `stop()` (which removes the container) as soon
     as any watched folder grows past its limit. Returns (process result, None or the
     (folder, limit) that overflowed); raises TimeoutExpired like `_run` when the run timed out."""
-    env = _env()
-    if cmd and cmd[0] == "docker":
-        cmd = [docker_bin() or "docker", *cmd[1:]]
     import threading
     import time
     over: list = []
@@ -232,7 +230,7 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]]):
     watcher.start()
     started = time.monotonic()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        proc = _run(cmd, timeout=timeout)
     except subprocess.TimeoutExpired:
         proc = None
     finally:
