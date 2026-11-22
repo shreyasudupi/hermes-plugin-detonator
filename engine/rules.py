@@ -973,7 +973,8 @@ def _evaluate(result: dict) -> dict:
                     listed))
     elsewhere = sorted(p for p in listings - set(listed)
                        if not _under(p, allowed_writes + [plugin_dir, "/tmp"]) or (home and _under(p, [home])))
-    elsewhere = [p for p in elsewhere if not _under(p, allowed_writes)]
+    # zoneinfo.available_timezones() walks the time-zone database; that is not a search for files.
+    elsewhere = [p for p in elsewhere if not _under(p, allowed_writes + ["/usr/share/zoneinfo"])]
     if len(elsewhere) >= 10 or "/" in elsewhere:
         add(Finding("fs_discovery", MEDIUM, f"Looked through {len(elsewhere)} folders outside its own",
                     elsewhere[:20]))

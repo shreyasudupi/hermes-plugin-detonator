@@ -7,7 +7,7 @@ from engine import rules
 from tests.test_mcp import HOME, _trace, result, rules_of, tool
 from tests.test_outside import CANARY, TRACE, _parsed
 from tests.test_outside import _result as _outside_result
-from tests.test_rules import DECOY_ENV, MEMORY, base, ev
+from tests.test_rules import DECOY_ENV, MEMORY, base, ev, rule_names
 
 
 # ---- 1. emoji sequences in an MCP tool description ------------------------------------
@@ -197,3 +197,23 @@ def test_mcp_netrc_alone_is_medium_and_with_another_key_critical():
     sink = {"tcp": [{"host": "evil.example", "port": 443, "bytes": 40, "data": f"pw={CANARY}-netrc-0012"}], "dns": []}
     assert rules_of(result(trace=_trace(netrc, sent), decoy_categories=cats, sink=sink))["decoy_accessed"]["severity"] \
         == "critical"
+
+
+# ---- 6. walking the time-zone database --------------------------------------------------
+ZONES = ["/usr/share/zoneinfo"] + [f"/usr/share/zoneinfo/{z}" for z in
+                                   ("Africa", "America", "America/Argentina", "America/Indiana", "Antarctica",
+                                    "Asia", "Atlantic", "Australia", "Europe", "Indian", "Pacific", "Etc")]
+
+
+def test_time_zone_walk_is_not_discovery():
+    out = rules.evaluate(base(events=[ev("dir_list", path=p) for p in ZONES]))
+    assert "fs_discovery" not in rule_names(out)
+
+
+def test_other_folder_walks_still_count():
+    other = [f"/srv/data/{i}" for i in range(10)]
+    out = rules.evaluate(base(events=[ev("dir_list", path=p) for p in ZONES + other]))
+    f = next(f for f in out["findings"] if f["rule"] == "fs_discovery")
+    assert f["severity"] == "medium" and f["title"] == "Looked through 10 folders outside its own"
+    out = rules.evaluate(base(events=[ev("dir_list", path=p) for p in ZONES + ["/"]]))
+    assert "fs_discovery" in rule_names(out)

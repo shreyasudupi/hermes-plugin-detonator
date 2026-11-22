@@ -24,7 +24,7 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 | `undeclared_env_read` | high | Plugins must list every API key they use in requires_env. Reading one it never declared is often a fallback to a common key (such as OPENAI_API_KEY), but it is also how stealers collect keys quietly. | [T1552](https://attack.mitre.org/techniques/T1552/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
 | `declared_env_read` | info | Reading a key the plugin says it needs is normal; listed for completeness. | – |
 | `decoy_dir_listed` | medium | Listing your home folder or the folders that hold keys and memory is how stealers find what to take. | [T1083](https://attack.mitre.org/techniques/T1083/) [AML.T0084](https://atlas.mitre.org/techniques/AML.T0084) |
-| `fs_discovery` | medium | Walking through many folders outside its own looks like searching for files to take. | [T1083](https://attack.mitre.org/techniques/T1083/) |
+| `fs_discovery` | medium (folders of the time-zone database, `/usr/share/zoneinfo`, are not counted) | Walking through many folders outside its own looks like searching for files to take. | [T1083](https://attack.mitre.org/techniques/T1083/) |
 | `recon` | medium | Reading account and system files tells malware who you are and what machine it is on. | [T1082](https://attack.mitre.org/techniques/T1082/) [T1087](https://attack.mitre.org/techniques/T1087/) |
 
 `own_tool_config_read` replaces `decoy_accessed` only in a narrow case. The name the person chose to
