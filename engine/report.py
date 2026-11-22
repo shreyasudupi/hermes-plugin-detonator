@@ -5,16 +5,27 @@ from __future__ import annotations
 import datetime as _dt
 
 VERDICT_TEXT = {
-    "DANGEROUS": "🔴 DANGEROUS: the plugin did something stealers and malware do (took or leaked decoy "
-                 "secrets, set itself up to start automatically, or hid from or fooled the test).",
-    "SUSPICIOUS": "🟠 SUSPICIOUS: the plugin did something risky (hidden, undeclared or aimed at the "
-                  "model or your system) that needs a close look before you install it.",
-    "REVIEW": "🟡 REVIEW: nothing clearly malicious, but some behaviour deserves a look.",
-    "NO_FINDINGS": "🟢 NO FINDINGS: nothing risky was observed in this run.",
+    "DANGEROUS": "🔴 DANGEROUS: at least one critical finding, for example taken or leaked decoy secrets, "
+                 "autostart persistence or what looks like a reverse shell; see the findings below.",
+    "SUSPICIOUS": "🟠 SUSPICIOUS: at least one high finding; see the findings below.",
+    "REVIEW": "🟡 REVIEW: no critical or high findings; some medium findings deserve a look.",
+    "NO_FINDINGS": "🟢 NO FINDINGS: no finding of medium severity or worse in this run.",
     "LOW_COVERAGE": "⚪ NOT ENOUGH COVERAGE: nothing risky was seen, but almost nothing could run in the sandbox "
                     "(commands were missing, failed or only printed help), so this is weak evidence, not a clean result.",
     "ERROR": "⚪ ERROR: the sandbox could not complete the run, so the plugin was NOT tested. Treat it as unknown, not as safe.",
 }
+
+NO_FINDINGS_NOT_RUN = ("🟢 NO FINDINGS: no finding of medium severity or worse in the config check; "
+                       "the server was not run.")
+
+
+def verdict_text(evaluation: dict) -> str:
+    """The verdict line. A remote or config-only MCP check ran nothing, so its clean line says so."""
+    verdict = evaluation.get("verdict", "ERROR")
+    if verdict == "NO_FINDINGS" and (evaluation.get("remote") or evaluation.get("config_only")):
+        return NO_FINDINGS_NOT_RUN
+    return VERDICT_TEXT.get(verdict, verdict)
+
 
 CAVEAT = (
     "This report is advisory evidence, not proof. Detonator only sees what the plugin did "
@@ -98,7 +109,7 @@ def render(label: str, evaluation: dict, raw: dict | None = None) -> str:
     lines = [
         f"# Detonator report: {label}",
         "",
-        f"**Verdict: {VERDICT_TEXT.get(verdict, verdict)}**",
+        f"**Verdict: {verdict_text(evaluation)}**",
         "",
         f"**{test_mode(evaluation.get('outside'))}**",
         "",

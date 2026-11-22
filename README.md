@@ -90,7 +90,7 @@ check, so a clean quick result is not mistaken for a clean full one. The first r
 after that a run takes seconds:
 
 ```
-🔴 DANGEROUS: the plugin did something stealers and malware do (took or leaked decoy secrets, ...).
+🔴 DANGEROUS: at least one critical finding, for example taken or leaked decoy secrets, autostart persistence or what looks like a reverse shell; see the findings below.
 - [critical] Read Hermes's .env file, where your API keys are kept, and also reached for the network or other secrets (T1552.001, AML.T0055)
   Why: It read your API keys and, in the same run, reached for the network or took other secrets. ...
 - [high] Reached for the network while loading or from a background hook (the sandbox has no real network; nothing left the box) (T1071.001, T1041, AML.T0025)
