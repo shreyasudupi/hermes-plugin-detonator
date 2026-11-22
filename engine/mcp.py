@@ -214,12 +214,29 @@ def _metadata(tool: dict) -> dict:
             if tool.get(k) is not None}
 
 
+# Emoji sequences use invisible characters on their own: a zero-width joiner between two emoji
+# (family, profession and flag emoji), a variation selector, and the tag letters of the England,
+# Scotland and Wales flags. Only these exact shapes are taken out; any other invisible character,
+# or one next to something that is not an emoji, is checked as before.
+_EMOJI = "\u2300-\u23ff\u2600-\u27bf\u2b00-\u2bff\U0001f000-\U0001faff"
+_EMOJI_JOINER = re.compile(f"([{_EMOJI}][\ufe0e\ufe0f]?)\u200d(?=[{_EMOJI}])")
+_FLAG_TAGS = re.compile("\U0001f3f4\U000e0067\U000e0062(?:\U000e0065\U000e006e\U000e0067|"
+                        "\U000e0073\U000e0063\U000e0074|\U000e0077\U000e006c\U000e0073)\U000e007f")
+
+
+def _without_emoji_joiners(value) -> list:
+    """Every text in the value (as rules._strings reads it), with those emoji characters taken out."""
+    return [_EMOJI_JOINER.sub(r"\1", _FLAG_TAGS.sub("\U0001f3f4", t)) for t in rules._strings(value)]
+
+
 def _description_findings(listing: dict, where: str) -> list:
     out = []
     for tool in listing.get("tools") or []:
         name = rules._safe_name(tool.get("name"), 60)
         meta = _metadata(tool)
         hits = rules._injection_hits(meta)
+        if hits == [rules.HIDDEN_CHARS_HIT] and not rules._injection_hits(_without_emoji_joiners(meta)):
+            hits = []    # no wording hit, and its only invisible characters are the ones inside emoji
         if hits:
             text = " ".join(hits)
             severe = bool(_SECRETISH.search(text) or _HIDING.search(text) or "invisible" in text)

@@ -1365,6 +1365,9 @@ def _negated(text: str, m) -> bool:
     return bool(_NEGATION_RE.search(text[sentence_start:m.end()]))
 
 
+HIDDEN_CHARS_HIT = "contains invisible characters (zero-width, bidi or tag characters)"
+
+
 def _injection_hits(value) -> list:
     if value in (None, "", {}, []):
         return []
@@ -1376,7 +1379,7 @@ def _injection_hits(value) -> list:
         start = max(0, m.start() - 40)
         hits.append("…" + text[start:m.end() + 40].replace("\n", " ") + "…")
     if HIDDEN_CHARS_RE.search(text):
-        hits.append("contains invisible characters (zero-width, bidi or tag characters)")
+        hits.append(HIDDEN_CHARS_HIT)
     return hits[:5]
 
 
