@@ -26,6 +26,7 @@ import posixpath
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -556,12 +557,19 @@ def _run_fetch(cmd: list, what: str, work: Path | None = None) -> None:
                                                  lambda: runner._run(["docker", "rm", "-f", name], timeout=30),
                                                  [(work, FETCH_MAX_BYTES)], streams=Path(streams))
             if over:
-                raise SourceError(f"could not download {what}: it is bigger than "
-                                  f"{FETCH_MAX_BYTES // (1024 * 1024)} MB, so the download was stopped")
+                raise SourceError(f"could not download {what}: the download grew past "
+                                  f"{FETCH_MAX_BYTES // (1024 * 1024)} MB, so it was stopped")
         else:
             proc = runner._run(cmd, timeout=FETCH_TIMEOUT_S)
     except SourceError:
         raise
+    except subprocess.TimeoutExpired:
+        if name:
+            try:
+                runner._run(["docker", "rm", "-f", name], timeout=30)
+            except Exception:
+                pass
+        raise SourceError(f"could not download {what}: it took longer than {FETCH_TIMEOUT_S} s")
     except Exception as exc:
         raise SourceError(f"could not download {what}: {type(exc).__name__}")
     if proc.returncode != 0:

@@ -128,7 +128,8 @@ def docker_bin() -> str | None:
 # config is left out, so a filter or helper you installed for your own work (Git LFS, for
 # example) never runs on a repository Detonator downloads.
 _GIT_KEEP_RE = re.compile(r"^http\.(?:.+\.)?(?:proxy|proxyauthmethod|proxysslcainfo|proxysslcert|proxysslkey|"
-                          r"sslcainfo|sslcapath|sslbackend|sslverify|sslcert|sslkey|sslcertpasswordprotected|"
+                          r"sslcainfo|sslcapath|sslbackend|sslverify|sslcert|sslkey|sslcertpasswordprotected|sslcerttype|"
+                          r"sslkeytype|sslversion|sslcipherlist|"
                           r"schannel[a-z]*)$|^core\.longpaths$", re.IGNORECASE)
 _git_keep_cache: list[str] | None = None
 
@@ -143,12 +144,15 @@ def _git_kept_settings() -> list[str]:
         try:
             # Reads config files only (your own, so not through the cleaned config); runs nothing
             # from any repository.
-            proc = _run(["git", "config", "--null", "--get-regexp", r"^(http\.|core\.longpaths)"], timeout=20,
-                        cwd=tempfile.gettempdir(), own_git_config=True)
-            for item in (proc.stdout or "").split("\0"):
-                key, has_value, value = item.partition("\n")
-                if key and _GIT_KEEP_RE.match(key):
-                    keep += ["-c", f"{key}={value}" if has_value else key]
+            # System first, then yours, so yours wins; never a repository's own config.
+            for scope in ("--system", "--global"):
+                proc = _run(["git", "config", scope, "--null", "--get-regexp", r"^(http\.|core\.longpaths)"],
+                            timeout=20, cwd=tempfile.gettempdir(), own_git_config=True)
+                for item in (proc.stdout or "").split("\0"):
+                    key, has_value, value = item.partition("\n")
+                    # A key holding "=" (a URL with a query) cannot be passed with -c.
+                    if key and "=" not in key and _GIT_KEEP_RE.match(key):
+                        keep += ["-c", f"{key}={value}" if has_value else key]
         except (OSError, subprocess.SubprocessError):
             pass
         _git_keep_cache = keep
@@ -200,69 +204,95 @@ def _fd_walk_supported() -> bool:
     return os.scandir in os.supports_fd and os.open in os.supports_dir_fd and hasattr(os, "O_DIRECTORY")
 
 
-def folder_bytes(root: Path, stop_at: int | None = None) -> int:
+class _Uncountable(Exception):
+    """The folder could not be counted this time (out of file handles): try again next tick."""
+
+
+def folder_bytes(root: Path, stop_at: int | None = None) -> int | None:
     """Disk used under `root`, never following links. Stops counting once past `stop_at`, so a
     folder full of tiny files cannot make the check itself slow.
 
     With a limit (a folder the tested code can write to), anything that cannot be counted is
     treated as over it: a subfolder made unreadable to you, one swapped for a link, or one nested
-    deeper than MAX_WATCH_DEPTH. Otherwise the code could fill the disk where it is not seen."""
+    deeper than MAX_WATCH_DEPTH. Otherwise the code could fill the disk where it is not seen.
+    At most one folder handle per level is open at a time. Returns None when this process is out
+    of file handles (not the tested code's doing; the caller tries again later)."""
     over = (stop_at + 1) if stop_at is not None else None
-    if not _fd_walk_supported():   # Windows: no folder handles; links are still never followed
-        return _folder_bytes_by_path(root, stop_at)
+    walk = _fd_walk if _fd_walk_supported() else _path_walk   # Windows: no folder handles
+    try:
+        return walk(root, stop_at, over)
+    except _Uncountable:
+        return None
+
+
+class _Done(Exception):
+    def __init__(self, total):
+        self.total = total
+
+
+def _out_of_handles(exc: OSError) -> bool:
+    import errno
+    return exc.errno in (errno.EMFILE, errno.ENFILE)
+
+
+def _fd_walk(root: Path, stop_at: int | None, over: int | None) -> int:
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    total = 0
+    total = [0]
+
+    def visit(fd: int, depth: int) -> None:
+        subdirs = []
+        try:
+            with os.scandir(fd) as it:
+                for e in it:
+                    try:
+                        st = e.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    total[0] += _entry_bytes(st)
+                    if stop_at is not None and total[0] > stop_at:
+                        raise _Done(total[0])
+                    if stat.S_ISDIR(st.st_mode):
+                        subdirs.append(e.name)
+        except OSError as exc:
+            if _out_of_handles(exc):
+                raise _Uncountable()
+            if over is not None:
+                raise _Done(over)
+            return
+        if subdirs and depth + 1 > MAX_WATCH_DEPTH and over is not None:
+            raise _Done(over)
+        for name in subdirs:
+            try:
+                # Opened by name inside its parent's handle and never through a link, so a folder
+                # swapped for a link in the meantime is refused, not followed.
+                child = os.open(name, flags, dir_fd=fd)
+            except OSError as exc:
+                if _out_of_handles(exc):
+                    raise _Uncountable()
+                if over is not None:
+                    raise _Done(over)
+                continue
+            try:
+                visit(child, depth + 1)
+            finally:
+                os.close(child)
+
     try:
         top = os.open(str(root), flags)
-    except OSError:
+    except OSError as exc:
+        if _out_of_handles(exc):
+            raise _Uncountable()
         return over if over is not None else 0
-    stack = [(top, 0)]
     try:
-        while stack:
-            fd, depth = stack.pop()
-            subdirs = []
-            try:
-                with os.scandir(fd) as it:
-                    for e in it:
-                        try:
-                            st = e.stat(follow_symlinks=False)
-                        except OSError:
-                            continue
-                        total += _entry_bytes(st)
-                        if stop_at is not None and total > stop_at:
-                            os.close(fd)
-                            return total
-                        if stat.S_ISDIR(st.st_mode):
-                            subdirs.append(e.name)
-            except OSError:
-                os.close(fd)
-                if over is not None:
-                    return over
-                continue
-            if subdirs and depth + 1 > MAX_WATCH_DEPTH and over is not None:
-                os.close(fd)
-                return over
-            for name in subdirs:
-                try:
-                    # Opened by name inside its parent's handle and never through a link, so a
-                    # folder swapped for a link in the meantime is refused, not followed.
-                    stack.append((os.open(name, flags, dir_fd=fd), depth + 1))
-                except OSError:
-                    if over is not None:
-                        os.close(fd)
-                        return over
-            os.close(fd)
+        visit(top, 0)
+    except _Done as done:
+        return done.total
     finally:
-        for fd, _ in stack:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-    return total
+        os.close(top)
+    return total[0]
 
 
-def _folder_bytes_by_path(root: Path, stop_at: int | None) -> int:
-    over = (stop_at + 1) if stop_at is not None else None
+def _path_walk(root: Path, stop_at: int | None, over: int | None) -> int:
     total = 0
     stack = [(str(root), 0)]
     while stack:
@@ -271,7 +301,9 @@ def _folder_bytes_by_path(root: Path, stop_at: int | None) -> int:
             with os.scandir(path) as it:
                 for e in it:
                     try:
-                        st = e.stat(follow_symlinks=False)
+                        # A full stat, not the listing's copy: on Windows the listing does not show
+                        # a file growing while it is still open for writing.
+                        st = os.stat(e.path, follow_symlinks=False)
                     except OSError:
                         continue
                     total += _entry_bytes(st)
@@ -281,7 +313,9 @@ def _folder_bytes_by_path(root: Path, stop_at: int | None) -> int:
                         if depth + 1 > MAX_WATCH_DEPTH and over is not None:
                             return over
                         stack.append((e.path, depth + 1))
-        except OSError:
+        except OSError as exc:
+            if _out_of_handles(exc):
+                raise _Uncountable()
             if over is not None:
                 return over
     return total
@@ -307,35 +341,49 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]], stre
     import time
     over: list = []
     done = threading.Event()
+    out_f = err_f = None
     if streams is not None:
         streams.mkdir(exist_ok=True)
-        limits = [*limits, (streams, STREAMS_MAX_BYTES)]
+        out_f = open(streams / "stdout", "wb")
+        err_f = open(streams / "stderr", "wb")
+
+    def printed() -> int:
+        # Sizes from the open files themselves, so this works where a folder listing lags behind.
+        try:
+            return os.fstat(out_f.fileno()).st_size + os.fstat(err_f.fileno()).st_size
+        except (OSError, ValueError):
+            return 0
 
     def watch():
         tick = 0
         while not done.wait(DISK_POLL_S):
             tick += 1
+            hit = None
+            if out_f is not None and printed() > STREAMS_MAX_BYTES:
+                hit = (streams, STREAMS_MAX_BYTES)
             for i, (folder, limit) in enumerate(limits):
+                if hit:
+                    break
                 # Later folders (a package folder can hold tens of thousands of files) are
                 # counted once a second.
                 if i and tick % max(1, round(1 / DISK_POLL_S)):
                     continue
-                if folder_bytes(folder, limit) > limit:
-                    over.append((folder, limit))
-                    try:
-                        stop()
-                    except (OSError, subprocess.SubprocessError):
-                        pass
-                    return
+                used = folder_bytes(folder, limit)
+                if used is not None and used > limit:
+                    hit = (folder, limit)
+            if hit:
+                over.append(hit)
+                try:
+                    stop()
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                return
 
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
     started = time.monotonic()
-    out_f = err_f = None
     try:
-        if streams is not None:
-            out_f = open(streams / "stdout", "wb")
-            err_f = open(streams / "stderr", "wb")
+        if out_f is not None:
             proc = _run(cmd, timeout=timeout, capture=False, stdout=out_f, stderr=err_f)
         else:
             proc = _run(cmd, timeout=timeout)
@@ -711,29 +759,49 @@ def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, worl
     ]
 
 
+def _remove_tree(path: Path) -> None:
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:   # a very deep tree can exhaust Python's recursion on older versions
+        pass
+
+
 @contextlib.contextmanager
 def _run_folder(tag: str):
     """The run's private temporary folder, removed afterwards even when the tested code (another
-    user id) left subfolders there that you are not allowed to empty. A removal problem never
-    replaces the run's result."""
+    user id) left subfolders there that you are not allowed to empty, or a tree too deep to remove
+    from Python. A removal problem never replaces the run's result."""
     tmp = Path(tempfile.mkdtemp(prefix="detonator-"))
     try:
         yield tmp
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        _remove_tree(tmp)
         if tmp.exists():
-            # Only the sandbox user can open up what it made: do that in a throwaway container
-            # (no network, no capabilities; chmod -R never follows links), then remove again.
+            # What the sandbox user made, only the sandbox user can remove: do that in a throwaway
+            # container (no network, no capabilities; chmod -R and find never follow links), then
+            # remove the rest.
             mounts = [a for sub in ("out", "plugin") if (tmp / sub).is_dir()
                       for a in ("-v", f"{tmp / sub}:/w/{sub}:rw")]
             if mounts:
+                name = f"detonator-clean-{os.getpid()}-{secrets.token_hex(4)}"
                 try:
-                    _run(["docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",
-                          "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "none",
-                          *mounts, "--entrypoint", "chmod", tag, "-R", "u+rwX,go+rwX", "/w"], timeout=120)
+                    _run(["docker", "run", "--rm", f"--name={name}", "--network", "none", "--read-only",
+                          "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001",
+                          "--log-driver", "none", *mounts, "--entrypoint", "sh", tag, "-c",
+                          # First let the owner into folders it locked (mode 0300 and the like).
+                          "chmod -R u+rwX /w 2>/dev/null; find /w -mindepth 2 -user 10001 -delete"],
+                         timeout=120)
+                except subprocess.TimeoutExpired:
+                    try:
+                        _run(["docker", "rm", "-f", name], timeout=30)
+                    except (OSError, subprocess.SubprocessError):
+                        pass
                 except (OSError, subprocess.SubprocessError):
                     pass
-            shutil.rmtree(tmp, ignore_errors=True)
+            _remove_tree(tmp)
+            if tmp.exists():
+                print(f"Detonator: could not fully remove the run folder {tmp}; you can delete it "
+                      "(it held only the tested copy and its output).", file=sys.stderr)
 
 
 def _skip_links(src: str, names: list[str]) -> set[str]:
@@ -835,7 +903,7 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
         limits = [(out_dir, OUT_DIR_MAX_BYTES)]
         package_start = 0
         if mcp_entry is not None and mcp_entry.get("install"):
-            package_start = folder_bytes(plugin_copy)
+            package_start = folder_bytes(plugin_copy) or 0
             limits.append((plugin_copy, package_start + PACKAGE_GROWTH_MAX_BYTES))
         overflow = None
         try:

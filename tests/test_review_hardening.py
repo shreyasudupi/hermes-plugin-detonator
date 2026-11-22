@@ -231,13 +231,26 @@ def test_mcp_package_growth_is_an_error_even_with_the_outside_monitor():
     raw = {**_flood_result("package"), "outside": {"ran": True, "canary": "C", "trace": {"events": []},
                                                     "sink": {"ready": True}}}
     out = mcp._evaluate(raw)
-    assert out["verdict"] == rules.VERDICT_ERROR and not out["findings"]
+    assert out["verdict"] == rules.VERDICT_ERROR
+    assert "disk_flood" not in [f["rule"] for f in out["findings"]]
+
+
+def test_mcp_package_growth_keeps_worse_evidence_from_before_the_stop():
+    canary = "CANARY0123456789ABCD"
+    raw = {**_flood_result("package"), "outside": {
+        "ran": True, "canary": canary, "trace": {"events": []},
+        "sink": {"ready": True, "every_port": True, "dns": [],
+                 "tcp": [{"ip": "203.0.113.9", "port": 443, "data": "POST / key=sk-" + canary + "-ENV"}]}}}
+    out = mcp._evaluate(raw)
+    assert out["verdict"] == rules.VERDICT_DANGEROUS, out
 
 
 @pytest.mark.parametrize("kind", ["out", "streams"])
 def test_disk_flood_counts_for_mcp_and_skills_without_the_outside_monitor(kind):
     from engine import skill
     raw = _flood_result(kind)
+    with_checks = {**raw, "config_checks": [("mcp_unpinned_launch", "medium", "Not pinned", ["x"])]}
+    assert {"disk_flood", "mcp_unpinned_launch"} <= {f["rule"] for f in mcp._evaluate(with_checks)["findings"]}
     for out in (mcp._evaluate(raw), skill.evaluate(raw)):
         assert out["verdict"] == rules.VERDICT_SUSPICIOUS
         assert [f["rule"] for f in out["findings"]] == ["disk_flood"]
@@ -297,3 +310,47 @@ def test_printed_output_comes_back_as_its_last_part(tmp_path):
 def test_sandbox_run_keeps_output_out_of_dockers_log_store(tmp_path):
     cmd = runner.docker_run_cmd("img", tmp_path, tmp_path, tmp_path)
     assert cmd[cmd.index("--log-driver") + 1] == "none"
+
+
+def test_wide_folders_never_run_out_of_file_handles(tmp_path):
+    resource = pytest.importorskip("resource")
+    if not runner._fd_walk_supported():
+        pytest.skip("folder handles not used here")
+    for i in range(2000):
+        (tmp_path / f"pkg{i}").mkdir()
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(256, hard), hard))
+    try:
+        n = runner.folder_bytes(tmp_path, 10**9)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    assert n is not None and n < 10**9
+
+
+def test_out_of_handles_means_try_again_not_full(tmp_path, monkeypatch):
+    import errno
+    (tmp_path / "a").mkdir()
+    real = os.open
+
+    def no_handles(path, flags, *a, **kw):
+        if kw.get("dir_fd") is not None:
+            raise OSError(errno.EMFILE, "too many open files")
+        return real(path, flags, *a, **kw)
+    if not runner._fd_walk_supported():
+        pytest.skip("folder handles not used here")
+    monkeypatch.setattr(runner, "_fd_walk_supported", lambda: True)
+    monkeypatch.setattr(runner.os, "open", no_handles)
+    assert runner.folder_bytes(tmp_path, 10**9) is None
+
+
+def test_git_settings_skip_keys_that_cannot_be_passed(tmp_path, monkeypatch, fresh_git_cache):
+    if GIT is None:
+        pytest.skip("needs git")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text('[http "https://example.com/a?b=c"]\n\tsslCAInfo = /x.pem\n'
+                                     "[http]\n\tproxy = http://proxy.example:3128\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    kept = runner._git_kept_settings()
+    assert "http.proxy=http://proxy.example:3128" in kept and not any("b=c" in k for k in kept)
+    assert runner._run(["git", "--version"]).returncode == 0

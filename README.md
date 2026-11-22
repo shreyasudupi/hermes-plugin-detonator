@@ -451,9 +451,9 @@ Detonator does things a reviewer should know about:
 - **Clones code.** For a GitHub target it runs `git init` / `git fetch` / `git checkout`
   of one exact 40-character commit: the one you give, the one the Hermes catalog pins, or the
   newest one, found with `git ls-remote` (reads the repo's branch list only) after you approve, with git hooks disabled, no submodules, and symlinks checked out as plain files.
-  Your own global and system git settings are left out (only proxy and TLS certificate settings are
-  kept; credential helpers and URL rewrites are not used, since only public repositories are
-  fetched), so a filter or helper you installed for your own work, such as Git LFS, never runs on a
+  Your own global and system git settings are left out (only network settings are kept: proxy,
+  TLS certificates and verification, client certificates, and `core.longpaths` on Windows;
+  credential helpers and URL rewrites are not used, since only public repositories are fetched), so a filter or helper you installed for your own work, such as Git LFS, never runs on a
   downloaded repository
   (links are never copied into the sandbox, so a repo cannot pull in real files from your machine).
   No code from the target runs on your machine outside the container.
@@ -476,11 +476,12 @@ Detonator does things a reviewer should know about:
   --security-opt no-new-privileges --user 10001:10001 --pids-limit 128 --memory 512m --cpus 1`,
   a 64 MB `/tmp`, a 180-second timeout, a run that writes more than 256 MB (or tens of thousands of
   files) to its output folder on your disk, or prints more than 64 MB, is stopped and reported as
-  `disk_flood` (the folder is checked five times a second, so a very fast writer can get further
-  before the stop: a few hundred MB in our tests on a cloud Linux machine; a subfolder Detonator
-  cannot count counts as full), what it prints goes to capped files rather than into memory or
-  Docker's own log store (`--log-driver none`), the run folder is removed afterwards even when the
-  tested code left folders you could not empty yourself, and an activity log capped at 5,000 events (a flood is
+  `disk_flood` (the folder and the printed output are checked five times a second, so a very fast
+  writer can get further before the stop; a subfolder Detonator cannot count, because it was made
+  unreadable, swapped for a link or nested over 128 deep, counts as full), what it prints goes to
+  capped files rather than into memory or Docker's own log store (`--log-driver none`), the run
+  folder is removed afterwards (folders the tested code locked are removed from a throwaway
+  container; if that fails, Detonator prints the folder's path), and an activity log capped at 5,000 events (a flood is
   reported, and the most repeated actions are thinned first so rare ones such as a key read are kept).
   With the outside monitor the plugin's container uses the fake internet's network and the tracer's
   process namespace; without it, `--network none`.
@@ -502,10 +503,11 @@ Detonator does things a reviewer should know about:
   own config reader (`hermes_cli.config`), never your `.env` or `auth.json`; env and header values
   are only checked for written-in keys, never stored, sent or shown beyond their first 4 characters.
   Downloads run `npm install --ignore-scripts --allow-git=none --allow-remote=none` (registry
-  packages only: no dependency from a git repo or a web address; a download over 1 GB is stopped) or `pip install --only-binary=:all:` in a container
+  packages only: no dependency from a git repo or a web address) or `pip install --only-binary=:all:` in a container
   from `sandbox/Dockerfile.mcp` (digest-pinned `node` and `python` images) with your proxy settings,
   as your own user (never root), `--read-only --cap-drop ALL --security-opt no-new-privileges
-  --pids-limit 256 --memory 1g`, and only an empty work folder mounted. It never uses host
+  --pids-limit 256 --memory 1g`, and only an empty work folder mounted; a download that grows past
+  1 GB is stopped. It never uses host
   networking: if your proxy runs on this computer (localhost), Docker Desktop reaches it through
   `host.docker.internal`, and on Linux Detonator opens a relay for the length of the download that
   forwards only to your proxy's port, so the container cannot reach your other local services.
@@ -549,13 +551,14 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
 
 - **v0.5.2**: Hardening from a full project review. A run that writes more than 256 MB into the
   sandbox's output folder (a real folder on your disk), or prints more than 64 MB, is stopped
-  (typically within a fraction of a second) and reported as `disk_flood` (high), with or without
+  and reported as `disk_flood` (high), with or without
   the outside monitor; an MCP install run whose package folder grows by more than 512 MB
-  is stopped as an error. `git` no longer uses your personal git settings when it fetches code
-  (only proxy and certificate settings are kept), so a global Git LFS-style filter cannot run on a
+  is stopped and the verdict is ERROR unless what was seen before the stop is worse. `git` no longer uses your personal git settings when it fetches code
+  (only network settings such as proxy and TLS certificates are kept), so a global Git LFS-style filter cannot run on a
   downloaded repository. MCP package downloads refuse dependencies from git repos and web addresses,
   and stop past 1 GB. Printed output no longer collects in memory, and a run folder the tested code
-  filled with its own subfolders no longer crashes the clean-up and loses the result.
+  filled with locked or very deep subfolders no longer crashes the clean-up and loses the result
+  (before, that was possible when Detonator runs as a normal user on Linux).
   The tracer checks whether your Docker allows io_uring (which it cannot see) and the report warns if
   it does. The test-only `_detonator_config` switch in `mcp-server.yaml` can only name a file inside
   the tested folder. CI gives the private fixtures token to one step only, pins the fixtures commit,

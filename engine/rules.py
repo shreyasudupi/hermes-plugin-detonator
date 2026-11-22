@@ -277,8 +277,8 @@ RULES = {
     "disk_flood": Rule(
         "Wrote hundreds of megabytes (or tens of thousands of files) into the sandbox's output folder, "
         "which is a real folder on the person's disk, or printed more than 64 MB. Detonator stopped the "
-        "run. Honest code never does this; filling the disk breaks the computer and can hide what else "
-        "the run did.",
+        "run. Honest code does not write there, and does not print that much in one short test run; "
+        "filling the disk breaks the computer and can hide what else the run did.",
         ("T1499",), ("AML.T0029",)),
     "coverage_stubbed_imports": Rule(
         "The sandbox has no Hermes or third-party packages. Imports were replaced by inert stand-ins, "

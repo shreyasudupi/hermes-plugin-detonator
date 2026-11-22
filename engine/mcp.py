@@ -775,14 +775,15 @@ def _evaluate(result: dict) -> dict:
     declared = [fake_value(canary, i) for i in range(len(declared_names))] if canary else []
     summary = rules.outside_summary(result)
     flood = rules.disk_flood_finding(result)
-    if result.get("disk_flood") == "package" or (result.get("fatal") and not out.get("ran") and not flood):
+    if result.get("fatal") and not out.get("ran") and not flood:
         return {"verdict": rules.VERDICT_ERROR, "findings": [], "detail": str(result["fatal"])[:2000],
                 "outside": summary}
-    if flood and not out.get("ran"):
-        return {"verdict": rules._verdict([flood]), "findings": [flood.to_dict()],
-                "detail": str(result["fatal"])[:2000], "outside": summary}
     findings: list[Finding] = [Finding(rule, sev, title, list(ev))
                                for rule, sev, title, ev in (result.get("config_checks") or [])]
+    if flood and not out.get("ran"):
+        findings = sorted(findings + [flood], key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
+        return {"verdict": rules._verdict(findings), "findings": [f.to_dict() for f in findings],
+                "detail": str(result["fatal"])[:2000], "outside": summary}
     if result.get("remote") or result.get("config_only"):
         findings.sort(key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
         extra = {"remote": True} if result.get("remote") else {"config_only": True}
@@ -909,6 +910,11 @@ def _evaluate(result: dict) -> dict:
         detail = ("The outside monitor did not run (" + str(out.get("reason") or "unknown reason")[:300] +
                   "), so what the server did was not watched. Only what it told the model was checked. "
                   "Run /detonate check, fix what it reports, and try again.")
+    if result.get("disk_flood") == "package" and verdict in (rules.VERDICT_NO_FINDINGS, rules.VERDICT_REVIEW):
+        # Its install grew past the limit and was stopped, so the run is incomplete: an error, not
+        # a clean or review result. Worse findings from what was seen before the stop still count.
+        verdict = rules.VERDICT_ERROR
+        detail = str(result.get("fatal") or "")[:2000]
     return {"verdict": verdict, "findings": [f.to_dict() for f in findings], "outside": summary,
             **({"detail": detail} if detail else {}),
             "tools": [{"name": rules._safe_name(t.get("name"), 80),
