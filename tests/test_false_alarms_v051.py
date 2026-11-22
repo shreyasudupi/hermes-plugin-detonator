@@ -4,7 +4,7 @@ the v0.5.0 severity."""
 import pytest
 
 from engine import mcp, report, rules
-from tests.test_mcp import HOME, _trace, result, rules_of, tool
+from tests.test_mcp import _trace, result, rules_of, tool
 from tests.test_outside import TRACE, _parsed
 from tests.test_outside import _result as _outside_result
 from tests.test_rules import base, ev, rule_names
