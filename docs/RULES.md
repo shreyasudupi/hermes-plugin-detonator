@@ -130,6 +130,8 @@ days ahead and repeats the run; anything new then is `time_triggered`, and tools
 is replaced with a fake key. What the server does on the
 computer is judged by the rules above that the outside monitor can see (key files, `.env`, network,
 programs, writes, persistence, leaks); the rules below cover what only MCP servers can do, and the server's own entry in `config.yaml`.
+A server process reading its own environment file (`/proc/self/environ`, or `/proc/<pid>/environ` with
+its own or the server's process id) is not `environ_file_read`; any other process's environment is.
 
 | Rule | Severity | Why it matters | MITRE |
 |---|---|---|---|

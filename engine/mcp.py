@@ -411,7 +411,9 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                 reads.setdefault(categories[path], []).append(f"{path} ({label})")
                 read_paths.setdefault(categories[path], set()).add(path)
                 hit = True
-            elif rules._ENVIRON_PATH.match(path) and "/self/" not in path and "/thread-self/" not in path:
+            elif rules._ENVIRON_PATH.match(path) and "/self/" not in path and "/thread-self/" not in path \
+                    and path.split("/")[2] not in {str(p) for p in {e.get("pid"), e.get("proc")} | server_pids}:
+                # /proc/<its own pid>/environ is its own environment, like /proc/self/environ
                 environ.append(f"{path} ({label})")
                 hit = True
             elif path.startswith(_SANDBOX_PROBES):

@@ -116,3 +116,28 @@ def test_mcp_existence_probe_refused_is_not_tampering():
     assert "monitor_tamper" not in rules_of(raw)
     raw = result(trace=_trace("kill(1, SIGKILL)                   = -1 EPERM (Operation not permitted)"))
     assert rules_of(raw)["monitor_tamper"]["severity"] == "high"
+
+
+# ---- 4. a process reading its own /proc/<pid>/environ ---------------------------------
+def _environ_reader(line, server_pid=20):
+    trace = _trace() + line + "\n"
+    return rules_of(result(trace=trace, server_pid=server_pid))
+
+
+@pytest.mark.parametrize("line", [
+    '20 13:00:00.100001 openat(AT_FDCWD</>, "/proc/20/environ", O_RDONLY|O_CLOEXEC) = 3',      # the server itself
+    '20 13:00:00.100001 openat(AT_FDCWD</>, "/proc/20/task/21/environ", O_RDONLY) = 3',
+    '21 13:00:00.100001 openat(AT_FDCWD</>, "/proc/21/environ", O_RDONLY|O_CLOEXEC) = 3',      # a child, its own
+    '21 13:00:00.100001 openat(AT_FDCWD</>, "/proc/20/environ", O_RDONLY|O_CLOEXEC) = 3',      # a child, the server's
+])
+def test_own_environment_file_is_not_reported(line):
+    assert "environ_file_read" not in _environ_reader(line)
+
+
+@pytest.mark.parametrize("line", [
+    '20 13:00:00.100001 openat(AT_FDCWD</>, "/proc/7/environ", O_RDONLY|O_CLOEXEC) = 3',       # the stand-in for Hermes
+    '20 13:00:00.100001 openat(AT_FDCWD</>, "/proc/1/environ", O_RDONLY|O_CLOEXEC) = 3',
+    '20 13:00:00.100001 openat(AT_FDCWD</>, "/proc/99/task/20/environ", O_RDONLY) = 3',
+])
+def test_other_environment_files_stay_high(line):
+    assert _environ_reader(line)["environ_file_read"]["severity"] == "high"
