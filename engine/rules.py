@@ -299,8 +299,8 @@ RULES.update({
         "different ones later.",
         ("T1195.002",), ("AML.T0109",)),
     "mcp_readonly_lie": Rule(
-        "The tool says it is read-only (readOnlyHint), but it wrote, renamed or deleted files when "
-        "called. On servers marked `trust: untrusted`, Hermes skips the approval prompt "
+        "The tool says it is read-only (readOnlyHint), but it wrote files, ran a program or used the "
+        "network when called. On servers marked `trust: untrusted`, Hermes skips the approval prompt "
         "for read-only tools, so this lie gets the action past the user.",
         ("T1036",), ("AML.T0110",)),
     "mcp_sampling_used": Rule(

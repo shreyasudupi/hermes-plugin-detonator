@@ -219,24 +219,6 @@ def test_other_folder_walks_still_count():
     assert "fs_discovery" in rule_names(out)
 
 
-# ---- 7. a read-only tool that only started a program -----------------------------------
-_RO_CALL = [{"index": 0, "tool": "add", "annotations": {"readOnlyHint": True}}]
-_GIT = 'execve("/usr/bin/git", ["git", "status", "--porcelain"], 0x1 /* 5 vars */) = 0'
-
-
-def test_readonly_tool_starting_a_program_is_not_a_lie():
-    found = rules_of(result([tool(annotations={"readOnlyHint": True})], trace=_trace(_GIT), calls=_RO_CALL))
-    assert "mcp_readonly_lie" not in found
-    assert "command_run" in found                      # the program is still reported
-
-
-def test_readonly_tool_starting_a_program_that_writes_is_a_lie():
-    trace = _trace(_GIT, f'openat(AT_FDCWD</>, "{HOME}/.bashrc", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3')
-    found = rules_of(result([tool(annotations={"readOnlyHint": True})], trace=trace, calls=_RO_CALL))
-    lie = found["mcp_readonly_lie"]
-    assert lie["severity"] == "critical" and lie["title"].endswith("changed files and started a program")
-
-
 # ---- 8. verdict sentences ----------------------------------------------------------------
 def test_verdict_sentences_say_what_the_severities_are():
     t = report.VERDICT_TEXT

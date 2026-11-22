@@ -597,9 +597,7 @@ def _readonly_lies(result: dict, per_phase: dict, findings: list) -> list:
                           for end in ("", " again", ", clock moved forward"))]
         if "changed files" in acts and not writes:
             acts.remove("changed files")
-        # Starting a program alone (git status, a converter) is not a lie: what the program then
-        # does is judged by the other rules. A file write keeps the lie, program and all.
-        if "changed files" in acts:
+        if acts:
             out.append(Finding("mcp_readonly_lie", CRITICAL,
                                f"Tool {rules._safe_name(c.get('tool'), 60)} claims to be read-only but "
                                + " and ".join(acts), [f"readOnlyHint: true; {', '.join(acts)}"]))
