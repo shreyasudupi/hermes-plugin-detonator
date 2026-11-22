@@ -19,7 +19,7 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 | `secret_in_output` | critical | A fake key ended up somewhere it could leave the machine (a model prompt, a tool result, a network address, a command or another tool's input), even when encoded or split up to hide it. A real key would leak the same way. | [T1041](https://attack.mitre.org/techniques/T1041/) [AML.T0057](https://atlas.mitre.org/techniques/AML.T0057) [AML.T0086](https://atlas.mitre.org/techniques/AML.T0086) |
 | `memory_read` | medium | Memory and chat history hold what the agent knows about you. Expected for memory plugins, a privacy leak for anything else. | [T1005](https://attack.mitre.org/techniques/T1005/) |
 | `env_enumerated` | medium (info when a library does it) | Copying the whole environment collects every API key at once. | [T1552](https://attack.mitre.org/techniques/T1552/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
-| `environ_file_read` | high (medium when a library does it) | Read the process environment as a file under /proc instead of asking for variables by name. That gets every API key at once and skips the usual way of reading them, which is how stealers try to slip past simple monitors. | [T1552](https://attack.mitre.org/techniques/T1552/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
+| `environ_file_read` | high (medium when a library does it; in MCP server mode, a server process reading its own environment file is not counted, see [MCP servers](#mcp-servers)) | Read the process environment as a file under /proc instead of asking for variables by name. That gets every API key at once and skips the usual way of reading them, which is how stealers try to slip past simple monitors. | [T1552](https://attack.mitre.org/techniques/T1552/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
 | `hermes_env_read` | high | Hermes keeps your API keys in the .env file in its home folder and already loads them for plugins. The catalog rules say plugins must never read that file; a plugin that opens it gets every key at once. Honest plugins sometimes do this to find their own key, so check which key it needs and whether it declares it. | [T1552.001](https://attack.mitre.org/techniques/T1552/001/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
 | `undeclared_env_read` | high | Plugins must list every API key they use in requires_env. Reading one it never declared is often a fallback to a common key (such as OPENAI_API_KEY), but it is also how stealers collect keys quietly. | [T1552](https://attack.mitre.org/techniques/T1552/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
 | `declared_env_read` | info | Reading a key the plugin says it needs is normal; listed for completeness. | – |
@@ -95,7 +95,7 @@ stays in the report as a REVIEW and is never dropped.
 | `monkeypatch` | high | Replaced functions inside Python or Hermes. That lets a plugin silently watch or change everything other code does (catalog rule 9: no core overrides). | [T1574](https://attack.mitre.org/techniques/T1574/) [AML.T0110](https://atlas.mitre.org/techniques/AML.T0110) |
 | `env_tampering` | high | Changed environment variables that redirect network traffic or which code gets loaded (proxies, PATH, LD_PRELOAD, PYTHONPATH, CA bundles). | [T1574.006](https://attack.mitre.org/techniques/T1574/006/) [T1574.007](https://attack.mitre.org/techniques/T1574/007/) [T1090](https://attack.mitre.org/techniques/T1090/) |
 | `sandbox_check` | medium | Checked whether it runs in a container or under a debugger. Malware does this to behave nicely while it is being tested. | [T1497.001](https://attack.mitre.org/techniques/T1497/001/) |
-| `monitor_tamper` | high | Tried to add its own audit hook or inspect the interpreter's live objects, which can be used to hide from or disable monitoring. | [T1685](https://attack.mitre.org/techniques/T1685/) |
+| `monitor_tamper` | high (a refused signal 0 aimed at one or two processes is not counted; three or more is) | Tried to add its own audit hook or inspect the interpreter's live objects, which can be used to hide from or disable monitoring. | [T1685](https://attack.mitre.org/techniques/T1685/) |
 | `background_thread` | info | Started background threads. Fine for batching or polling, but catalog rule 13 asks for background work to be disclosed. | – |
 | `time_triggered` | high | Did something only after its clock was moved forward. Malware waits for a date, or for days to pass after install, so it passes short tests and reviews (a time bomb). | [T1480](https://attack.mitre.org/techniques/T1480/) [T1497.003](https://attack.mitre.org/techniques/T1497/003/) |
 | `dormant_code` | medium | The code can do this, but it never did during the test. Code that stays quiet in a sandbox may be waiting for a date, a keyword or a real key (a time bomb or trigger). Often it is just a path the test did not reach, so read that code before installing. | [T1480](https://attack.mitre.org/techniques/T1480/) [T1497.003](https://attack.mitre.org/techniques/T1497/003/) |
@@ -117,7 +117,8 @@ sent is logged). There is still no real network. The outside monitor runs by def
 The outside monitor also adds evidence to two rules above: `decoy_accessed` when a program the plugin
 started read a decoy file, and `monitor_tamper` when the plugin tried to trace or read another process,
 or to signal one it may not touch. A refused signal 0, which only asks whether a process exists (as
-pid-file and lock-file checks do), does not count.
+pid-file and lock-file checks do), does not count when the run aims it at one or two processes; aimed
+at three or more processes (or at every process, `kill(-1, 0)`), it counts as before.
 
 ## MCP servers
 
@@ -132,6 +133,7 @@ computer is judged by the rules above that the outside monitor can see (key file
 programs, writes, persistence, leaks); the rules below cover what only MCP servers can do, and the server's own entry in `config.yaml`.
 A server process reading its own environment file (`/proc/self/environ`, or `/proc/<pid>/environ` with
 its own or the server's process id) is not `environ_file_read`; any other process's environment is.
+This applies to MCP servers only: skill steps are judged as in v0.5.0.
 
 | Rule | Severity | Why it matters | MITRE |
 |---|---|---|---|

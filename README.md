@@ -535,11 +535,12 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
 
 - **v0.5.1**: Fewer false alarms, with small changes only. An MCP tool description whose only
   invisible characters are the ones inside emoji (family, profession, head-shake and England,
-  Scotland or Wales flag emoji) is no longer tool poisoning. A refused signal 0, which only checks
-  that a process exists, is not tampering. An MCP server process reading its own
-  `/proc/<pid>/environ` is not reported. Walking the time-zone database (`/usr/share/zoneinfo`) is
-  not a folder search. Verdict lines now say exactly what each verdict means, and a remote or
-  config-only MCP check says the server was not run.
+  Scotland or Wales flag emoji) is no longer tool poisoning; an order to the model in a description
+  is still reported as before. A refused existence check (signal 0) on one or two processes is no
+  longer reported; more than two is still reported. An MCP server process reading its own
+  `/proc/<pid>/environ` is not reported (MCP servers only). Walking the time-zone database
+  (`/usr/share/zoneinfo`) is not a folder search. Verdict lines now say exactly what each verdict
+  means, and a clean remote or config-only check now says the server was not run.
 - **v0.5.0**: Skills. `/detonate-skill <folder | installed-name | owner/repo/folder@sha>` (and
   `hermes detonate-skill`) reads a Hermes skill for planted instructions, hidden text and
   download-and-run lures, then runs its scripts and the commands its instructions show, each on its
