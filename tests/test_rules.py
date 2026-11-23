@@ -452,3 +452,12 @@ def test_own_login_file_plus_memory_read_is_theft():
                           "decoy_categories": {kube: "secret", mem: "memory"}, "memory_paths": [mem],
                           "events": [{"kind": "file_read", "path": kube}, {"kind": "file_read", "path": mem}]})
     assert out["verdict"] == "DANGEROUS" and "own_tool_config_read" not in {f["rule"] for f in out["findings"]}
+
+
+def test_disk_flood_fires_only_for_the_output_folder_or_printed_output():
+    from engine import rules as _r
+    for kind in ("out", "streams"):
+        f = _r.disk_flood_finding({"disk_flood": kind, "fatal": "stopped"})
+        assert f is not None and f.rule == "disk_flood" and f.severity == _r.HIGH
+    for kind in (None, "package", "", "other"):
+        assert _r.disk_flood_finding({"disk_flood": kind, "fatal": "stopped"}) is None
