@@ -116,7 +116,7 @@ def test_run_is_stopped_when_the_watched_folder_grows_too_big(tmp_path, monkeypa
     cmd = [sys.executable, "-c", writer + "import time; time.sleep(5)", str(out / "fill.bin")]
     started = time.monotonic()
     result, over = runner._run_watched(cmd, 30, stop, [(out, 1_000_000)])
-    assert over == (out, 1_000_000) and stopped
+    assert over == (out, 1_000_000, "full") and stopped
     assert time.monotonic() - started < 25
     proc.wait(timeout=5)
 
@@ -245,6 +245,22 @@ def test_mcp_package_growth_keeps_worse_evidence_from_before_the_stop():
     assert out["verdict"] == rules.VERDICT_DANGEROUS, out
 
 
+def test_mcp_package_growth_with_only_a_high_finding_stays_an_error():
+    raw = {**_flood_result("package"), "outside": {"ran": True, "canary": "C", "trace": {"events": []},
+                                                    "sink": {"ready": True}},
+           "listing": {"tools": [{"name": "re\u0430d", "description": "x"}]}}
+    out = mcp._evaluate(raw)
+    assert out["verdict"] == rules.VERDICT_ERROR and out.get("detail")
+    assert "lookalike_name" in [f["rule"] for f in out["findings"]]
+
+
+def test_mcp_package_growth_without_the_monitor_keeps_the_config_checks():
+    raw = {**_flood_result("package"), "config_checks": [("mcp_unpinned_launch", "medium", "Not pinned", ["x"])]}
+    out = mcp._evaluate(raw)
+    assert out["verdict"] == rules.VERDICT_ERROR and out.get("detail")
+    assert [f["rule"] for f in out["findings"]] == ["mcp_unpinned_launch"]
+
+
 @pytest.mark.parametrize("kind", ["out", "streams"])
 def test_disk_flood_counts_for_mcp_and_skills_without_the_outside_monitor(kind):
     from engine import skill
@@ -352,5 +368,44 @@ def test_git_settings_skip_keys_that_cannot_be_passed(tmp_path, monkeypatch, fre
                                      "[http]\n\tproxy = http://proxy.example:3128\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     kept = runner._git_kept_settings()
-    assert "http.proxy=http://proxy.example:3128" in kept and not any("b=c" in k for k in kept)
-    assert runner._run(["git", "--version"]).returncode == 0
+    assert "http.proxy=http://proxy.example:3128" in kept
+    listing = runner._run(["git", "config", "--list"], cwd=str(tmp_path))
+    assert listing.returncode == 0 and "http.proxy=http://proxy.example:3128" in listing.stdout
+    # On older git (command line) the "=" key is skipped instead of breaking git.
+    monkeypatch.setattr(runner, "_git_env_ok", False)
+    cmd, _ = runner._git_with_settings(["git", "--version"], {})
+    assert not any("b=c" in a for a in cmd) and runner._run(["git", "--version"]).returncode == 0
+
+
+def test_git_settings_stay_out_of_the_process_list_and_follow_includes(tmp_path, monkeypatch, fresh_git_cache):
+    if GIT is None:
+        pytest.skip("needs git")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "extra.inc").write_text("[http]\n\tproxy = http://user:secret@proxy.example:3128\n", encoding="utf-8")
+    (home / ".gitconfig").write_text(f"[include]\n\tpath = {home / 'extra.inc'}\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "credential.helper")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "store")
+    monkeypatch.setattr(runner, "_git_env_ok", None)
+    assert "http.proxy=http://user:secret@proxy.example:3128" in runner._git_kept_settings()
+    cmd, env = runner._git_with_settings(["git", "fetch"], dict(os.environ))
+    if runner._git_takes_env_config():
+        assert cmd == ["git", "fetch"] and not any("secret" in a for a in cmd)
+    listing = runner._run(["git", "config", "--list"], cwd=str(tmp_path)).stdout
+    assert "proxy.example" in listing and "credential.helper" not in listing
+
+
+@pytest.mark.parametrize("why,where,words", [("full", "work", "grew past"), ("uncountable", "work", "could not measure"),
+                                            ("full", "streams", "printed more than")])
+def test_fetch_stop_messages_say_what_happened(tmp_path, monkeypatch, why, where, words):
+    from engine import mcp_sources as sources
+    work = tmp_path / "w"
+    work.mkdir()
+
+    def fake_watched(cmd, timeout, stop, limits, streams=None):
+        return None, ((work if where == "work" else streams), 1, why)
+    monkeypatch.setattr(runner, "_run_watched", fake_watched)
+    with pytest.raises(sources.SourceError, match=words):
+        sources._run_fetch(["docker", "run", "--name=x"], "pkg", work)

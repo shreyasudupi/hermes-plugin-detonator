@@ -557,6 +557,13 @@ def _run_fetch(cmd: list, what: str, work: Path | None = None) -> None:
                                                  lambda: runner._run(["docker", "rm", "-f", name], timeout=30),
                                                  [(work, FETCH_MAX_BYTES)], streams=Path(streams))
             if over:
+                folder, _limit, why = over
+                if folder != work:
+                    raise SourceError(f"could not download {what}: the download printed more than "
+                                      f"{runner.STREAMS_MAX_BYTES // (1024 * 1024)} MB of messages, so it was stopped")
+                if why != "full":
+                    raise SourceError(f"could not download {what}: Detonator could not measure the download "
+                                      "folder, so it was stopped")
                 raise SourceError(f"could not download {what}: the download grew past "
                                   f"{FETCH_MAX_BYTES // (1024 * 1024)} MB, so it was stopped")
         else:

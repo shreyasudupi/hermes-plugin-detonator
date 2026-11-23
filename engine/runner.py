@@ -131,32 +131,68 @@ _GIT_KEEP_RE = re.compile(r"^http\.(?:.+\.)?(?:proxy|proxyauthmethod|proxysslcai
                           r"sslcainfo|sslcapath|sslbackend|sslverify|sslcert|sslkey|sslcertpasswordprotected|sslcerttype|"
                           r"sslkeytype|sslversion|sslcipherlist|"
                           r"schannel[a-z]*)$|^core\.longpaths$", re.IGNORECASE)
-_git_keep_cache: list[str] | None = None
+_git_keep_cache: list[tuple[str, str]] | None = None
+_git_env_ok: bool | None = None
 
 
-def _git_kept_settings() -> list[str]:
-    """`-c key=value` pairs for the allow-listed settings in your git config (read once). Credential
+def _git_kept_pairs() -> list[tuple[str, str]]:
+    """(key, value) for the allow-listed settings in your git config (read once). Credential
     helpers and URL rewrites are left out on purpose: Detonator fetches public repositories only,
     and a helper is a program."""
     global _git_keep_cache
     if _git_keep_cache is None:
-        keep: list[str] = []
+        keep: list[tuple[str, str]] = []
         try:
             # Reads config files only (your own, so not through the cleaned config); runs nothing
-            # from any repository.
-            # System first, then yours, so yours wins; never a repository's own config.
+            # from any repository. System first, then yours, so yours wins; never a repository's
+            # own config. --includes follows [include] files, as git itself would.
             for scope in ("--system", "--global"):
-                proc = _run(["git", "config", scope, "--null", "--get-regexp", r"^(http\.|core\.longpaths)"],
+                proc = _run(["git", "config", scope, "--includes", "--null", "--get-regexp",
+                             r"^(http\.|core\.longpaths)"],
                             timeout=20, cwd=tempfile.gettempdir(), own_git_config=True)
                 for item in (proc.stdout or "").split("\0"):
                     key, has_value, value = item.partition("\n")
-                    # A key holding "=" (a URL with a query) cannot be passed with -c.
-                    if key and "=" not in key and _GIT_KEEP_RE.match(key):
-                        keep += ["-c", f"{key}={value}" if has_value else key]
+                    if key and _GIT_KEEP_RE.match(key):
+                        keep.append((key, value if has_value else "true"))
         except (OSError, subprocess.SubprocessError):
             pass
         _git_keep_cache = keep
     return list(_git_keep_cache)
+
+
+def _git_kept_settings() -> list[str]:
+    """The kept settings as key=value (for messages and tests)."""
+    return [f"{k}={v}" for k, v in _git_kept_pairs()]
+
+
+def _git_takes_env_config() -> bool:
+    """git 2.31 and later read settings from GIT_CONFIG_COUNT/KEY/VALUE, which keeps a proxy
+    password out of the process list and allows keys holding "="."""
+    global _git_env_ok
+    if _git_env_ok is None:
+        _git_env_ok = False
+        try:
+            out = _run(["git", "--version"], timeout=20, own_git_config=True).stdout or ""
+            m = re.search(r"(\d+)\.(\d+)", out)
+            _git_env_ok = bool(m) and (int(m.group(1)), int(m.group(2))) >= (2, 31)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return _git_env_ok
+
+
+def _git_with_settings(cmd: list, env: dict) -> tuple[list, dict]:
+    pairs = _git_kept_pairs()
+    env = _git_env(env)
+    if not pairs:
+        return cmd, env
+    if _git_takes_env_config():
+        env["GIT_CONFIG_COUNT"] = str(len(pairs))
+        for i, (k, v) in enumerate(pairs):
+            env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = k, v
+        return cmd, env
+    # Older git: on the command line. A key holding "=" (a URL with a query) cannot go there.
+    extra = [a for k, v in pairs if "=" not in k for a in ("-c", f"{k}={v}")]
+    return ["git", *extra, *cmd[1:]], env
 
 
 # A home folder that does not exist, for git only: git before 2.32 ignores GIT_CONFIG_GLOBAL and
@@ -165,6 +201,11 @@ _NO_GIT_HOME = os.path.join(tempfile.gettempdir(), "detonator-no-git-home-" + se
 
 
 def _git_env(env: dict) -> dict:
+    # Settings passed in through the environment (GIT_CONFIG_COUNT/KEY_n/VALUE_n, or -c from a
+    # parent git) are dropped too; only the allow-listed ones are passed back.
+    env = {k: v for k, v in env.items()
+           if not (k == "GIT_CONFIG_PARAMETERS" or k.startswith(("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_",
+                                                                  "GIT_CONFIG_VALUE_")))}
     return {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
             "HOME": _NO_GIT_HOME, "XDG_CONFIG_HOME": _NO_GIT_HOME}
 
@@ -174,8 +215,7 @@ def _run(cmd, timeout=600, own_git_config=False, capture=True, **kwargs):
     if cmd and cmd[0] == "docker":
         cmd = [docker_bin() or "docker", *cmd[1:]]
     elif cmd and cmd[0] == "git" and not own_git_config:
-        cmd = ["git", *_git_kept_settings(), *cmd[1:]]
-        env = _git_env(env)
+        cmd, env = _git_with_settings(list(cmd), env)
     if capture:
         kwargs = {"capture_output": True, "text": True, **kwargs}
     return subprocess.run(cmd, timeout=timeout, env=env, **kwargs)
@@ -190,7 +230,7 @@ OUT_DIR_MAX_BYTES = 256 * 1024 * 1024
 PACKAGE_GROWTH_MAX_BYTES = 512 * 1024 * 1024
 STREAMS_MAX_BYTES = 64 * 1024 * 1024     # what the run prints, kept in files instead of memory
 DISK_POLL_S = 0.2   # the first watched folder is checked this often, the others every second
-MAX_WATCH_DEPTH = 128
+MAX_WATCH_DEPTH = 48   # npm's flattened trees stay far below this
 _ENTRY_MIN = 4096   # every entry costs at least one block, so a flood of empty files counts
 
 
@@ -217,12 +257,26 @@ def folder_bytes(root: Path, stop_at: int | None = None) -> int | None:
     deeper than MAX_WATCH_DEPTH. Otherwise the code could fill the disk where it is not seen.
     At most one folder handle per level is open at a time. Returns None when this process is out
     of file handles (not the tested code's doing; the caller tries again later)."""
+    return folder_usage(root, stop_at)[0]
+
+
+def folder_usage(root: Path, stop_at: int | None = None) -> tuple[int | None, bool]:
+    """(folder_bytes, hidden): hidden is True when the count is over only because part of the
+    folder could not be looked into (unreadable, a link, or too deep)."""
     over = (stop_at + 1) if stop_at is not None else None
     walk = _fd_walk if _fd_walk_supported() else _path_walk   # Windows: no folder handles
     try:
-        return walk(root, stop_at, over)
+        return walk(root, stop_at, over), False
     except _Uncountable:
-        return None
+        return None, False
+    except _Hidden:
+        return over, True
+    except RecursionError:
+        return over, over is not None
+
+
+class _Hidden(Exception):
+    """Part of a watched folder cannot be looked into."""
 
 
 class _Done(Exception):
@@ -257,10 +311,12 @@ def _fd_walk(root: Path, stop_at: int | None, over: int | None) -> int:
             if _out_of_handles(exc):
                 raise _Uncountable()
             if over is not None:
-                raise _Done(over)
+                raise _Hidden()
             return
-        if subdirs and depth + 1 > MAX_WATCH_DEPTH and over is not None:
-            raise _Done(over)
+        if subdirs and depth + 1 > MAX_WATCH_DEPTH:
+            if over is not None:
+                raise _Hidden()
+            return   # without a limit, just stop counting deeper
         for name in subdirs:
             try:
                 # Opened by name inside its parent's handle and never through a link, so a folder
@@ -270,7 +326,7 @@ def _fd_walk(root: Path, stop_at: int | None, over: int | None) -> int:
                 if _out_of_handles(exc):
                     raise _Uncountable()
                 if over is not None:
-                    raise _Done(over)
+                    raise _Hidden()
                 continue
             try:
                 visit(child, depth + 1)
@@ -282,7 +338,9 @@ def _fd_walk(root: Path, stop_at: int | None, over: int | None) -> int:
     except OSError as exc:
         if _out_of_handles(exc):
             raise _Uncountable()
-        return over if over is not None else 0
+        if over is not None:
+            raise _Hidden()
+        return 0
     try:
         visit(top, 0)
     except _Done as done:
@@ -310,15 +368,30 @@ def _path_walk(root: Path, stop_at: int | None, over: int | None) -> int:
                     if stop_at is not None and total > stop_at:
                         return total
                     if stat.S_ISDIR(st.st_mode) and not e.is_symlink():
-                        if depth + 1 > MAX_WATCH_DEPTH and over is not None:
-                            return over
+                        if depth + 1 > MAX_WATCH_DEPTH:
+                            if over is not None:
+                                raise _Hidden()
+                            continue
                         stack.append((e.path, depth + 1))
         except OSError as exc:
             if _out_of_handles(exc):
                 raise _Uncountable()
             if over is not None:
-                return over
+                raise _Hidden()
     return total
+
+
+def _raise_handle_limit() -> None:
+    """Let this process use all the file handles it is allowed (macOS starts at 256), so the disk
+    check has room for one handle per folder level."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        want = min(hard, 4096) if hard != resource.RLIM_INFINITY else 4096
+        if soft != resource.RLIM_INFINITY and soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    except (ImportError, OSError, ValueError):
+        pass
 
 
 def _tail(path: Path, n: int = 64 * 1024) -> str:
@@ -335,32 +408,31 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]], stre
     `stop()` (which removes the container) is called as soon as one grows past its limit. With
     `streams`, what the run prints goes to files in that folder (watched too, so a flood of output
     cannot fill your memory or disk) and the result carries the last 64 KB of each.
-    Returns (process result, None or the (folder, limit) that overflowed); raises TimeoutExpired
-    like `_run` when the run timed out."""
+    Returns (process result, None or (folder, limit, why)), why being "full", "hidden" (part of
+    the folder could not be looked into) or "uncountable" (the check kept failing); raises
+    TimeoutExpired like `_run` when the run timed out."""
     import threading
     import time
     over: list = []
     done = threading.Event()
-    out_f = err_f = None
-    if streams is not None:
-        streams.mkdir(exist_ok=True)
-        out_f = open(streams / "stdout", "wb")
-        err_f = open(streams / "stderr", "wb")
+    files: list = []
+    _raise_handle_limit()
 
     def printed() -> int:
         # Sizes from the open files themselves, so this works where a folder listing lags behind.
         try:
-            return os.fstat(out_f.fileno()).st_size + os.fstat(err_f.fileno()).st_size
+            return sum(os.fstat(f.fileno()).st_size for f in files)
         except (OSError, ValueError):
             return 0
 
     def watch():
         tick = 0
+        misses = [0] * len(limits)
         while not done.wait(DISK_POLL_S):
             tick += 1
             hit = None
-            if out_f is not None and printed() > STREAMS_MAX_BYTES:
-                hit = (streams, STREAMS_MAX_BYTES)
+            if files and printed() > STREAMS_MAX_BYTES:
+                hit = (streams, STREAMS_MAX_BYTES, "full")
             for i, (folder, limit) in enumerate(limits):
                 if hit:
                     break
@@ -368,9 +440,17 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]], stre
                 # counted once a second.
                 if i and tick % max(1, round(1 / DISK_POLL_S)):
                     continue
-                used = folder_bytes(folder, limit)
-                if used is not None and used > limit:
-                    hit = (folder, limit)
+                used, hidden = folder_usage(folder, limit)
+                if used is None:
+                    # Out of file handles: try again, but not forever, or a run could keep the
+                    # check from ever finishing and write as much as it likes meanwhile.
+                    misses[i] += 1
+                    if misses[i] >= 5:
+                        hit = (folder, limit, "uncountable")
+                    continue
+                misses[i] = 0
+                if used > limit:
+                    hit = (folder, limit, "hidden" if hidden else "full")
             if hit:
                 over.append(hit)
                 try:
@@ -379,22 +459,27 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]], stre
                     pass
                 return
 
-    watcher = threading.Thread(target=watch, daemon=True)
-    watcher.start()
+    watcher = None
     started = time.monotonic()
     try:
-        if out_f is not None:
-            proc = _run(cmd, timeout=timeout, capture=False, stdout=out_f, stderr=err_f)
+        if streams is not None:
+            streams.mkdir(exist_ok=True)
+            files.append(open(streams / "stdout", "wb"))
+            files.append(open(streams / "stderr", "wb"))
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        if files:
+            proc = _run(cmd, timeout=timeout, capture=False, stdout=files[0], stderr=files[1])
         else:
             proc = _run(cmd, timeout=timeout)
     except subprocess.TimeoutExpired:
         proc = None
     finally:
         done.set()
-        watcher.join(timeout=35)
-        for f in (out_f, err_f):
-            if f:
-                f.close()
+        if watcher is not None:
+            watcher.join(timeout=35)
+        for f in files:
+            f.close()
     if proc is None and not over:
         raise subprocess.TimeoutExpired(cmd, time.monotonic() - started)
     if proc is not None and streams is not None:
@@ -789,7 +874,7 @@ def _run_folder(tag: str):
                           "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001",
                           "--log-driver", "none", *mounts, "--entrypoint", "sh", tag, "-c",
                           # First let the owner into folders it locked (mode 0300 and the like).
-                          "chmod -R u+rwX /w 2>/dev/null; find /w -mindepth 2 -user 10001 -delete"],
+                          "chmod -R u+rwX,go+rwX /w 2>/dev/null; find /w -mindepth 2 -user 10001 -delete"],
                          timeout=120)
                 except subprocess.TimeoutExpired:
                     try:
@@ -920,13 +1005,23 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
             if monitor:
                 monitor.cleanup()
         if overflow is not None:
-            folder, limit = overflow
+            folder, limit, why = overflow
             kind = "package" if folder == plugin_copy else "streams" if folder == tmp / "streams" else "out"
             grew = (limit - package_start) // (1024 * 1024) if kind == "package" else limit // (1024 * 1024)
-            what = {"package": f"grew its own package folder by more than {grew} MB",
-                    "streams": f"printed more than {grew} MB of output",
-                    "out": f"wrote more than {grew} MB (or tens of thousands of files) to the sandbox's "
-                           "output folder"}[kind]
+            where = {"package": "its own package folder", "out": "the sandbox's output folder",
+                     "streams": "its output"}[kind]
+            if why == "hidden":
+                what = f"made a folder in {where} that Detonator could not look into (locked, a link, or nested too deep)"
+            elif why == "uncountable":
+                what = f"kept Detonator from counting what it wrote to {where}"
+            else:
+                what = {"package": f"grew its own package folder by more than {grew} MB",
+                        "streams": f"printed more than {grew} MB of output",
+                        "out": f"wrote more than {grew} MB (or tens of thousands of files) to the sandbox's "
+                               "output folder"}[kind]
+            if why == "uncountable":
+                # Most likely this computer ran short of file handles: an error, not a finding.
+                kind = "package"
             return {"fatal": f"sandbox stopped: the tested code {what} on your disk, so the run was "
                              "ended early", "outside": seen_outside, "disk_flood": kind}
         if proc is None:

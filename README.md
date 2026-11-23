@@ -453,7 +453,8 @@ Detonator does things a reviewer should know about:
   newest one, found with `git ls-remote` (reads the repo's branch list only) after you approve, with git hooks disabled, no submodules, and symlinks checked out as plain files.
   Your own global and system git settings are left out (only network settings are kept: proxy,
   TLS certificates and verification, client certificates, and `core.longpaths` on Windows;
-  credential helpers and URL rewrites are not used, since only public repositories are fetched), so a filter or helper you installed for your own work, such as Git LFS, never runs on a
+  credential helpers and URL rewrites are not used, since only public repositories are fetched; on git 2.31
+  and later the kept settings are passed through the environment, so a proxy password never shows in `ps`), so a filter or helper you installed for your own work, such as Git LFS, never runs on a
   downloaded repository
   (links are never copied into the sandbox, so a repo cannot pull in real files from your machine).
   No code from the target runs on your machine outside the container.
@@ -478,7 +479,7 @@ Detonator does things a reviewer should know about:
   files) to its output folder on your disk, or prints more than 64 MB, is stopped and reported as
   `disk_flood` (the folder and the printed output are checked five times a second, so a very fast
   writer can get further before the stop; a subfolder Detonator cannot count, because it was made
-  unreadable, swapped for a link or nested over 128 deep, counts as full), what it prints goes to
+  unreadable, swapped for a link or nested over 48 deep, counts as full; a folder it still cannot count after five tries stops the run too), what it prints goes to
   capped files rather than into memory or Docker's own log store (`--log-driver none`), the run
   folder is removed afterwards (folders the tested code locked are removed from a throwaway
   container; if that fails, Detonator prints the folder's path), and an activity log capped at 5,000 events (a flood is
@@ -553,7 +554,7 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   sandbox's output folder (a real folder on your disk), or prints more than 64 MB, is stopped
   and reported as `disk_flood` (high), with or without
   the outside monitor; an MCP install run whose package folder grows by more than 512 MB
-  is stopped and the verdict is ERROR unless what was seen before the stop is worse. `git` no longer uses your personal git settings when it fetches code
+  is stopped and the verdict is ERROR unless a critical finding was already seen before the stop. `git` no longer uses your personal git settings when it fetches code
   (only network settings such as proxy and TLS certificates are kept), so a global Git LFS-style filter cannot run on a
   downloaded repository. MCP package downloads refuse dependencies from git repos and web addresses,
   and stop past 1 GB. Printed output no longer collects in memory, and a run folder the tested code
