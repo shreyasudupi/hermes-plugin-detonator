@@ -554,7 +554,9 @@ def evaluate(raw: dict) -> dict:
     findings.sort(key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
     verdict = rules._verdict(findings)
     detail = None
-    if verdict in (rules.VERDICT_NO_FINDINGS, VERDICT_LOW_COVERAGE) and raw.get("fatal") and out.get("ran"):
+    cut_short = raw.get("disk_flood") == "uncountable"
+    if raw.get("fatal") and out.get("ran") and (verdict in (rules.VERDICT_NO_FINDINGS, VERDICT_LOW_COVERAGE)
+                                                or (cut_short and verdict == rules.VERDICT_REVIEW)):
         verdict = rules.VERDICT_ERROR
         detail = ("The sandbox stopped before the run finished (" + str(raw["fatal"])[:300] + "), so its result "
                   "is incomplete. A skill that floods memory or kills the sandbox ends up here; what the "

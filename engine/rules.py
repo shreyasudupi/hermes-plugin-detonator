@@ -641,6 +641,10 @@ def evaluate(result: dict) -> dict:
     if errored:
         if verdict == VERDICT_NO_FINDINGS:
             return full
+        if verdict == VERDICT_REVIEW and (result or {}).get("disk_flood") == "uncountable":
+            # Cut short because Detonator could not count the folder: a review-level finding alone
+            # does not stand in for a finished run.
+            return full
         full["summary"] = ("The sandbox harness did not finish, so the in-process record is missing, "
                            "but the outside monitor saw what is listed below.")
     full["verdict"] = verdict

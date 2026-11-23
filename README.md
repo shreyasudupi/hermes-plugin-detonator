@@ -479,7 +479,7 @@ Detonator does things a reviewer should know about:
   files) to its output folder on your disk, or prints more than 64 MB, is stopped and reported as
   `disk_flood` (the folder and the printed output are checked five times a second, so a very fast
   writer can get further before the stop; a subfolder Detonator cannot count, because it was made
-  unreadable, swapped for a link or nested over 48 deep, counts as full; a folder it still cannot count after five tries stops the run too), what it prints goes to
+  unreadable, swapped for a link or nested over 48 deep, counts as full; a folder removed mid-count is skipped; a folder it still cannot count after five tries, most likely because this computer ran out of open-file handles, stops the run with an ERROR verdict). An MCP package that ships folders nested deeper than 48 levels also ends as ERROR, what it prints goes to
   capped files rather than into memory or Docker's own log store (`--log-driver none`), the run
   folder is removed afterwards (folders the tested code locked are removed from a throwaway
   container; if that fails, Detonator prints the folder's path), and an activity log capped at 5,000 events (a flood is

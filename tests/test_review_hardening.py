@@ -409,3 +409,52 @@ def test_fetch_stop_messages_say_what_happened(tmp_path, monkeypatch, why, where
     monkeypatch.setattr(runner, "_run_watched", fake_watched)
     with pytest.raises(sources.SourceError, match=words):
         sources._run_fetch(["docker", "run", "--name=x"], "pkg", work)
+
+
+def test_a_folder_removed_mid_count_is_skipped_not_hidden(tmp_path, monkeypatch):
+    if not runner._fd_walk_supported():
+        pytest.skip("folder handles not used here")
+    (tmp_path / "gone").mkdir()
+    (tmp_path / "f").write_bytes(b"x" * 10)
+    real_open = os.open
+
+    def vanishing(name, flags, *a, dir_fd=None, **k):
+        if name == "gone":
+            raise FileNotFoundError(2, "gone")
+        return real_open(name, flags, *a, dir_fd=dir_fd, **k)
+    monkeypatch.setattr(runner.os, "open", vanishing)
+    used, hidden = runner.folder_usage(tmp_path, 10**9)
+    assert used is not None and not hidden
+
+
+def test_uncountable_is_an_error_everywhere_and_blames_no_one():
+    from engine import skill
+    raw = {"fatal": "sandbox stopped: Detonator could not count what was written to x", "disk_flood": "uncountable",
+           "outside": {"ran": False}}
+    assert rules.disk_flood_finding(raw) is None
+    assert mcp._evaluate(raw)["verdict"] == rules.VERDICT_ERROR
+    assert skill.evaluate(raw)["verdict"] == rules.VERDICT_ERROR
+    assert rules.evaluate(raw)["verdict"] == rules.VERDICT_ERROR
+
+
+def test_handle_limit_is_put_back_after_the_last_run():
+    resource = pytest.importorskip("resource")
+    before = resource.getrlimit(resource.RLIMIT_NOFILE)
+    runner._raise_handle_limit()
+    runner._raise_handle_limit()
+    runner._restore_handle_limit()
+    mid = resource.getrlimit(resource.RLIMIT_NOFILE)
+    runner._restore_handle_limit()
+    assert resource.getrlimit(resource.RLIMIT_NOFILE) == before
+    assert mid[0] >= before[0]
+
+
+def test_bare_git_keys_only_kept_when_boolean(tmp_path, monkeypatch, fresh_git_cache):
+    if GIT is None:
+        pytest.skip("needs git")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text("[http]\n\tproxy\n\tsslVerify\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    kept = runner._git_kept_settings()
+    assert "http.sslverify=true" in kept and not any(k.startswith("http.proxy") for k in kept)

@@ -10,6 +10,7 @@ user's real Hermes home, .env or auth.json: the sandbox gets its own fake home.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -131,6 +132,7 @@ _GIT_KEEP_RE = re.compile(r"^http\.(?:.+\.)?(?:proxy|proxyauthmethod|proxysslcai
                           r"sslcainfo|sslcapath|sslbackend|sslverify|sslcert|sslkey|sslcertpasswordprotected|sslcerttype|"
                           r"sslkeytype|sslversion|sslcipherlist|"
                           r"schannel[a-z]*)$|^core\.longpaths$", re.IGNORECASE)
+_GIT_BOOL_RE = re.compile(r"(?i)(sslverify|passwordprotected|longpaths|schannelcheckrevoke|schannelusesslcainfo)$")
 _git_keep_cache: list[tuple[str, str]] | None = None
 _git_env_ok: bool | None = None
 
@@ -153,7 +155,11 @@ def _git_kept_pairs() -> list[tuple[str, str]]:
                 for item in (proc.stdout or "").split("\0"):
                     key, has_value, value = item.partition("\n")
                     if key and _GIT_KEEP_RE.match(key):
-                        keep.append((key, value if has_value else "true"))
+                        if has_value:
+                            keep.append((key, value))
+                        elif _GIT_BOOL_RE.search(key):
+                            keep.append((key, "true"))   # a bare boolean key means true
+                        # any other bare key has no value to pass on, and git would refuse it
         except (OSError, subprocess.SubprocessError):
             pass
         _git_keep_cache = keep
@@ -325,6 +331,8 @@ def _fd_walk(root: Path, stop_at: int | None, over: int | None) -> int:
             except OSError as exc:
                 if _out_of_handles(exc):
                     raise _Uncountable()
+                if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                    continue   # removed or replaced by a file since it was listed: nothing to count
                 if over is not None:
                     raise _Hidden()
                 continue
@@ -381,17 +389,43 @@ def _path_walk(root: Path, stop_at: int | None, over: int | None) -> int:
     return total
 
 
+_limit_lock = __import__("threading").Lock()
+_limit_users = 0
+_limit_saved = None
+
+
 def _raise_handle_limit() -> None:
-    """Let this process use all the file handles it is allowed (macOS starts at 256), so the disk
-    check has room for one handle per folder level."""
-    try:
-        import resource
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        want = min(hard, 4096) if hard != resource.RLIM_INFINITY else 4096
-        if soft != resource.RLIM_INFINITY and soft < want:
-            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
-    except (ImportError, OSError, ValueError):
-        pass
+    """Let this process use more file handles while a watched run is going (macOS starts at 256),
+    so the disk check has room for one handle per folder level. Put back by _restore_handle_limit
+    once the last watched run ends (runs can overlap)."""
+    global _limit_users, _limit_saved
+    with _limit_lock:
+        _limit_users += 1
+        if _limit_users > 1:
+            return
+        try:
+            import resource
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            want = min(hard, 4096) if hard != resource.RLIM_INFINITY else 4096
+            if soft != resource.RLIM_INFINITY and soft < want:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+                _limit_saved = (soft, hard)
+        except (ImportError, OSError, ValueError):
+            pass
+
+
+def _restore_handle_limit() -> None:
+    global _limit_users, _limit_saved
+    with _limit_lock:
+        _limit_users = max(0, _limit_users - 1)
+        if _limit_users or _limit_saved is None:
+            return
+        try:
+            import resource
+            resource.setrlimit(resource.RLIMIT_NOFILE, _limit_saved)
+        except (ImportError, OSError, ValueError):
+            pass
+        _limit_saved = None
 
 
 def _tail(path: Path, n: int = 64 * 1024) -> str:
@@ -480,6 +514,7 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]], stre
             watcher.join(timeout=35)
         for f in files:
             f.close()
+        _restore_handle_limit()
     if proc is None and not over:
         raise subprocess.TimeoutExpired(cmd, time.monotonic() - started)
     if proc is not None and streams is not None:
@@ -1013,7 +1048,7 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
             if why == "hidden":
                 what = f"made a folder in {where} that Detonator could not look into (locked, a link, or nested too deep)"
             elif why == "uncountable":
-                what = f"kept Detonator from counting what it wrote to {where}"
+                what = None
             else:
                 what = {"package": f"grew its own package folder by more than {grew} MB",
                         "streams": f"printed more than {grew} MB of output",
@@ -1021,7 +1056,9 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
                                "output folder"}[kind]
             if why == "uncountable":
                 # Most likely this computer ran short of file handles: an error, not a finding.
-                kind = "package"
+                return {"fatal": f"sandbox stopped: Detonator could not count what was written to {where} "
+                                 "(most likely this computer ran short of open-file handles), so the run "
+                                 "was ended early", "outside": seen_outside, "disk_flood": "uncountable"}
             return {"fatal": f"sandbox stopped: the tested code {what} on your disk, so the run was "
                              "ended early", "outside": seen_outside, "disk_flood": kind}
         if proc is None:
