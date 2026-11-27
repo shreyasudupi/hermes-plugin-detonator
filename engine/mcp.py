@@ -754,9 +754,14 @@ def _evaluate_with_clock(result: dict) -> dict:
     if not late.get("listing") or full["verdict"] == rules.VERDICT_ERROR:
         return full
     seen = {(f["rule"], f["title"]) for f in _evaluate(_before_late(result))["findings"]}
+    first_hosts, late_hosts = _network_by_pass(result)
     new = []
     for f in full["findings"]:
         if (f["rule"], f["title"]) in seen or f["severity"] not in (CRITICAL, HIGH, MEDIUM):
+            continue
+        if f["rule"] in _NETWORK_RULES and late_hosts and late_hosts <= first_hosts:
+            # Only places it already reached before the clock moved (a telemetry or API call that
+            # happened to land in another step of the second pass): not new behaviour.
             continue
         new.append(f"+{days} days: {f['title']}")
         f["title"] += f" (only after the clock moved {days} days forward)"
@@ -766,6 +771,24 @@ def _evaluate_with_clock(result: dict) -> dict:
             new[:8]).to_dict()], key=lambda f: rules.SEVERITY_ORDER.index(f["severity"]))
         full["verdict"] = rules._verdict([Finding(**f) for f in full["findings"]])
     return full
+
+
+_NETWORK_RULES = ("undeclared_network", "tool_network")
+
+
+def _network_by_pass(result: dict) -> tuple[set, set]:
+    """The addresses (ip:port) the server reached in the first pass and in the later pass. The fake
+    internet gives each host name the same address for the whole run, so the two can be compared."""
+    trace = (result.get("outside") or {}).get("trace") or {}
+    first, late = set(), set()
+    for phase, e in _phases(trace.get("events") or [], trace.get("start_index")):
+        if e.get("call") not in ("connect", "sendto") or not e.get("ip") or e.get("ok") is None:
+            continue
+        ip = str(e.get("ip"))
+        if ip.startswith("127.") or ip == "::1":
+            continue
+        (late if phase.startswith("late-") else first).add(f"{ip}:{e.get('port')}")
+    return first, late
 
 
 def _package_flood_verdict(findings: list) -> str:

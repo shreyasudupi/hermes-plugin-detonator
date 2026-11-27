@@ -127,7 +127,9 @@ Rules for `/detonate-mcp`, which runs one MCP server (an entry from `mcp_servers
 `config.yaml`) in the same sandbox with the outside monitor. A stand-in for Hermes lists the server's
 tools, resources and prompts, calls every tool with test input (and a few more times), answers sampling
 and form requests, and lists everything again. Then it starts the server once more with its clock 400
-days ahead and repeats the run; anything new then is `time_triggered`, and tools that changed are
+days ahead and repeats the run; anything new then is `time_triggered` (network use counts as new only
+when the server reaches an address it did not reach before the clock moved, so telemetry or an API call
+that happens to land in a different step of the second run is not a time bomb), and tools that changed are
 `mcp_rug_pull`. Tool names with letters from another alphabet are `lookalike_name`. Every `env` value
 is replaced with a fake key. What the server does on the
 computer is judged by the rules above that the outside monitor can see (key files, `.env`, network,
