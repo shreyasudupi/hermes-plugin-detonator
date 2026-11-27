@@ -564,7 +564,7 @@ def evaluate(raw: dict) -> dict:
         detail = ("The sandbox stopped before the run finished (" + str(raw["fatal"])[:300] + "), so its result "
                   "is incomplete. A skill that floods memory or kills the sandbox ends up here; what the "
                   "outside monitor saw until then is listed below.")
-    if verdict in (rules.VERDICT_NO_FINDINGS, rules.VERDICT_REVIEW, VERDICT_LOW_COVERAGE) and not raw.get("text_only") \
+    if verdict in (rules.VERDICT_NO_FINDINGS, rules.VERDICT_REVIEW) and not raw.get("text_only") \
             and not raw.get("nothing_to_run") and not out.get("ran"):
         verdict = rules.VERDICT_ERROR
         detail = ("The outside monitor did not run (" + str(out.get("reason") or "unknown reason")[:300] +

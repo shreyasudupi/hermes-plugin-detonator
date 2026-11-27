@@ -178,13 +178,18 @@ def load_config_target(name: str, work: Path, config: Path | None = None) -> run
 ADDRESS_NAME_RE = re.compile(r"(?:^|_)(?:URL|ENDPOINT|BASE|BASEURL|HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
 # Names whose value usually carries a secret even though it is an address (a webhook, a database
 # connection string with a password in it): those keep a fake key, so a leak of them is still seen.
-SECRET_ADDRESS_RE = re.compile(r"WEBHOOK|DATABASE|(?:^|_)DB(?:_|$)|DSN|CONN|MONGO|REDIS|POSTGRES|(?:^|_)PG|MYSQL|AMQP|"
-                               r"RABBIT|KAFKA|BROKER|SECRET|TOKEN|KEY|PASS|AUTH|CRED|PRIVATE|SIGN|SAS", re.IGNORECASE)
+# Only the URL kinds can carry a password or a signed token; a HOST, SERVER or DOMAIN name never does.
+SECRET_ADDRESS_RE = re.compile(r"(?:^|_)(?:WEBHOOK|DATABASE|DB|DSN|CONNECTION|CONN|MONGO|MONGODB|REDIS|POSTGRES|"
+                               r"POSTGRESQL|PG|MYSQL|AMQP|RABBITMQ|KAFKA|SECRET|TOKEN|KEY|PASSWORD|PASS|CRED|"
+                               r"CREDENTIALS|SIGNED|PRESIGNED|SAS)(?:_|$)", re.IGNORECASE)
 _HOST_ONLY_RE = re.compile(r"(?:HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
 
 
 def is_address_name(name: str) -> bool:
-    return bool(ADDRESS_NAME_RE.search(str(name))) and not SECRET_ADDRESS_RE.search(str(name))
+    name = str(name)
+    if not ADDRESS_NAME_RE.search(name):
+        return False
+    return bool(_HOST_ONLY_RE.search(name)) or not SECRET_ADDRESS_RE.search(name)
 
 
 def fake_address(name: str) -> str:

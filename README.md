@@ -204,8 +204,9 @@ After you approve, Detonator:
    a fake key, or a fake address for a name whose last word (after `_`) is `URL`, `ENDPOINT`, `BASE`,
    `BASEURL`, `HOST`, `HOSTNAME`, `SERVER` or `DOMAIN` (`https://<name>.example.com`, or just the host name
    for the `HOST`, `SERVER` and `DOMAIN` kinds), so an address used as the host is not mistaken for a leaked
-   key. Names that usually hold a secret inside the address (webhooks, database connection strings, names
-   with `TOKEN`, `KEY`, `PASS` or `AUTH` in them, and a few more) keep a fake key.
+   key. A `URL`, `ENDPOINT` or `BASE` name that also has a word that usually means a secret is inside the
+   address (`WEBHOOK`, `DATABASE`, `DB`, `DSN`, `REDIS`, `MONGO`, `POSTGRES`, `TOKEN`, `KEY`, `PASS`, `SECRET`,
+   `SIGNED` and a few more, as a whole word between `_`) keeps a fake key, so a leak of it is still seen.
 2. **Gets the code.** `npx -y <package>@<version>` and `uvx <package>==<version>` entries are
    downloaded in a separate container: network on, no decoys, npm install scripts off, PyPI wheels
    only (a source package would run code to build). Local `python`/`node` scripts are copied
@@ -293,6 +294,12 @@ The report lists what each step did, which hosts the skill contacted that its ow
 mentions, and which steps could not run. If too few steps ran to say anything (a missing tool, a
 script that needs a real account), the verdict is **NOT ENOUGH COVERAGE**, not a clean result.
 Rules: [docs/RULES.md](docs/RULES.md#skills).
+
+Limits of the text check: it checks its clock only between steps, so a file built to be slow can use up
+the 30 seconds before the later checks run (the verdict is then at least SUSPICIOUS, never clean); it looks at up to
+1,000 characters either side of a match on the same line, so words further apart on one very long line are
+not connected. A declared address variable used with a fallback written in the command
+(`${NOTES_URL:-https://elsewhere}`) is judged by the fake address, not the fallback.
 
 Limits: Detonator does not ask an AI model to follow the skill, so instructions that only an agent
 acting on a task would carry out are judged from the text alone. A step that needs a real account,
@@ -600,10 +607,10 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   whose only key-file read is `~/.netrc` (Python's `requests` library opens it before a web request
   without its own login) is now `own_tool_config_read` instead of DANGEROUS: medium (REVIEW), high
   (SUSPICIOUS) if the run also used the network, and theft again if anything else high-risk happens; declared address variables
-  (`SIYUAN_URL`, `ES_HOST`; not webhooks or database connection strings) get a fake address instead of a fake key, so a skill or server using one
+  (`SIYUAN_URL`, `ES_HOST`; not webhook or database URLs) get a fake address instead of a fake key, so a skill or server using one
   as its host is no longer called a key thief; when the tracer left no status or never attached, an
   MCP server or skill result that would have been NO FINDINGS, REVIEW or NOT ENOUGH COVERAGE is now
-  ERROR; an MCP server or skill whose outside monitor did not run at all is ERROR rather than REVIEW too; and
+  ERROR; a skill whose outside monitor did not run at all is ERROR rather than REVIEW too; and
   the skill text check no longer slows down with the square of the file size on files of `~/.ssh/`,
   `<!-- ` or one long web address repeated, and checks its clock between steps, stopping once 30 seconds
   have passed with `skill_not_fully_read` (high) instead of giving a clean verdict.

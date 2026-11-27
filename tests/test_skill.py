@@ -512,9 +512,13 @@ def test_out_of_time_is_never_clean(tmp_path):
 
 def test_secret_bearing_addresses_keep_a_fake_key():
     from engine import mcp
-    for n in ("SLACK_WEBHOOK_URL", "DATABASE_URL", "MONGODB_URI", "REDIS_URL", "DB_HOST_URL", "SENTRY_DSN",
-              "EMAIL_ADDRESS", "WALLET_ADDRESS", "PRESIGNED_URL", "AUTH_SERVER"):
+    for n in ("SLACK_WEBHOOK_URL", "DATABASE_URL", "MONGODB_URI", "REDIS_URL", "DB_URL", "SENTRY_DSN",
+              "EMAIL_ADDRESS", "WALLET_ADDRESS", "PRESIGNED_URL", "API_KEY_URL", "PG_CONNECTION_URL"):
         assert mcp.fake_value("C" * 20, 2, n) == "sk-det-" + "C" * 20 + "-env2", n
+    for n in ("REDIS_HOST", "DB_HOST", "DATABASE_HOST", "KAFKA_BROKER_HOST", "KEYCLOAK_URL", "AUTH_URL",
+              "OAUTH_BASE_URL", "MONKEY_URL", "DESIGN_SERVER", "CONNECT_URL", "PASSPORT_HOST",
+              "SASS_URL", "AUTH0_DOMAIN"):
+        assert "example.com" in mcp.fake_value("C" * 20, 2, n), n
 
 
 def test_parent_of_a_fake_address_is_not_a_named_host():
