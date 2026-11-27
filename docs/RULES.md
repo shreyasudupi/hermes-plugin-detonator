@@ -14,7 +14,7 @@ This page is checked by `tests/test_rules_doc.py`: adding a rule without documen
 | Rule | Severity | Why it matters | MITRE |
 |---|---|---|---|
 | `decoy_accessed` | critical (high when a program it started, such as pip, git or curl, read only its own login file) | Plugins have no reason to open your key files or ask for API keys they did not declare. This is the first step of every credential stealer. | [T1552.001](https://attack.mitre.org/techniques/T1552/001/) [T1552.004](https://attack.mitre.org/techniques/T1552/004/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) [AML.T0083](https://atlas.mitre.org/techniques/AML.T0083) |
-| `own_tool_config_read` | medium (high when the run also used the network, or for the `~/.netrc` case below only when it sent data the fake internet could not read; critical as `decoy_accessed` when anything else in the run is high-risk) | It is named for a tool (Kubernetes, Docker, AWS, GitHub, git, npm or PyPI) and opened only that tool's own login file, which it needs to do its job. With your real file, the real key would be in its reach, so install it only if you mean to give it that access. Any other key file, a key sent out or shown to the model, or anything else high-risk in the same run is reported as key theft instead. If it also used the network, the finding is high: a key could leave in a form the test cannot read. An MCP server written in Python whose only key-file read is ~/.netrc is treated the same way, because Python's requests library opens that file before every web request; it is high only if the run also sent data the fake internet could not read. | [T1552.001](https://attack.mitre.org/techniques/T1552/001/) |
+| `own_tool_config_read` | medium (high when the run also used the network; critical as `decoy_accessed` when anything else in the run is high-risk) | It is named for a tool (Kubernetes, Docker, AWS, GitHub, git, npm or PyPI) and opened only that tool's own login file, which it needs to do its job. With your real file, the real key would be in its reach, so install it only if you mean to give it that access. Any other key file, a key sent out or shown to the model, or anything else high-risk in the same run is reported as key theft instead. If it also used the network, the finding is high: a key could leave in a form the test cannot read. An MCP server written in Python whose only key-file read is ~/.netrc is treated the same way, because Python's requests library opens that file before a web request that has no login of its own. | [T1552.001](https://attack.mitre.org/techniques/T1552/001/) |
 | `browser_or_wallet_read` | critical | Saved browser passwords, cookies and crypto wallets are what info-stealer malware is built to take. | [T1555.003](https://attack.mitre.org/techniques/T1555/003/) [T1005](https://attack.mitre.org/techniques/T1005/) [AML.T0055](https://atlas.mitre.org/techniques/AML.T0055) |
 | `secret_in_output` | critical | A fake key ended up somewhere it could leave the machine (a model prompt, a tool result, a network address, a command or another tool's input), even when encoded or split up to hide it. A real key would leak the same way. | [T1041](https://attack.mitre.org/techniques/T1041/) [AML.T0057](https://atlas.mitre.org/techniques/AML.T0057) [AML.T0086](https://atlas.mitre.org/techniques/AML.T0086) |
 | `memory_read` | medium | Memory and chat history hold what the agent knows about you. Expected for memory plugins, a privacy leak for anything else. | [T1005](https://attack.mitre.org/techniques/T1005/) |
@@ -41,19 +41,20 @@ recognised. At the very end, if anything else in the run is high or critical (th
 shown to the model, a time bomb, a risky install script, any other alarm), the finding is turned back into
 `decoy_accessed`. Skills keep the usual rules.
 
-One more narrow case, for MCP servers only: Python's HTTP library `requests` opens `~/.netrc` before every
-web request that has no login of its own, on every computer. When `~/.netrc` is the only key file opened in
-the whole run, it is opened only for reading, and only by the server's own Python process (not a program it
-started, not an install script), the read is reported as `own_tool_config_read` ("Opened ~/.netrc, as
-Python's requests library does before each web request"), medium. Network use alone does not raise it: what
-that library sends over plain HTTP or HTTPS is read by the fake internet, and the fake `~/.netrc` password
-seen there is `secret_sent_out`, which turns the read back into `decoy_accessed`. It is high only when the
-fake internet saw a connection it could not read (a client that pins its own certificates). The same
-"anything else high-risk" step applies at the end.
+One more narrow case, for MCP servers only: Python's HTTP library `requests` opens `~/.netrc` before a web
+request that has no login of its own (its default). When `~/.netrc` is the only key file opened in the whole
+run, it is opened only for reading, and only by the server's own Python process (not a program it started,
+not an install script), the read is reported as `own_tool_config_read` ("Opened ~/.netrc, as Python's
+requests library does before a web request without its own login"), medium. It is settled exactly like the
+other own login files: high if the run also reached the network (a password could leave scrambled or
+encrypted), and `decoy_accessed` (critical) if anything else in the run is high-risk, such as the fake
+password reaching the fake internet in a form Detonator recognises.
 
 Known limit: a tool named for Kubernetes that opens the Kubernetes login file and keeps the key for later,
 without sending it or showing it during the test, looks the same as an honest one. That is why the finding
-stays in the report as a REVIEW and is never dropped.
+stays in the report as a REVIEW and is never dropped. The same holds for a Python server and `~/.netrc`, and
+for one that copies the password to a file or shows it to the model scrambled in a way Detonator does not
+recognise, without using the network.
 
 ## Network
 

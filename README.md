@@ -118,12 +118,13 @@ what `hermes plugins update` would install: the catalog's pin, or for a plugin i
 GitHub, its newest commit.
 
 From a terminal: `hermes detonate <catalog-name | owner/repo | update name> [sha] [--subdir path] [--compare-to new-sha]`.
-`/detonate check` only tells you whether Docker is ready; it runs nothing. The terminal command needs no AI provider, so it works on a
+`/detonate check` only tells you whether Docker is ready; it runs no test. The terminal command needs no AI provider, so it works on a
 Hermes that has no model set up yet.
 
-Detonator always asks you before it runs a test. Two things run without a question: `/detonate check`
-(it only runs `docker info` to see whether Docker is ready) and the developer command `python -m engine <path>`
-(you typed the path yourself). If no one can answer (a cron
+Detonator always asks you before it runs a test from Hermes. Two kinds of command run without a question:
+`/detonate check` (it only runs `docker info` and `docker image inspect` to see whether Docker is ready) and the
+developer commands you type in a terminal yourself (`python -m engine ...`, `python -m engine.mcp ...`,
+`python -m engine.skill ...`). If no one can answer (a cron
 job, a hook, a non-interactive or unattended run), it refuses instead of running.
 There is no flag that skips the question. The `detonate_plugin` tool lets the
 agent suggest a run (by catalog name or repo), but it only returns the `/detonate` command for you to run.
@@ -200,8 +201,11 @@ After you approve, Detonator:
 1. **Reads the entry** through Hermes's own config reader (the active profile, values as written,
    so `${VAR}` references stay unexpanded). It keeps the env and header *names*; the values are
    only checked for keys written straight into the file, then dropped. The server gets fake values:
-   a fake key, or a fake address (`https://<name>.example.com`) for a name that ends in `URL`, `URI`,
-   `ENDPOINT`, `BASE`, `HOST`, `SERVER`, `DOMAIN` or `ADDRESS`, so an address is never mistaken for a leaked key.
+   a fake key, or a fake address for a name whose last word (after `_`) is `URL`, `ENDPOINT`, `BASE`,
+   `BASEURL`, `HOST`, `HOSTNAME`, `SERVER` or `DOMAIN` (`https://<name>.example.com`, or just the host name
+   for the `HOST`, `SERVER` and `DOMAIN` kinds), so an address used as the host is not mistaken for a leaked
+   key. Names that usually hold a secret inside the address (webhooks, database connection strings, names
+   with `TOKEN`, `KEY`, `PASS` or `AUTH` in them, and a few more) keep a fake key.
 2. **Gets the code.** `npx -y <package>@<version>` and `uvx <package>==<version>` entries are
    downloaded in a separate container: network on, no decoys, npm install scripts off, PyPI wheels
    only (a source package would run code to build). Local `python`/`node` scripts are copied
@@ -263,8 +267,9 @@ You choose **Run full test** or **Read the text only**. The first full skill tes
 sandbox image (Debian with Python and Node.js, about 1.7 GB, built once) so the everyday tools a
 skill calls are really there. Reading the text only needs no image. Detonator:
 
-1. **Reads every file** (up to 400 files, 1 MB each and 20 MB in all; the start and end of a longer
-   SKILL.md, and it says what it skipped) on your computer without running anything, within a 30-second time budget: frontmatter, fenced shell
+1. **Reads every file** (up to 400 files, 1 MB each and 20 MB in all; only the start and end of longer
+   files, and it says what it skipped) on your computer without running anything. It checks its clock
+   between steps and stops once 30 seconds have passed, with `skill_not_fully_read` (high): frontmatter, fenced shell
    blocks, inline commands, links and hidden text (invisible Unicode tags, zero-width and
    right-to-left characters, HTML comments, files saved as UTF-16 or Latin-1). It looks for download-and-run commands, password-zip
    and fake-installer lures, prompt injection and "always use this skill" text, requests for keys,
@@ -309,8 +314,9 @@ technique IDs, is in [docs/RULES.md](docs/RULES.md). A test fails if a rule is a
 documenting it there.
 
 Verdicts: `DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS`, `ERROR`, and for skills
-`NOT ENOUGH COVERAGE`. The verdict comes
-from deterministic rules only. No model decides anything.
+NOT ENOUGH COVERAGE (`LOW_COVERAGE` in saved results). The verdict comes
+from deterministic rules only. No model decides anything. The one thing that depends on the computer is
+the skill text check's 30-second time budget, which only a file built to slow it down should reach.
 
 ### Outside monitor
 
@@ -471,7 +477,7 @@ Detonator does things a reviewer should know about:
   (links are never copied into the sandbox, so a repo cannot pull in real files from your machine).
   No code from the target runs on your machine outside the container.
 - **Shell commands.** Only `git` and `docker`, as above, and only after you approve
-  the run (except `docker info` for `/detonate check`, and `python -m engine <path>`, which you start yourself). The two monitor containers run only while a test runs and are removed after it;
+  the run (except `docker info` and `docker image inspect` for `/detonate check`, and the `python -m engine` developer commands, which you start yourself). The two monitor containers run only while a test runs and are removed after it;
   nothing keeps running on your machine.
 - **Network.** Only for `git ls-remote`, `git fetch`, the one-time image builds and, for
   `/detonate-mcp`, downloading the server's npm or PyPI package (in its own container, see below). A catalog name
@@ -591,15 +597,16 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   to land in a different step after the clock moved forward (seen with Sentry's server) was called a time bomb;
   a network finding after the clock moves now counts as new only if the server also reaches an address it
   did not reach before. Four fixes from the pre-release audit: an MCP server written in Python
-  whose only key-file read is `~/.netrc` (Python's `requests` library opens it before every web
-  request) is now `own_tool_config_read` (medium, REVIEW) instead of DANGEROUS, and is theft again if
-  that fake password is sent out or anything else high-risk happens; declared address variables
-  (`SIYUAN_URL`, `ES_HOST`) get a fake address instead of a fake key, so a skill or server using one
+  whose only key-file read is `~/.netrc` (Python's `requests` library opens it before a web request
+  without its own login) is now `own_tool_config_read` instead of DANGEROUS: medium (REVIEW), high
+  (SUSPICIOUS) if the run also used the network, and theft again if anything else high-risk happens; declared address variables
+  (`SIYUAN_URL`, `ES_HOST`; not webhooks or database connection strings) get a fake address instead of a fake key, so a skill or server using one
   as its host is no longer called a key thief; when the tracer left no status or never attached, an
   MCP server or skill result that would have been NO FINDINGS, REVIEW or NOT ENOUGH COVERAGE is now
-  ERROR; and the skill text check no longer slows down with the square of the file size on files of
-  one repeated phrase, and stops after 30 seconds with `skill_not_fully_read` (high) instead of a
-  clean verdict.
+  ERROR; an MCP server or skill whose outside monitor did not run at all is ERROR rather than REVIEW too; and
+  the skill text check no longer slows down with the square of the file size on files of `~/.ssh/`,
+  `<!-- ` or one long web address repeated, and checks its clock between steps, stopping once 30 seconds
+  have passed with `skill_not_fully_read` (high) instead of giving a clean verdict.
 - **v0.5.1**: Fewer false alarms, with small changes only. An MCP tool description whose only
   invisible characters are the ones inside emoji (family, profession, head-shake and England,
   Scotland or Wales flag emoji) is no longer tool poisoning; an order to the model in a description

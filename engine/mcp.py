@@ -172,12 +172,19 @@ def load_config_target(name: str, work: Path, config: Path | None = None) -> run
     return target
 
 
-# A declared variable whose name says it holds an address (SIYUAN_URL, ES_HOST, API_BASE) gets a
+# A declared variable whose name says it holds an address (SIYUAN_URL, ES_HOST, OPENAI_API_BASE) gets a
 # fake address, not a fake key: a key used as the host name would look like a leaked key to the
 # fake internet. Same list in sandbox/mcp_harness.py and sandbox/skill_harness.py.
-ADDRESS_NAME_RE = re.compile(r"(?:^|_)(?:URL|URI|ENDPOINT|BASE|BASEURL|ORIGIN|HOST|HOSTNAME|SERVER|DOMAIN|ADDR|ADDRESS)$",
-                             re.IGNORECASE)
-_HOST_ONLY_RE = re.compile(r"(?:HOST|HOSTNAME|SERVER|DOMAIN|ADDR|ADDRESS)$", re.IGNORECASE)
+ADDRESS_NAME_RE = re.compile(r"(?:^|_)(?:URL|ENDPOINT|BASE|BASEURL|HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
+# Names whose value usually carries a secret even though it is an address (a webhook, a database
+# connection string with a password in it): those keep a fake key, so a leak of them is still seen.
+SECRET_ADDRESS_RE = re.compile(r"WEBHOOK|DATABASE|(?:^|_)DB(?:_|$)|DSN|CONN|MONGO|REDIS|POSTGRES|(?:^|_)PG|MYSQL|AMQP|"
+                               r"RABBIT|KAFKA|BROKER|SECRET|TOKEN|KEY|PASS|AUTH|CRED|PRIVATE|SIGN|SAS", re.IGNORECASE)
+_HOST_ONLY_RE = re.compile(r"(?:HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
+
+
+def is_address_name(name: str) -> bool:
+    return bool(ADDRESS_NAME_RE.search(str(name))) and not SECRET_ADDRESS_RE.search(str(name))
 
 
 def fake_address(name: str) -> str:
@@ -189,7 +196,7 @@ def fake_address(name: str) -> str:
 
 def fake_value(canary: str, i: int, name: str = "") -> str:
     """Same as sandbox/mcp_harness.py: the fake value for the i-th env name, sorted by name."""
-    if name and ADDRESS_NAME_RE.search(str(name)):
+    if name and is_address_name(name):
         return fake_address(name)
     return f"sk-det-{canary}-env{i}"
 
@@ -198,12 +205,12 @@ def fake_keys(canary: str, names) -> list:
     """The fake keys given to the declared names (sorted as given), leaving out fake addresses."""
     if not canary:
         return []
-    return [fake_value(canary, i, n) for i, n in enumerate(names or []) if not ADDRESS_NAME_RE.search(str(n))]
+    return [fake_value(canary, i, n) for i, n in enumerate(names or []) if not is_address_name(n)]
 
 
 def fake_hosts(names) -> set:
     """The host names of the fake addresses given to declared address variables."""
-    return {fake_address(n).split("://", 1)[-1] for n in names or [] if ADDRESS_NAME_RE.search(str(n))}
+    return {fake_address(n).split("://", 1)[-1] for n in names or [] if is_address_name(n)}
 
 
 def identity(target: runner.Target) -> list:
@@ -425,6 +432,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     unplaced: list = []
     own_exec_seen: set = set()
     exe_of: dict = {}    # process (thread group) -> program it last started, from execve
+    exe_path_of: dict = {}
     for phase, e in _phases(events, trace.get("start_index")):
         if e.get("in_harness"):
             continue
@@ -433,6 +441,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
             words = [posixpath.basename(str(w)) for w in (e.get("argv") or [path])[:2]]
             # npm starts as /usr/local/bin/npm, then its #! line re-runs it as `node .../npm`
             exe_of[e.get("proc") or e.get("pid")] = "npm" if {"npm", "npm-cli.js"} & set(words) else words[0]
+            exe_path_of[e.get("proc") or e.get("pid")] = posixpath.basename(path)   # the file run, not argv[0]
         if phase == "install" and exe_of.get(e.get("proc") or e.get("pid")) == "npm" and posixpath.basename(path) == ".npmrc" \
                 and not e.get("write"):
             continue    # npm itself reads its settings file on every run; a script reading it is still caught
@@ -453,7 +462,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
                 read_paths.setdefault(categories[path], set()).add(path)
                 proc = e.get("proc") or e.get("pid")
                 readers.setdefault(path, set()).add(
-                    exe_of.get(proc, "") if phase != "install" and (proc in server_pids or e.get("pid") in server_pids)
+                    exe_path_of.get(proc, "") if phase != "install" and (proc in server_pids or e.get("pid") in server_pids)
                     else "")
                 hit = True
             elif rules._ENVIRON_PATH.match(path) and "/self/" not in path and "/thread-self/" not in path \

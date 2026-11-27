@@ -722,19 +722,14 @@ def test_python_server_reading_only_netrc_is_review():
     assert found["own_tool_config_read"]["title"] == rules.NETRC_TITLE
 
 
-def test_netrc_with_readable_network_stays_review():
+def test_netrc_with_network_is_high_like_any_own_login_file():
+    # A key could leave scrambled or encrypted where the fake internet cannot recognise it.
     sink = {"tcp": [{"host": "api.example.com", "port": 443, "bytes": 90, "tls_read": True,
-                     "data": "GET /v1 HTTP/1.1\r\nHost: api.example.com\r\n\r\n"}], "dns": [{"name": "api.example.com"}]}
-    ev = mcp.evaluate(_netrc(_read(NETRC), sink=sink))
-    assert ev["verdict"] == "REVIEW"
-
-
-def test_netrc_with_unreadable_network_is_high():
-    sink = {"tcp": [{"host": "api.example.com", "port": 443, "bytes": 90, "tls_read": False, "data": ""}], "dns": []}
+                     "data": "POST /v1 HTTP/1.1\r\nHost: api.example.com\r\n\r\nx=9f8e7d"}], "dns": [{"name": "api.example.com"}]}
     ev = mcp.evaluate(_netrc(_read(NETRC), sink=sink))
     f = next(f for f in ev["findings"] if f["rule"] == "own_tool_config_read")
     assert ev["verdict"] == "SUSPICIOUS" and f["severity"] == "high"
-    assert f["title"] == rules.NETRC_TITLE + rules.OWN_CONFIG_UNREADABLE_SUFFIX
+    assert f["title"] == rules.NETRC_TITLE + rules.OWN_CONFIG_NETWORK_SUFFIX
 
 
 def test_netrc_password_sent_out_is_theft():
@@ -815,3 +810,12 @@ def test_blind_tracer_keeps_what_the_fake_internet_saw():
 
 def test_watched_run_is_not_touched():
     assert rules.tracer_blind(result()) is None
+
+
+def test_netrc_reader_judged_by_the_file_it_ran_not_argv0():
+    trace = ('7 13:00:00.000001 openat(AT_FDCWD</>, "/detonator-phase/plugin-start", O_RDONLY) = -1 ENOENT\n'
+             '7 13:00:00.000002 vfork() = 20\n'
+             '20 13:00:00.000003 execve("/usr/local/bin/node", ["python", "server.js"], 0x1 /* 5 vars */) = 0\n'
+             '7 13:00:00.000004 openat(AT_FDCWD</>, "/detonator-phase/mcp-call-0", O_RDONLY) = -1 ENOENT\n'
+             f'20 13:00:00.000010 {_read(NETRC)}\n')
+    assert mcp.evaluate(result(trace=trace, decoy_categories=dict(NETRC_FILES)))["verdict"] == "DANGEROUS"

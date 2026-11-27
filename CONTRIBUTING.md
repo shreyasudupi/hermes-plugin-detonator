@@ -93,8 +93,8 @@ Detonator is checked in three layers:
    changed rules are tested.**
 2. **Sandbox tests** (`tests/test_sandbox_integration.py`). These run the honest example plugins
    in `tests/fixtures/` inside the real Docker sandbox and check the whole path end to end.
-3. **Fake-malicious test plugins.** Harmless plugins (37), MCP servers (31) and skills (22) that act like stealers, time bombs,
-   backdoors and so on. They live in a separate **private** repository, because the Hermes catalog
+3. **Fake-malicious test plugins.** Harmless test plugins (37), MCP servers (33) and skills (23). Most act like stealers, time bombs,
+   backdoors and so on; a few are honest look-alikes that must stay clean. They live in a separate **private** repository, because the Hermes catalog
    scans this repository and code that looks like a stealer, even a harmless one, doesn't belong
    here. CI runs all of them on every change and checks that every rule fires.
 

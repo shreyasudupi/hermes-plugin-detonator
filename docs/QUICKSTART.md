@@ -115,7 +115,7 @@ takes a minute or two; after that a run takes seconds.
 > the `hermes` terminal chat, which has no limit.
 
 You get a verdict (`DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS` or `ERROR`; skills can also get
-`NOT ENOUGH COVERAGE`), the full commit
+NOT ENOUGH COVERAGE), the full commit
 it tested, and a list of findings, each with why it matters. The full report is saved under
 `<Hermes home>/plugin-data/detonator/reports/` (`~/.hermes` on macOS and Linux,
 `%LOCALAPPDATA%\hermes` on Windows).

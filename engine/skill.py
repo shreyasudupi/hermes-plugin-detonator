@@ -477,7 +477,8 @@ def _host_named(host: str, named) -> bool:
 def _network(raw: dict, out: dict, nets: list) -> list:
     """Declared vs observed: hosts the skill's own text names are expected; others are not."""
     findings = []
-    named = set(raw.get("mentioned_hosts") or []) | mcp.fake_hosts(raw.get("declared_env"))
+    mentioned = set(raw.get("mentioned_hosts") or [])
+    named = mentioned | mcp.fake_hosts(raw.get("declared_env"))
     tcp = (out.get("sink") or {}).get("tcp") or []
     seen = {}
     for e in tcp:
@@ -488,7 +489,7 @@ def _network(raw: dict, out: dict, nets: list) -> list:
     for host, es in seen.items():
         line = f"{rules._safe_name(host, 80)} ({len(es)} connection{'s' if len(es) > 1 else ''}, " \
                f"{sum(int(x.get('bytes') or 0) for x in es)} bytes sent)"
-        (expected if _host_named(host, named) or any(h.endswith("." + host) for h in named)
+        (expected if _host_named(host, named) or any(h.endswith("." + host) for h in mentioned)
          else other).append(line)
     if other:
         findings.append(Finding("skill_undeclared_host", MEDIUM,
@@ -563,14 +564,15 @@ def evaluate(raw: dict) -> dict:
         detail = ("The sandbox stopped before the run finished (" + str(raw["fatal"])[:300] + "), so its result "
                   "is incomplete. A skill that floods memory or kills the sandbox ends up here; what the "
                   "outside monitor saw until then is listed below.")
-    if verdict == rules.VERDICT_NO_FINDINGS and not raw.get("text_only") and not raw.get("nothing_to_run"):
-        if not out.get("ran"):
-            verdict = rules.VERDICT_ERROR
-            detail = ("The outside monitor did not run (" + str(out.get("reason") or "unknown reason")[:300] +
-                      "), so the skill's scripts and commands were not watched. Only its text was checked. "
-                      "Run /detonate check, fix what it reports, and try again.")
-        elif cov["low"]:
-            verdict = VERDICT_LOW_COVERAGE
+    if verdict in (rules.VERDICT_NO_FINDINGS, rules.VERDICT_REVIEW, VERDICT_LOW_COVERAGE) and not raw.get("text_only") \
+            and not raw.get("nothing_to_run") and not out.get("ran"):
+        verdict = rules.VERDICT_ERROR
+        detail = ("The outside monitor did not run (" + str(out.get("reason") or "unknown reason")[:300] +
+                  "), so the skill's scripts and commands were not watched. Only its text was checked. "
+                  "Run /detonate check, fix what it reports, and try again.")
+    if verdict == rules.VERDICT_NO_FINDINGS and not raw.get("text_only") and not raw.get("nothing_to_run") \
+            and cov["low"]:
+        verdict = VERDICT_LOW_COVERAGE
     blind = rules.fail_closed_on_blind_tracer({"verdict": verdict, "detail": detail}, raw, "a skill's scripts and commands",
                                               (rules.VERDICT_NO_FINDINGS, rules.VERDICT_REVIEW, VERDICT_LOW_COVERAGE))
     verdict, detail = blind["verdict"], blind["detail"]

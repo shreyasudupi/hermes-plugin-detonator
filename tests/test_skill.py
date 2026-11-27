@@ -506,5 +506,27 @@ def test_out_of_time_is_never_clean(tmp_path):
     found = st.text_findings(st.read_skill(d), budget_s=-1)
     stop = [f for f in found if f.rule == "skill_not_fully_read"]
     assert stop and stop[0].severity == rules.HIGH and "ran out of time" in stop[0].title
-    assert st._DEADLINE[0] is None
+    assert getattr(st._DEADLINE, "end", None) is None
     assert st.text_findings(st.read_skill(d)) == [] or all(f.rule != "skill_not_fully_read" for f in st.text_findings(st.read_skill(d)))
+
+
+def test_secret_bearing_addresses_keep_a_fake_key():
+    from engine import mcp
+    for n in ("SLACK_WEBHOOK_URL", "DATABASE_URL", "MONGODB_URI", "REDIS_URL", "DB_HOST_URL", "SENTRY_DSN",
+              "EMAIL_ADDRESS", "WALLET_ADDRESS", "PRESIGNED_URL", "AUTH_SERVER"):
+        assert mcp.fake_value("C" * 20, 2, n) == "sk-det-" + "C" * 20 + "-env2", n
+
+
+def test_parent_of_a_fake_address_is_not_a_named_host():
+    tcp = [{"host": "example.com", "port": 443, "bytes": 10}]
+    out = skill.evaluate(_raw(steps=[{"label": "x", "exit": 0, "phase": "step-0"}], tcp=tcp,
+                              events=[{"call": "openat", "path": "/x"}], declared=["NOTES_URL"]))
+    assert any(f["rule"] == "skill_undeclared_host" for f in out["findings"])
+
+
+def test_skill_monitor_not_running_with_a_text_finding_is_error():
+    raw = _raw(steps=[{"label": "x", "exit": 0, "phase": "step-0"}])
+    raw["text_findings"] = [{"rule": "skill_catch_all", "severity": "medium", "title": "t", "evidence": []}]
+    raw["outside"] = {"ran": False, "reason": "docker said no"}
+    out = skill.evaluate(raw)
+    assert out["verdict"] == rules.VERDICT_ERROR and "did not run" in out["detail"]

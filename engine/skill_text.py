@@ -18,6 +18,7 @@ import base64
 import binascii
 import posixpath
 import re
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -281,7 +282,9 @@ PASSWORD_ARCHIVE_RE = re.compile(
     r"\.(?:zip|7z|rar)\b|\.(?:zip|7z|rar)\b[^\n]{0,120}(?:password|passcode|archive pass)|"
     r"(?:extract|unzip|open)[^\n]{0,60}(?:with|using)\s+(?:the\s+)?(?:password|pass(?:word)?)\b|"
     r"\.(?:zip|7z|rar)\b[^\n]{0,80}\(\s*(?:extract|unzip|unpack)\s+(?:using|with)\s*:?\s*[`\"']?[\w@#$!.-]{3,40}", re.I)
-ARCHIVE_URL_RE = re.compile(r"https?://[^\s)\]'\"<>`]+\.(?:zip|7z|rar|tar\.gz|tgz)\b", re.I)
+# Web addresses are capped at 500 characters in these two: without a cap, a file of one address
+# repeated with no space made each match scan to the end of the file (time grew with its square).
+ARCHIVE_URL_RE = re.compile(r"https?://[^\s)\]'\"<>`]{1,500}?\.(?:zip|7z|rar|tar\.gz|tgz)\b", re.I)
 # "Run this command in Terminal" pointing at a page, not at a command written in the skill.
 PASTE_RUN_RE = re.compile(r"(?:visit|open|go to|copy|see)[^\n]{0,120}(?:https?://|\]\()[^\n]{0,160}\b(?:execute|run|paste)"
                           r"[^\n]{0,60}\b(?:command|terminal|script|installer)", re.I)
@@ -296,7 +299,7 @@ DOWNLOAD_FROM_RE = re.compile(r"\b(?:download|install|get|grab)\w*\b[^\n]{0,80}(
 RELEASE_EXEC_RE = re.compile(r"github\.com/[\w.-]+/[\w.-]+/releases/download/[^\s)\]]+\.(?:zip|7z|rar|exe|dmg|pkg)\b"
                              r"[^\n]{0,200}\b(?:run|launch|execute|open|double-click)\b[^\n]{0,40}"
                              r"\b(?:executable|exe|installer|app|binary|it)\b", re.I)
-INSTALLER_RE = re.compile(r"https?://[^\s)'\"<>`]+?\.(?:exe|msi|dmg|pkg|scr|apk|jar|app\.zip)\b|"
+INSTALLER_RE = re.compile(r"https?://[^\s)'\"<>`]{1,500}?\.(?:exe|msi|dmg|pkg|scr|apk|jar|app\.zip)\b|"
                           r"spctl\s+--master-disable|Set-MpPreference\s+-Disable", re.I)
 PASTE_HOST_RE = re.compile(r"\b(?:glot\.io|pastebin\.com|paste\.ee|hastebin|rentry\.co|ghostbin|"
                            r"transfer\.sh|tmpfiles\.org|catbox\.moe|gofile\.io|bore\.pub|file\.io|temp\.sh|0x0\.st|bit\.ly|tinyurl\.com|is\.gd|t\.co|"
@@ -406,7 +409,7 @@ def _defang(text: str, limit: int = 160) -> str:
 
 # How much of a line around a match is looked at. A file of one huge line (a hostile SKILL.md of
 # the same phrase repeated) would otherwise make every match search the whole file again.
-LINE_WINDOW = 500
+LINE_WINDOW = 1000
 
 
 def line_start(text: str, start: int) -> int:
@@ -441,11 +444,12 @@ class _OutOfTime(Exception):
     pass
 
 
-_DEADLINE = [None]
+_DEADLINE = threading.local()    # per thread, so two checks at once never share a deadline
 
 
 def _tick():
-    if _DEADLINE[0] is not None and time.monotonic() > _DEADLINE[0]:
+    end = getattr(_DEADLINE, "end", None)
+    if end is not None and time.monotonic() > end:
         raise _OutOfTime()
 
 
@@ -539,7 +543,7 @@ def mentioned_hosts(sk: Skill) -> set[str]:
 def text_findings(sk: Skill, budget_s: float | None = None) -> list[Finding]:
     findings: list[Finding] = []
     budget = TEXT_BUDGET_S if budget_s is None else budget_s
-    _DEADLINE[0] = time.monotonic() + budget
+    _DEADLINE.end = time.monotonic() + budget
     try:
         return _text_findings(sk, findings)
     except _OutOfTime:
@@ -549,7 +553,7 @@ def text_findings(sk: Skill, budget_s: float | None = None) -> list[Finding]:
                                 "a file built to slow scanners down can hide instructions after that point"]))
         return calibrate(findings)
     finally:
-        _DEADLINE[0] = None
+        _DEADLINE.end = None
 
 
 def _text_findings(sk: Skill, findings: list) -> list[Finding]:

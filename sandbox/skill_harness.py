@@ -285,11 +285,12 @@ def run(h):
     os._exit(0)
 
 
-# A declared variable whose name says it holds an address (SIYUAN_URL, ES_HOST, API_BASE) gets a
+# A declared variable whose name says it holds an address (SIYUAN_URL, ES_HOST, OPENAI_API_BASE) gets a
 # fake address, not a fake key. Same list as engine/mcp.py (ADDRESS_NAME_RE, fake_address).
-_ADDRESS_NAME_RE = re.compile(r"(?:^|_)(?:URL|URI|ENDPOINT|BASE|BASEURL|ORIGIN|HOST|HOSTNAME|SERVER|DOMAIN|ADDR|ADDRESS)$",
-                              re.IGNORECASE)
-_HOST_ONLY_RE = re.compile(r"(?:HOST|HOSTNAME|SERVER|DOMAIN|ADDR|ADDRESS)$", re.IGNORECASE)
+_ADDRESS_NAME_RE = re.compile(r"(?:^|_)(?:URL|ENDPOINT|BASE|BASEURL|HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
+_SECRET_ADDRESS_RE = re.compile(r"WEBHOOK|DATABASE|(?:^|_)DB(?:_|$)|DSN|CONN|MONGO|REDIS|POSTGRES|(?:^|_)PG|MYSQL|AMQP|"
+                                r"RABBIT|KAFKA|BROKER|SECRET|TOKEN|KEY|PASS|AUTH|CRED|PRIVATE|SIGN|SAS", re.IGNORECASE)
+_HOST_ONLY_RE = re.compile(r"(?:HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
 
 
 def fake_address(name):
@@ -299,6 +300,6 @@ def fake_address(name):
 
 def h_fake(canary, i, name=""):
     """The fake value for the skill's i-th declared key (sorted by name); the host computes the same."""
-    if name and _ADDRESS_NAME_RE.search(str(name)):
+    if name and _ADDRESS_NAME_RE.search(str(name)) and not _SECRET_ADDRESS_RE.search(str(name)):
         return fake_address(name)
     return f"sk-det-{canary}-env{i}"
