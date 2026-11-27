@@ -79,7 +79,7 @@ jobs:
       FROM_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
       # The fixtures commit these checks were written for (bump it with each fixtures PR), so a
       # fixtures change can never turn main red by itself and an old tag can be re-checked.
-      FIXTURES_REF: bbfbb145f63ad21756532bfc1b31c5f5bf0c8962
+      FIXTURES_REF: 00a83981ae6a8e438b4aa1530acb06e6b82f82d8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Skip on fork pull requests (no secrets there)
