@@ -404,7 +404,7 @@ def test_fetch_stop_messages_say_what_happened(tmp_path, monkeypatch, why, where
     work = tmp_path / "w"
     work.mkdir()
 
-    def fake_watched(cmd, timeout, stop, limits, streams=None):
+    def fake_watched(cmd, timeout, stop, limits, streams=None, free_watch=None):
         return None, ((work if where == "work" else streams), 1, why)
     monkeypatch.setattr(runner, "_run_watched", fake_watched)
     with pytest.raises(sources.SourceError, match=words):
@@ -423,6 +423,7 @@ def test_a_folder_removed_mid_count_is_skipped_not_hidden(tmp_path, monkeypatch)
             raise FileNotFoundError(2, "gone")
         return real_open(name, flags, *a, dir_fd=dir_fd, **k)
     monkeypatch.setattr(runner.os, "open", vanishing)
+    monkeypatch.setattr(runner, "_fd_walk_supported", lambda: True)
     used, hidden = runner.folder_usage(tmp_path, 10**9)
     assert used is not None and not hidden
 
@@ -458,3 +459,76 @@ def test_bare_git_keys_only_kept_when_boolean(tmp_path, monkeypatch, fresh_git_c
     monkeypatch.setenv("HOME", str(home))
     kept = runner._git_kept_settings()
     assert "http.sslverify=true" in kept and not any(k.startswith("http.proxy") for k in kept)
+
+
+def _fake_free(monkeypatch, values):
+    """_free_bytes returns the given values in turn, then the last one forever."""
+    seq = list(values)
+
+    def free(path):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+    monkeypatch.setattr(runner, "_free_bytes", free)
+
+
+@pytest.mark.parametrize("after,why", [(10_000_000_000, "deleted"), (6_000_000_000, "freespace")])
+def test_free_space_drop_stops_the_run_and_is_tied_to_it_only_if_it_comes_back(tmp_path, monkeypatch, after, why):
+    gb = 1_000_000_000
+    stopped = []
+    # start 10 GB free, then 6 GB free (a 4 GB drop past a 1 GB limit), then `after` once stopped.
+    _fake_free(monkeypatch, [10 * gb, 6 * gb, 6 * gb, after])
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    def stop():
+        stopped.append(1)
+        proc.kill()
+    result, over = runner._run_watched([sys.executable, "-c", "import time; time.sleep(10)"], 30, stop,
+                                       [(tmp_path, 10**12)], free_watch=(tmp_path, gb))
+    proc.wait()
+    assert stopped and over is not None and over[2] == why
+
+
+def test_a_disk_close_to_full_stops_the_run(tmp_path, monkeypatch):
+    mb = 1024 * 1024
+    _fake_free(monkeypatch, [2048 * mb, 100 * mb])
+    result, over = runner._run_watched([sys.executable, "-c", "import time; time.sleep(10)"], 30, lambda: None,
+                                       [(tmp_path, 10**12)], free_watch=(tmp_path, 10**12))
+    assert over is not None and over[2] in ("freespace", "deleted")
+
+
+def test_package_folder_leaves_out_private_folders_but_output_folder_does_not(tmp_path, monkeypatch):
+    if not runner._fd_walk_supported():
+        pytest.skip("folder handles not used here")
+    (tmp_path / "private").mkdir()
+    real_open = os.open
+
+    def locked(name, flags, *a, dir_fd=None, **k):
+        if name == "private":
+            raise PermissionError(13, "denied")
+        return real_open(name, flags, *a, dir_fd=dir_fd, **k)
+    monkeypatch.setattr(runner.os, "open", locked)
+    monkeypatch.setattr(runner, "_fd_walk_supported", lambda: True)
+    used, hidden = runner.folder_usage(tmp_path, 10**9, strict=False)
+    assert used is not None and used < 10**6 and not hidden
+    used, hidden = runner.folder_usage(tmp_path, 10**9)
+    assert hidden and used > 10**9
+
+
+@pytest.mark.parametrize("why,words", [("hidden", "could not look into"), ("deleted", "deleted but kept open"),
+                                       ("full", "wrote hundreds of MB")])
+def test_disk_flood_title_says_what_happened(why, words):
+    f = rules.disk_flood_finding({"disk_flood": "out", "disk_flood_why": why, "fatal": "x"})
+    assert words in f.title
+    if why == "hidden":
+        assert "hundreds" not in f.title and "Tried" not in f.title
+
+
+def test_free_space_without_a_cause_is_an_error_everywhere():
+    from engine import skill
+    raw = {"fatal": "sandbox stopped: the free space on your disk fell", "disk_flood": "freespace",
+           "outside": {"ran": False}}
+    assert rules.disk_flood_finding(raw) is None
+    for out in (mcp._evaluate(raw), skill.evaluate(raw), rules.evaluate(raw)):
+        assert out["verdict"] == rules.VERDICT_ERROR
+
+
+def test_disk_flood_has_no_atlas_request_flood_tag():
+    assert rules.RULES["disk_flood"].atlas == ()

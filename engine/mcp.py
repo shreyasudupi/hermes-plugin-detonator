@@ -785,7 +785,7 @@ def _evaluate(result: dict) -> dict:
     summary = rules.outside_summary(result)
     flood = rules.disk_flood_finding(result)
     # A package folder that grew too much, or a folder Detonator could not count: the run was cut short.
-    package_flood = result.get("disk_flood") in ("package", "uncountable")
+    package_flood = result.get("disk_flood") in ("package", "uncountable", "freespace")
     if result.get("fatal") and not out.get("ran") and not flood and not package_flood:
         return {"verdict": rules.VERDICT_ERROR, "findings": [], "detail": str(result["fatal"])[:2000],
                 "outside": summary}

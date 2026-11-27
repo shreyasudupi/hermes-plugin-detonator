@@ -235,6 +235,7 @@ def _run(cmd, timeout=600, own_git_config=False, capture=True, **kwargs):
 OUT_DIR_MAX_BYTES = 256 * 1024 * 1024
 PACKAGE_GROWTH_MAX_BYTES = 512 * 1024 * 1024
 STREAMS_MAX_BYTES = 64 * 1024 * 1024     # what the run prints, kept in files instead of memory
+FREE_DROP_MARGIN_BYTES = 1024 * 1024 * 1024   # room for the rest of this computer during a run
 DISK_POLL_S = 0.2   # the first watched folder is checked this often, the others every second
 MAX_WATCH_DEPTH = 48   # npm's flattened trees stay far below this
 _ENTRY_MIN = 4096   # every entry costs at least one block, so a flood of empty files counts
@@ -266,10 +267,11 @@ def folder_bytes(root: Path, stop_at: int | None = None) -> int | None:
     return folder_usage(root, stop_at)[0]
 
 
-def folder_usage(root: Path, stop_at: int | None = None) -> tuple[int | None, bool]:
+def folder_usage(root: Path, stop_at: int | None = None, strict: bool = True) -> tuple[int | None, bool]:
     """(folder_bytes, hidden): hidden is True when the count is over only because part of the
-    folder could not be looked into (unreadable, a link, or too deep)."""
-    over = (stop_at + 1) if stop_at is not None else None
+    folder could not be looked into (unreadable, a link, or too deep). With strict=False such
+    parts are left out of the count instead (the free-space check covers what they hold)."""
+    over = (stop_at + 1) if stop_at is not None and strict else None
     walk = _fd_walk if _fd_walk_supported() else _path_walk   # Windows: no folder handles
     try:
         return walk(root, stop_at, over), False
@@ -279,6 +281,7 @@ def folder_usage(root: Path, stop_at: int | None = None) -> tuple[int | None, bo
         return over, True
     except RecursionError:
         return over, over is not None
+
 
 
 class _Hidden(Exception):
@@ -437,14 +440,31 @@ def _tail(path: Path, n: int = 64 * 1024) -> str:
         return ""
 
 
-def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]], streams: Path | None = None):
+FREE_FLOOR_BYTES = 512 * 1024 * 1024   # a run is also stopped if your disk gets this close to full
+
+
+def _free_bytes(path) -> int | None:
+    try:
+        return shutil.disk_usage(str(path)).free
+    except OSError:
+        return None
+
+
+def _run_watched(cmd, timeout: float, stop, limits: list, streams: Path | None = None,
+                 free_watch: tuple[Path, int] | None = None):
     """`_run` for a `docker run` whose tested code can write to the given folders on your disk:
     `stop()` (which removes the container) is called as soon as one grows past its limit. With
     `streams`, what the run prints goes to files in that folder (watched too, so a flood of output
     cannot fill your memory or disk) and the result carries the last 64 KB of each.
+    Each limit is (folder, bytes) or (folder, bytes, strict); with strict False, parts of the
+    folder that cannot be looked into are left out instead of counting as full.
+    With `free_watch` (path, bytes), the free space of the disk holding that path is watched too:
+    a file the code deleted but keeps open still uses the disk without showing in any folder.
     Returns (process result, None or (folder, limit, why)), why being "full", "hidden" (part of
-    the folder could not be looked into) or "uncountable" (the check kept failing); raises
-    TimeoutExpired like `_run` when the run timed out."""
+    the folder could not be looked into), "uncountable" (the check kept failing), "deleted" (free
+    space fell past the limit and came back once the container was removed: the run held it) or
+    "freespace" (free space fell and did not come back, so it may not be the run's doing);
+    raises TimeoutExpired like `_run` when the run timed out."""
     import threading
     import time
     over: list = []
@@ -459,22 +479,41 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]], stre
         except (OSError, ValueError):
             return 0
 
+    free_start = _free_bytes(free_watch[0]) if free_watch else None
+
+    def free_hit():
+        if free_start is None:
+            return None
+        now = _free_bytes(free_watch[0])
+        if now is None:
+            return None
+        if free_start - now > free_watch[1] or (now < FREE_FLOOR_BYTES <= free_start // 2):
+            return now
+        return None
+
     def watch():
         tick = 0
         misses = [0] * len(limits)
+        free_low = None
         while not done.wait(DISK_POLL_S):
             tick += 1
             hit = None
             if files and printed() > STREAMS_MAX_BYTES:
                 hit = (streams, STREAMS_MAX_BYTES, "full")
-            for i, (folder, limit) in enumerate(limits):
+            if not hit and free_watch and tick % max(1, round(1 / DISK_POLL_S)) == 0:
+                free_low = free_hit()
+                if free_low is not None:
+                    hit = (free_watch[0], free_watch[1], "freespace")
+            for i, entry in enumerate(limits):
+                folder, limit = entry[0], entry[1]
+                strict = entry[2] if len(entry) > 2 else True
                 if hit:
                     break
                 # Later folders (a package folder can hold tens of thousands of files) are
                 # counted once a second.
                 if i and tick % max(1, round(1 / DISK_POLL_S)):
                     continue
-                used, hidden = folder_usage(folder, limit)
+                used, hidden = folder_usage(folder, limit, strict)
                 if used is None:
                     # Out of file handles: try again, but not forever, or a run could keep the
                     # check from ever finishing and write as much as it likes meanwhile.
@@ -486,11 +525,20 @@ def _run_watched(cmd, timeout: float, stop, limits: list[tuple[Path, int]], stre
                 if used > limit:
                     hit = (folder, limit, "hidden" if hidden else "full")
             if hit:
-                over.append(hit)
                 try:
                     stop()
                 except (OSError, subprocess.SubprocessError):
                     pass
+                if hit[2] == "freespace":
+                    # Removing the container closes every file it held open. If most of the lost
+                    # space comes back, the run was holding it (a deleted file kept open).
+                    for _ in range(10):
+                        back = _free_bytes(free_watch[0])
+                        if back is not None and back - free_low >= 0.75 * (free_start - free_low):
+                            hit = (hit[0], hit[1], "deleted")
+                            break
+                        time.sleep(0.5)
+                over.append(hit)
                 return
 
     watcher = None
@@ -1024,14 +1072,19 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
         package_start = 0
         if mcp_entry is not None and mcp_entry.get("install"):
             package_start = folder_bytes(plugin_copy) or 0
-            limits.append((plugin_copy, package_start + PACKAGE_GROWTH_MAX_BYTES))
+            # Not strict: install scripts make private folders (mkdtemp, mode 0700) that you may not
+            # be able to look into; what they hold is still caught by the free-space check.
+            limits.append((plugin_copy, package_start + PACKAGE_GROWTH_MAX_BYTES, False))
+        # Free space may fall by what the limits allow plus room for the rest of this computer.
+        free_drop = sum(OUT_DIR_MAX_BYTES if i == 0 else PACKAGE_GROWTH_MAX_BYTES for i in range(len(limits))) \
+            + STREAMS_MAX_BYTES + FREE_DROP_MARGIN_BYTES
         overflow = None
         try:
             try:
                 proc, overflow = _run_watched(cmd, MCP_RUN_TIMEOUT_S if mcp_entry is not None else
                                               SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S,
                                               lambda: _run(["docker", "rm", "-f", name], timeout=30), limits,
-                                              streams=tmp / "streams")
+                                              streams=tmp / "streams", free_watch=(tmp, free_drop))
             except subprocess.TimeoutExpired:
                 _run(["docker", "rm", "-f", name], timeout=30)
                 proc = None
@@ -1041,6 +1094,17 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
                 monitor.cleanup()
         if overflow is not None:
             folder, limit, why = overflow
+            if why == "freespace":
+                return {"fatal": f"sandbox stopped: the free space on your disk fell by more than "
+                                 f"{limit // (1024 * 1024)} MB during the run (or close to full), and Detonator "
+                                 "could not tie it to the run (another program on this computer may have been "
+                                 "writing), so the run was ended early", "outside": seen_outside,
+                        "disk_flood": "freespace"}
+            if why == "deleted":
+                return {"fatal": f"sandbox stopped: the tested code used more than {limit // (1024 * 1024)} MB "
+                                 "of your disk through files it deleted but kept open (they show in no folder), "
+                                 "so the run was ended early", "outside": seen_outside,
+                        "disk_flood": "out", "disk_flood_why": "deleted"}
             kind = "package" if folder == plugin_copy else "streams" if folder == tmp / "streams" else "out"
             grew = (limit - package_start) // (1024 * 1024) if kind == "package" else limit // (1024 * 1024)
             where = {"package": "its own package folder", "out": "the sandbox's output folder",
@@ -1060,7 +1124,7 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
                                  "(most likely this computer ran short of open-file handles), so the run "
                                  "was ended early", "outside": seen_outside, "disk_flood": "uncountable"}
             return {"fatal": f"sandbox stopped: the tested code {what} on your disk, so the run was "
-                             "ended early", "outside": seen_outside, "disk_flood": kind}
+                             "ended early", "outside": seen_outside, "disk_flood": kind, "disk_flood_why": why}
         if proc is None:
             limit = MCP_RUN_TIMEOUT_S if mcp_entry is not None else \
                 SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S

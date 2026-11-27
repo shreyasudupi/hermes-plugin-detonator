@@ -478,8 +478,15 @@ Detonator does things a reviewer should know about:
   a 64 MB `/tmp`, a 180-second timeout, a run that writes more than 256 MB (or tens of thousands of
   files) to its output folder on your disk, or prints more than 64 MB, is stopped and reported as
   `disk_flood` (the folder and the printed output are checked five times a second, so a very fast
-  writer can get further before the stop; a subfolder Detonator cannot count, because it was made
-  unreadable, swapped for a link or nested over 48 deep, counts as full; a folder removed mid-count is skipped; a folder it still cannot count after five tries, most likely because this computer ran out of open-file handles, stops the run with an ERROR verdict). An MCP package that ships folders nested deeper than 48 levels also ends as ERROR, what it prints goes to
+  writer can get further before the stop: up to about 1.3 GB in tests; a subfolder of the output folder Detonator cannot
+  look into, because it was made unreadable, swapped for a link or nested over 48 deep, also stops the run; a folder
+  removed mid-count is skipped; a folder it still cannot count after five tries, most likely because this computer ran
+  out of open-file handles, stops the run with an ERROR verdict). The free space on your disk is watched too, so files
+  the tested code deleted but keeps open (they show in no folder) cannot fill it unseen: a run is stopped when free
+  space falls by more than the limits allow plus 1 GB, or gets within 512 MB of full. If the space comes back once
+  the container is gone, that is reported as `disk_flood`; if not (another program may have been writing), the verdict
+  is ERROR. In an MCP install run, private folders an install script makes in the package folder are left out of
+  its 512 MB count and covered by the free-space check instead. What it prints goes to
   capped files rather than into memory or Docker's own log store (`--log-driver none`), the run
   folder is removed afterwards (folders the tested code locked are removed from a throwaway
   container; if that fails, Detonator prints the folder's path), and an activity log capped at 5,000 events (a flood is
@@ -551,7 +558,9 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
 - **v0.5.2**: Hardening from a full project review. A run that writes more than 256 MB into the
-  sandbox's output folder (a real folder on your disk), or prints more than 64 MB, is stopped
+  sandbox's output folder (a real folder on your disk; checked five times a second, so a very fast writer can
+  reach about 1.3 GB first), fills the disk through files it deleted but kept open (Detonator also watches your
+  free disk space), or prints more than 64 MB, is stopped
   and reported as `disk_flood` (high), with or without
   the outside monitor; an MCP install run whose package folder grows by more than 512 MB
   is stopped and the verdict is ERROR unless a critical finding was already seen before the stop. `git` no longer uses your personal git settings when it fetches code

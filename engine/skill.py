@@ -554,7 +554,7 @@ def evaluate(raw: dict) -> dict:
     findings.sort(key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
     verdict = rules._verdict(findings)
     detail = None
-    cut_short = raw.get("disk_flood") == "uncountable"
+    cut_short = raw.get("disk_flood") in ("uncountable", "freespace")
     if raw.get("fatal") and out.get("ran") and (verdict in (rules.VERDICT_NO_FINDINGS, VERDICT_LOW_COVERAGE)
                                                 or (cut_short and verdict == rules.VERDICT_REVIEW)):
         verdict = rules.VERDICT_ERROR

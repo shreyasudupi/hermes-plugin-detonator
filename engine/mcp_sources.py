@@ -555,12 +555,17 @@ def _run_fetch(cmd: list, what: str, work: Path | None = None) -> None:
             with tempfile.TemporaryDirectory(prefix="detonator-fetch-") as streams:
                 proc, over = runner._run_watched(cmd, FETCH_TIMEOUT_S,
                                                  lambda: runner._run(["docker", "rm", "-f", name], timeout=30),
-                                                 [(work, FETCH_MAX_BYTES)], streams=Path(streams))
+                                                 [(work, FETCH_MAX_BYTES)], streams=Path(streams),
+                                                 free_watch=(work, FETCH_MAX_BYTES + runner.STREAMS_MAX_BYTES
+                                                             + runner.FREE_DROP_MARGIN_BYTES))
             if over:
                 folder, _limit, why = over
                 if folder != work:
                     raise SourceError(f"could not download {what}: the download printed more than "
                                       f"{runner.STREAMS_MAX_BYTES // (1024 * 1024)} MB of messages, so it was stopped")
+                if why in ("freespace", "deleted"):
+                    raise SourceError(f"could not download {what}: the free space on your disk fell by more "
+                                      "than Detonator allows during the download, so it was stopped")
                 if why != "full":
                     raise SourceError(f"could not download {what}: Detonator could not measure the download "
                                       "folder, so it was stopped")
