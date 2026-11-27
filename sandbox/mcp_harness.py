@@ -369,9 +369,25 @@ def clock_env(env, folder, days):
     return env
 
 
-def fake_value(canary, i):
-    """The fake key for the server's i-th env entry (sorted by name). The host computes the same
+# A declared variable whose name says it holds an address (SIYUAN_URL, ES_HOST, OPENAI_API_BASE) gets a
+# fake address, not a fake key. Same list as engine/mcp.py (ADDRESS_NAME_RE, fake_address).
+_ADDRESS_NAME_RE = re.compile(r"(?:^|_)(?:URL|ENDPOINT|BASE|BASEURL|HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
+_SECRET_ADDRESS_RE = re.compile(r"(?:^|_)(?:WEBHOOK|DATABASE|DB|DSN|CONNECTION|CONN|MONGO|MONGODB|REDIS|POSTGRES|"
+                                r"POSTGRESQL|PG|MYSQL|AMQP|RABBITMQ|KAFKA|SECRET|TOKEN|KEY|PASSWORD|PASS|CRED|"
+                                r"CREDENTIALS|SIGNED|PRESIGNED|SAS)(?:_|$)", re.IGNORECASE)
+_HOST_ONLY_RE = re.compile(r"(?:HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
+
+
+def fake_address(name):
+    host = (re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")[:40].strip("-") or "service") + ".example.com"
+    return host if _HOST_ONLY_RE.search(str(name)) else "https://" + host
+
+
+def fake_value(canary, i, name=""):
+    """The fake value for the server's i-th env entry (sorted by name). The host computes the same
     value, so it knows which leaks are the server's own declared keys."""
+    if name and _ADDRESS_NAME_RE.search(str(name)) and (_HOST_ONLY_RE.search(str(name)) or not _SECRET_ADDRESS_RE.search(str(name))):
+        return fake_address(name)
     return f"sk-det-{canary}-env{i}"
 
 
@@ -382,7 +398,7 @@ def load_entry(canary):
     names = sorted(str(k) for k in (entry.get("env") or {}))
     extra = {str(k): str(v) for k, v in (entry.get("extra_env") or {}).items()}   # set by Detonator, no secrets
     install = [[str(a) for a in cmd] for cmd in entry.get("install") or [] if isinstance(cmd, list)]
-    return argv, {k: fake_value(canary, i) for i, k in enumerate(names)}, extra, install[:1]
+    return argv, {k: fake_value(canary, i, k) for i, k in enumerate(names)}, extra, install[:1]
 
 
 def swap_path_args(argv, data_dir, plugin_dir):
@@ -440,7 +456,7 @@ def run(h):
         "allowed_write_dirs": [os.path.join(h.HERMES_HOME, "mcp-data")],
         "decoy_paths": sorted(h.ALL_DECOY_PATHS), "decoy_categories": h.DECOY_CATEGORIES,
         "decoy_dirs": h.DECOY_DIRS, "memory_paths": sorted(set(h.MEMORY_FILES) | set(h.HISTORY_FILES)),
-        "canary": h.CANARY, "secret_markers": h.SECRET_MARKERS + sorted(declared.values()),
+        "canary": h.CANARY, "secret_markers": h.SECRET_MARKERS + sorted(v for v in declared.values() if h.CANARY in v),
         "declared_env": sorted(declared), "argv": argv,
     })
     h.plant_decoys()

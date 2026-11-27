@@ -106,6 +106,9 @@ EXPECTED_MCP = {
     "kube-scrambler": "SUSPICIOUS",
     "kube-overreach": "DANGEROUS",
     "name-borrower": "DANGEROUS",
+    # ~/.netrc opened the way Python's requests library does (v0.5.2 audit)
+    "honest-netrc": "REVIEW",
+    "netrc-leaker": "DANGEROUS",
 }
 MUST_FIND_MCP = {
     "disk-filler": ("disk_flood", "fill your disk"),
@@ -137,6 +140,8 @@ MUST_FIND_MCP = {
     "kube-overreach": ("decoy_accessed", ".aws/credentials"),
     "name-borrower": ("decoy_accessed", ".kube/config"),
     "kube-scrambler": ("own_tool_config_read", "used the network"),
+    "honest-netrc": ("own_tool_config_read", "~/.netrc"),
+    "netrc-leaker": ("secret_sent_out", ""),
 }
 # Skills (fixtures repo, skills/<name>): /detonate-skill, full test.
 EXPECTED_SKILL = {
@@ -162,6 +167,7 @@ EXPECTED_SKILL = {
     "background-helper": "REVIEW",
     "padded-skill": "REVIEW",
     "utf16-skill": "REVIEW",
+    "honest-url-skill": "NO_FINDINGS",
 }
 MUST_FIND_SKILL = {
     "disk-filler-skill": ("disk_flood", "fill your disk"),
@@ -179,6 +185,7 @@ MUST_FIND_SKILL = {
     "background-helper": ("skill_left_running", "detonator-fixture"),
     "padded-skill": ("skill_not_fully_read", "SKILL.md"),
     "utf16-skill": ("skill_odd_encoding", "UTF-16"),
+    "honest-url-skill": ("skill_declared_host", "honestdoc-url.example.com"),
 }
 # Findings a fixture must NOT have, in any mode: a key thief named for its tool must never be
 # let off as only reading its own login file.
@@ -186,6 +193,7 @@ MUST_NOT_FIND = {
     "kube-token-thief": "own_tool_config_read",
     "kube-snitch": "own_tool_config_read",
     "name-borrower": "own_tool_config_read",
+    "netrc-leaker": "own_tool_config_read",
 }
 # The trojan's first version (an older commit) must look clean.
 EXPECTED_V1 = {"trojan-update": "NO_FINDINGS"}

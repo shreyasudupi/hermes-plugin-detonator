@@ -20,6 +20,7 @@ It makes no decisions. The host-side rules (engine/skill.py) judge what the outs
 
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -207,7 +208,7 @@ def run(h):
     with open(SKILL_PATH) as f:
         plan = json.load(f)
     name = str(plan.get("name") or "skill")
-    declared = {str(k): h_fake(h.CANARY, i) for i, k in enumerate(sorted(plan.get("declared_env") or []))}
+    declared = {str(k): h_fake(h.CANARY, i, k) for i, k in enumerate(sorted(plan.get("declared_env") or []))}
     home = h.HOME
     skill_dir = os.path.join(h.HERMES_HOME, "skills", name)
     work = os.path.join(home, "work")
@@ -217,7 +218,7 @@ def run(h):
         "allowed_write_dirs": [work, os.path.join(home, ".cache"), os.path.join(home, ".local", "share", name)],
         "decoy_paths": sorted(h.ALL_DECOY_PATHS), "decoy_categories": h.DECOY_CATEGORIES,
         "decoy_dirs": h.DECOY_DIRS, "memory_paths": sorted(set(h.MEMORY_FILES) | set(h.HISTORY_FILES)),
-        "canary": h.CANARY, "secret_markers": h.SECRET_MARKERS + sorted(declared.values()),
+        "canary": h.CANARY, "secret_markers": h.SECRET_MARKERS + sorted(v for v in declared.values() if h.CANARY in v),
         "declared_env": sorted(declared),
     }
     h.plant_decoys()
@@ -284,6 +285,22 @@ def run(h):
     os._exit(0)
 
 
-def h_fake(canary, i):
+# A declared variable whose name says it holds an address (SIYUAN_URL, ES_HOST, OPENAI_API_BASE) gets a
+# fake address, not a fake key. Same list as engine/mcp.py (ADDRESS_NAME_RE, fake_address).
+_ADDRESS_NAME_RE = re.compile(r"(?:^|_)(?:URL|ENDPOINT|BASE|BASEURL|HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
+_SECRET_ADDRESS_RE = re.compile(r"(?:^|_)(?:WEBHOOK|DATABASE|DB|DSN|CONNECTION|CONN|MONGO|MONGODB|REDIS|POSTGRES|"
+                                r"POSTGRESQL|PG|MYSQL|AMQP|RABBITMQ|KAFKA|SECRET|TOKEN|KEY|PASSWORD|PASS|CRED|"
+                                r"CREDENTIALS|SIGNED|PRESIGNED|SAS)(?:_|$)", re.IGNORECASE)
+_HOST_ONLY_RE = re.compile(r"(?:HOST|HOSTNAME|SERVER|DOMAIN)$", re.IGNORECASE)
+
+
+def fake_address(name):
+    host = (re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")[:40].strip("-") or "service") + ".example.com"
+    return host if _HOST_ONLY_RE.search(str(name)) else "https://" + host
+
+
+def h_fake(canary, i, name=""):
     """The fake value for the skill's i-th declared key (sorted by name); the host computes the same."""
+    if name and _ADDRESS_NAME_RE.search(str(name)) and (_HOST_ONLY_RE.search(str(name)) or not _SECRET_ADDRESS_RE.search(str(name))):
+        return fake_address(name)
     return f"sk-det-{canary}-env{i}"

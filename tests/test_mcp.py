@@ -19,7 +19,8 @@ def tool(name="add", description="Add two numbers.", **extra):
             "inputSchema": {"type": "object", "properties": {"a": {"type": "number"}}}, **extra}
 
 
-def result(tools=None, later=None, calls=None, trace="", sink=None, **extra):
+def result(tools=None, later=None, calls=None, trace=None, sink=None, **extra):
+    trace = _trace() if trace is None else trace
     tools = tools if tools is not None else [tool()]
     raw = {
         "mode": "mcp", "home": HOME, "canary": CANARY, "server_pid": 20,
@@ -30,7 +31,7 @@ def result(tools=None, later=None, calls=None, trace="", sink=None, **extra):
         "calls": calls or [], "from_server": [], "notifications": [],
         "outside": {"ran": True, "canary": CANARY, "home": HOME,
                     "trace": outside.parse_strace(trace, 7), "sink": sink or {"tcp": [], "dns": []},
-                    "tracer": {}},
+                    "tracer": {"tracer_version": 1, "harness_pid": 7}},
     }
     raw.update(extra)
     return raw
@@ -700,3 +701,121 @@ def test_only_the_server_own_network_counts_as_reached_before_the_clock_moved():
 def test_a_new_host_only_after_the_clock_moved_is_still_a_time_bomb():
     found = rules_of(_late_network("198.18.0.3", "198.18.0.9"))
     assert found["time_triggered"]["severity"] == "high"
+
+
+# ---- ~/.netrc opened by Python's HTTP library -----------------------------------------------
+NETRC = f"{HOME}/.netrc"
+NETRC_FILES = {**SECRET_FILES, NETRC: "secret"}
+
+
+def _netrc(*lines, sink=None, **extra):
+    raw = result(trace=_trace(*lines), decoy_categories=dict(NETRC_FILES), sink=sink, **extra)
+    raw["identity"] = ["obsidian", "mcp-obsidian"]
+    return raw
+
+
+def test_python_server_reading_only_netrc_is_review():
+    ev = mcp.evaluate(_netrc(_read(NETRC), _read(NETRC)))
+    found = {f["rule"]: f for f in ev["findings"]}
+    assert ev["verdict"] == "REVIEW" and "decoy_accessed" not in found
+    assert found["own_tool_config_read"]["severity"] == "medium"
+    assert found["own_tool_config_read"]["title"] == rules.NETRC_TITLE
+
+
+def test_netrc_with_network_is_high_like_any_own_login_file():
+    # A key could leave scrambled or encrypted where the fake internet cannot recognise it.
+    sink = {"tcp": [{"host": "api.example.com", "port": 443, "bytes": 90, "tls_read": True,
+                     "data": "POST /v1 HTTP/1.1\r\nHost: api.example.com\r\n\r\nx=9f8e7d"}], "dns": [{"name": "api.example.com"}]}
+    ev = mcp.evaluate(_netrc(_read(NETRC), sink=sink))
+    f = next(f for f in ev["findings"] if f["rule"] == "own_tool_config_read")
+    assert ev["verdict"] == "SUSPICIOUS" and f["severity"] == "high"
+    assert f["title"] == rules.NETRC_TITLE + rules.OWN_CONFIG_NETWORK_SUFFIX
+
+
+def test_netrc_password_sent_out_is_theft():
+    sink = {"tcp": [{"host": "203.0.113.7", "port": 80, "bytes": 90, "data": f"POST /c\r\n\r\np={CANARY}-netrc-0012"}],
+            "dns": []}
+    ev = mcp.evaluate(_netrc(_read(NETRC), sink=sink))
+    found = {f["rule"]: f for f in ev["findings"]}
+    assert ev["verdict"] == "DANGEROUS" and found["decoy_accessed"]["severity"] == "critical"
+    assert "own_tool_config_read" not in found
+
+
+def test_netrc_plus_another_key_file_is_theft():
+    ev = mcp.evaluate(_netrc(_read(NETRC), _read(f"{HOME}/.ssh/id_ed25519")))
+    assert ev["verdict"] == "DANGEROUS" and "own_tool_config_read" not in {f["rule"] for f in ev["findings"]}
+
+
+def test_netrc_read_by_a_program_the_server_started_is_theft():
+    trace = _trace('vfork() = 40') + \
+        '40 13:00:00.000020 execve("/usr/bin/cat", ["cat", "x"], 0x1 /* 5 vars */) = 0\n' \
+        f'40 13:00:00.000021 {_read(NETRC)}\n'
+    raw = result(trace=trace, decoy_categories=dict(NETRC_FILES))
+    ev = mcp.evaluate(raw)
+    assert ev["verdict"] == "DANGEROUS" and "own_tool_config_read" not in {f["rule"] for f in ev["findings"]}
+
+
+def test_netrc_read_by_a_node_server_is_theft():
+    trace = ('7 13:00:00.000001 openat(AT_FDCWD</>, "/detonator-phase/plugin-start", O_RDONLY) = -1 ENOENT\n'
+             '7 13:00:00.000002 vfork() = 20\n'
+             '20 13:00:00.000003 execve("/usr/local/bin/node", ["node", "server.js"], 0x1 /* 5 vars */) = 0\n'
+             '7 13:00:00.000004 openat(AT_FDCWD</>, "/detonator-phase/mcp-call-0", O_RDONLY) = -1 ENOENT\n'
+             f'20 13:00:00.000010 {_read(NETRC)}\n')
+    ev = mcp.evaluate(result(trace=trace, decoy_categories=dict(NETRC_FILES)))
+    assert ev["verdict"] == "DANGEROUS"
+
+
+def test_netrc_with_another_high_finding_is_theft():
+    ev = mcp.evaluate(_netrc(_read(NETRC), 'bind(4, {sa_family=AF_INET, sin_port=htons(4444), '
+                                           'sin_addr=inet_addr("0.0.0.0")}, 16) = 0'))
+    found = {f["rule"]: f for f in ev["findings"]}
+    assert ev["verdict"] == "DANGEROUS" and found["decoy_accessed"]["severity"] == "critical"
+
+
+def test_netrc_in_skill_mode_keeps_the_usual_rule():
+    raw = _netrc(_read(NETRC))
+    raw["mode"] = "skill"
+    found, _ = mcp._behaviour(raw, raw["outside"])
+    assert [f.rule for f in found if f.rule in ("decoy_accessed", "own_tool_config_read")] == ["decoy_accessed"]
+
+
+# ---- the tracer did not watch: never a clean verdict -------------------------------------
+@pytest.mark.parametrize("change", [
+    lambda r: r["outside"].update(tracer={"error": "the tracer wrote no status"}),
+    lambda r: r["outside"].update(tracer={}),
+    lambda r: r["outside"].update(trace=outside.parse_strace("", 7)),
+    lambda r: r.update(traced=False),
+])
+def test_blind_tracer_is_error_not_clean(change):
+    raw = result()
+    change(raw)
+    ev = mcp.evaluate(raw)
+    assert ev["verdict"] == "ERROR" and "outside tracer did not watch" in ev["detail"]
+
+
+def test_blind_tracer_review_is_error_too():
+    raw = result(trace=_trace(_read(KUBE)), decoy_categories=dict(SECRET_FILES), identity=["kubernetes"])
+    assert mcp.evaluate(raw)["verdict"] == "REVIEW"
+    raw["outside"]["tracer"] = {"error": "the sandbox harness never started"}
+    assert mcp.evaluate(raw)["verdict"] == "ERROR"
+
+
+def test_blind_tracer_keeps_what_the_fake_internet_saw():
+    sink = {"tcp": [{"host": "203.0.113.7", "port": 80, "bytes": 90, "data": f"POST /c\r\n\r\nk={CANARY}-ssh-0001"}],
+            "dns": []}
+    raw = result(sink=sink)
+    raw["outside"]["tracer"] = {}
+    assert mcp.evaluate(raw)["verdict"] == "DANGEROUS"
+
+
+def test_watched_run_is_not_touched():
+    assert rules.tracer_blind(result()) is None
+
+
+def test_netrc_reader_judged_by_the_file_it_ran_not_argv0():
+    trace = ('7 13:00:00.000001 openat(AT_FDCWD</>, "/detonator-phase/plugin-start", O_RDONLY) = -1 ENOENT\n'
+             '7 13:00:00.000002 vfork() = 20\n'
+             '20 13:00:00.000003 execve("/usr/local/bin/node", ["python", "server.js"], 0x1 /* 5 vars */) = 0\n'
+             '7 13:00:00.000004 openat(AT_FDCWD</>, "/detonator-phase/mcp-call-0", O_RDONLY) = -1 ENOENT\n'
+             f'20 13:00:00.000010 {_read(NETRC)}\n')
+    assert mcp.evaluate(result(trace=trace, decoy_categories=dict(NETRC_FILES)))["verdict"] == "DANGEROUS"
