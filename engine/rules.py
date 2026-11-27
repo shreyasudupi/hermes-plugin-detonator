@@ -48,7 +48,10 @@ RULES = {
         "tool's own login file, which it needs to do its job. With your real file, the real key would be in its "
         "reach, so install it only if you mean to give it that access. Any other key file, a key sent out or "
         "shown to the model, or anything else high-risk in the same run is reported as key theft instead. If it also "
-        "used the network, the finding is high: a key could leave in a form the test cannot read.",
+        "used the network, the finding is high: a key could leave in a form the test cannot read. An MCP server "
+        "written in Python whose only key-file read is ~/.netrc is treated the same way, because Python's requests "
+        "library opens that file before every web request; it is high only if the run also sent data the fake "
+        "internet could not read.",
         ("T1552.001",), ()),
     "browser_or_wallet_read": Rule(
         "Saved browser passwords, cookies and crypto wallets are what info-stealer malware is built to take.",
@@ -657,7 +660,8 @@ def evaluate(result: dict) -> dict:
 # A tool's own login file (own_tool_config_read). Shared by plugin and MCP mode.
 # ---------------------------------------------------------------------------
 # (family shown in the title, name words that mean the tool, its login files under the home folder).
-# Only files a tool must read to work at all. SSH keys, ~/.netrc, Hermes's own files, browsers,
+# Only files a tool must read to work at all. SSH keys, ~/.netrc (except the HTTP-library case in
+# http_library_netrc), Hermes's own files, browsers,
 # wallets, memory and chat history are never in here: reading them keeps the usual rules.
 OWN_TOOL_FAMILIES = (
     ("Kubernetes", frozenset({"kubernetes", "kubectl", "k8s", "kube", "helm"}), (".kube/config",)),
@@ -707,6 +711,32 @@ def own_tool_finding(own: list, evidence: list) -> Finding:
 
 
 OWN_CONFIG_NETWORK_SUFFIX = ", and also used the network"
+OWN_CONFIG_UNREADABLE_SUFFIX = ", and also sent data the fake internet could not read"
+# Python's HTTP library requests (and the netrc module under it) opens ~/.netrc before every web
+# request that has no login of its own, on every computer. An MCP server written in Python
+# that does only that is not stealing keys. Only the server's own Python process counts, and
+# only when ~/.netrc is the one key file opened in the whole run.
+NETRC_TITLE = "Opened ~/.netrc, as Python's requests library does before each web request"
+_PYTHON_RE = re.compile(r"python(?:3(?:\.\d+)?)?")
+
+
+def http_library_netrc(paths, home, readers):
+    """A function that makes the medium own_tool_config_read finding for a Python server whose
+    only key-file read is ~/.netrc, or None when that is not the case."""
+    if not home or [posixpath.normpath(str(p)) for p in paths or []] != [posixpath.join(posixpath.normpath(home), ".netrc")]:
+        return None
+    progs = readers.get(str(paths[0])) or {""}
+    if not all(_PYTHON_RE.fullmatch(p or "") for p in progs):
+        return None
+    return lambda evidence: Finding("own_tool_config_read", MEDIUM, NETRC_TITLE, list(evidence)[:12])
+
+
+def unreadable_network(result: dict) -> bool:
+    """True when the fake internet saw an encrypted connection it could not read (a client that
+    pins its own certificates): a key could leave that way unseen."""
+    out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
+    sink = out.get("sink") if isinstance(out.get("sink"), dict) else {}
+    return any(isinstance(e, dict) and e.get("tls_read") is False for e in sink.get("tcp") or [])
 
 
 def reached_network(result: dict) -> bool:
@@ -729,15 +759,18 @@ def reached_network(result: dict) -> bool:
                for e in result.get("events") or [])
 
 
-def settle_own_config(findings: list, network: bool = False) -> list:
+def settle_own_config(findings: list, network: bool = False, unreadable: bool = False) -> list:
     """Run last, on the finished list of finding dicts. A tool's own login file is only a
     REVIEW when nothing else in the run is high-risk; otherwise it is key theft as usual. When
     the run also used the network (and nothing else is high-risk) it is HIGH: the test would not
-    see a key that left encrypted."""
+    see a key that left encrypted. ~/.netrc opened by Python's HTTP library is raised to HIGH
+    only when the fake internet saw a connection it could not read: every web request that
+    library makes reads the file, and a key sent over one the fake internet can read is caught
+    as secret_sent_out (which makes it theft again)."""
     if not any(f.get("rule") == "own_tool_config_read" for f in findings):
         return findings
     alarm = any(f.get("severity") in (CRITICAL, HIGH) for f in findings if f.get("rule") != "own_tool_config_read")
-    if not alarm and not network:
+    if not alarm and not network and not unreadable:
         return findings
     info = RULES["decoy_accessed"]
     out = []
@@ -749,7 +782,10 @@ def settle_own_config(findings: list, network: bool = False) -> list:
                 f = {**f, "rule": "decoy_accessed", "severity": CRITICAL,
                      "title": OWN_CONFIG_SETTLED_TITLE + (m.group(0) if m else ""),
                      "why": info.why, "attack": list(info.attack), "atlas": list(info.atlas)}
-            elif OWN_CONFIG_NETWORK_SUFFIX not in title:
+            elif title.startswith(NETRC_TITLE):
+                if unreadable and OWN_CONFIG_UNREADABLE_SUFFIX not in title:
+                    f = {**f, "severity": HIGH, "title": title + OWN_CONFIG_UNREADABLE_SUFFIX}
+            elif network and OWN_CONFIG_NETWORK_SUFFIX not in title:
                 f = {**f, "severity": HIGH, "title": title + OWN_CONFIG_NETWORK_SUFFIX}
         out.append(f)
     return sorted(out, key=lambda f: SEVERITY_ORDER.index(f["severity"]))
@@ -758,7 +794,8 @@ def settle_own_config(findings: list, network: bool = False) -> list:
 def settle_evaluation(full: dict, result: dict | None = None) -> dict:
     """settle_own_config on a finished evaluation, and the verdict again (an ERROR stays one)."""
     findings = full.get("findings") or []
-    settled = settle_own_config(findings, network=reached_network(result or {}))
+    settled = settle_own_config(findings, network=reached_network(result or {}),
+                                unreadable=unreadable_network(result or {}))
     if settled is findings:
         return full
     full["findings"] = settled
@@ -1747,6 +1784,41 @@ def _connection_lines(tcp: list) -> list:
         n, sent = groups.get(key, (0, 0))
         groups[key] = (n + 1, sent + int(e.get("bytes") or 0))
     return [f"{k} ({n} time{'s' if n > 1 else ''}, {sent} bytes sent)" for k, (n, sent) in groups.items()][:20]
+
+
+def tracer_blind(result: dict) -> str | None:
+    """Why the outside tracer did not watch the run, or None when it did. Only for a run where the
+    outside monitor ran: the tracer left no status or reported an error, never attached before the
+    code under test started (no start mark in its log), or the harness gave up waiting for it."""
+    out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
+    if not out.get("ran"):
+        return None
+    tracer = out.get("tracer") if isinstance(out.get("tracer"), dict) else {}
+    trace = out.get("trace") if isinstance(out.get("trace"), dict) else {}
+    if tracer.get("error"):
+        return str(tracer["error"])[:300]
+    if not tracer:
+        return "the tracer wrote no status"
+    if trace.get("start_index") is None:
+        return "the tracer did not attach before the code under test started"
+    if result.get("traced") is False:
+        return "the sandbox stopped waiting for the tracer to attach"
+    return None
+
+
+TRACER_BLIND_DETAIL = ("The outside tracer did not watch this run ({why}). For {what} it is the only thing that "
+                       "sees files and programs, so a clean result here would only mean that nothing was seen, not "
+                       "that nothing happened. Run /detonate check, fix what it reports, and try again.")
+
+
+def fail_closed_on_blind_tracer(full: dict, result: dict, what: str, clean: tuple) -> dict:
+    """MCP servers and skills: when the tracer did not watch, a clean or review-level verdict
+    becomes ERROR. A verdict set by what was seen anyway (SUSPICIOUS, DANGEROUS) stands."""
+    why = tracer_blind(result or {})
+    if why and full.get("verdict") in clean:
+        full["verdict"] = VERDICT_ERROR
+        full["detail"] = TRACER_BLIND_DETAIL.format(why=why, what=what)
+    return full
 
 
 def outside_summary(result: dict) -> dict:

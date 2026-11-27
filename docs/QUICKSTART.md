@@ -7,7 +7,7 @@ running, skip to [step 3](#3-install-detonator-one-command).
 a throwaway Docker container with no network and fake secrets, then tells you what the plugin
 actually did (read keys, reached for the network, ran commands, planted start-up files...).
 For MCP servers the command is `/detonate-mcp <server-name>`; see the [README](../README.md#test-an-mcp-server). For skills it is `/detonate-skill <name>`; see [Test a skill](../README.md#test-a-skill).
-It always asks before running anything.
+It always asks before running a test (`/detonate check` only looks at Docker, and runs without asking).
 
 ## 1. Install Docker
 
@@ -75,7 +75,7 @@ security tool shouldn't ask you to run a script you haven't read. These are Herm
 ## 4. Check Docker is ready
 
 Start the chat with `hermes`. (The chat needs an AI provider set up first; `hermes model` does
-that. `/detonate` itself never uses the model. No provider? Every command below also works from the
+that. `/detonate` itself never uses the model. No provider? Every test command below also works from the
 terminal as `hermes detonate ...`, without one.) Then type:
 
 ```
@@ -114,7 +114,8 @@ takes a minute or two; after that a run takes seconds.
 > because Desktop gives a command 30 seconds. Just run the same command again. Or do the first run in
 > the `hermes` terminal chat, which has no limit.
 
-You get a verdict (`DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS` or `ERROR`), the full commit
+You get a verdict (`DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS` or `ERROR`; skills can also get
+`NOT ENOUGH COVERAGE`), the full commit
 it tested, and a list of findings, each with why it matters. The full report is saved under
 `<Hermes home>/plugin-data/detonator/reports/` (`~/.hermes` on macOS and Linux,
 `%LOCALAPPDATA%\hermes` on Windows).

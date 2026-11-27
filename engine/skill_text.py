@@ -18,6 +18,7 @@ import base64
 import binascii
 import posixpath
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -403,14 +404,49 @@ def _defang(text: str, limit: int = 160) -> str:
     return (t[:limit] + "…") if len(t) > limit else t
 
 
+# How much of a line around a match is looked at. A file of one huge line (a hostile SKILL.md of
+# the same phrase repeated) would otherwise make every match search the whole file again.
+LINE_WINDOW = 500
+
+
 def line_start(text: str, start: int) -> int:
-    return text.rfind("\n", 0, start) + 1
+    return max(text.rfind("\n", max(0, start - LINE_WINDOW), start) + 1, start - LINE_WINDOW, 0)
 
 
 def _line_of(text: str, start: int) -> str:
-    a = text.rfind("\n", 0, start) + 1
-    b = text.find("\n", start)
-    return text[a:b if b != -1 else len(text)]
+    """The line that holds position start, cut to LINE_WINDOW characters either side of it."""
+    a = line_start(text, start)
+    b = text.find("\n", start, start + LINE_WINDOW)
+    return text[a:b if b != -1 else min(len(text), start + LINE_WINDOW)]
+
+
+def _comments(text: str):
+    """The bodies of <!-- ... --> comments, in order (as the lazy regex would find them), in one
+    pass: an unclosed "<!--" repeated many times must not make every one scan to the end."""
+    i = text.find("<!--")
+    while i != -1:
+        j = text.find("-->", i + 4)
+        if j == -1:
+            return
+        yield text[i + 4:j]
+        i = text.find("<!--", j + 3)
+
+
+# A time budget for the whole text check: it runs on the person's computer, inside Hermes, before any
+# sandbox starts. Past it the check stops, says so, and the verdict cannot be clean.
+TEXT_BUDGET_S = 30.0
+
+
+class _OutOfTime(Exception):
+    pass
+
+
+_DEADLINE = [None]
+
+
+def _tick():
+    if _DEADLINE[0] is not None and time.monotonic() > _DEADLINE[0]:
+        raise _OutOfTime()
 
 
 def _quoted(line: str, m_text: str) -> bool:
@@ -432,6 +468,7 @@ EXPORT_ONLY = re.compile(r"""^\s*echo\s+(['"])export\s+(?!(?:PATH|LD_\w*|DYLD_\w
 def _hits(regex, text, where, limit=4):
     out = []
     for m in regex.finditer(text):
+        _tick()
         if regex is INJECTION_RE:
             line = _line_of(text, m.start())
             if _quoted(line, m.group(0)) or _HONEST_GUARD.search(line):
@@ -499,15 +536,32 @@ def mentioned_hosts(sk: Skill) -> set[str]:
 # ---------------------------------------------------------------------------
 # Findings
 # ---------------------------------------------------------------------------
-def text_findings(sk: Skill) -> list[Finding]:
+def text_findings(sk: Skill, budget_s: float | None = None) -> list[Finding]:
     findings: list[Finding] = []
+    budget = TEXT_BUDGET_S if budget_s is None else budget_s
+    _DEADLINE[0] = time.monotonic() + budget
+    try:
+        return _text_findings(sk, findings)
+    except _OutOfTime:
+        findings.append(Finding("skill_not_fully_read", HIGH,
+                                f"The text check ran out of time ({budget:g} s) and stopped, so the rest of the "
+                                "skill's text was not checked", [f"{len(findings)} finding(s) made before it stopped; "
+                                "a file built to slow scanners down can hide instructions after that point"]))
+        return calibrate(findings)
+    finally:
+        _DEADLINE[0] = None
+
+
+def _text_findings(sk: Skill, findings: list) -> list[Finding]:
     texts = all_text(sk)
     mds = [(w, t) for w, t in texts if w not in sk.scripts]
 
     # ---- download and run: the most common real skill attack (fake "prerequisite" installers)
     fetch_known, fetch_other, fetch_bad = [], [], []
     for where, t in texts:
+        _tick()
         for m in FETCH_EXEC_RE.finditer(t):
+            _tick()
             line = _line_of(t, m.start())
             ev = f"{where}: {_defang(line)}"
             if RAW_IP_URL_RE.search(line) or PASTE_HOST_RE.search(line):
@@ -520,7 +574,9 @@ def text_findings(sk: Skill) -> list[Finding]:
                 fetch_known.append(ev)
     encoded = []
     for where, t in texts:
+        _tick()
         for m in DECODE_EXEC_RE.finditer(t):
+            _tick()
             encoded.append(f"{where}: {_defang(_line_of(t, m.start()))}")
         for dec in _decode_b64_strings(t):
             if FETCH_EXEC_RE.search(dec) or _REVSHELL.search(dec) or RAW_IP_URL_RE.search(dec):
@@ -544,14 +600,17 @@ def text_findings(sk: Skill) -> list[Finding]:
 
     lures, soft_lures = [], []
     for where, t in texts:
+        _tick()
         lures += _hits(PASSWORD_ARCHIVE_RE, t, where, 3)
         lures += _hits(INSTALLER_RE, t, where, 3)
         lures += _hits(RELEASE_EXEC_RE, t, where, 3)
         for m in PASTE_RUN_RE.finditer(t):
+            _tick()
             line = _line_of(t, m.start())
             if PASTE_HOST_RE.search(line) or RAW_IP_URL_RE.search(line) or re.search(_FREE_HOSTS, line, re.I):
                 lures.append(f"{where}: {_defang(line)}")
         for m in ARCHIVE_URL_RE.finditer(t):
+            _tick()
             near = t[max(0, m.start() - 400): m.end() + 400]
             if re.search(r"\b(?:password|passcode|passwd|pass)\b|\(\s*extract\s+using", near, re.I) or \
                     re.search(r"\.(?:exe|app|dmg|pkg|msi)\b[^\n]{0,80}|\b(?:run|open|launch|execute)\b[^\n]{0,40}"
@@ -559,6 +618,7 @@ def text_findings(sk: Skill) -> list[Finding]:
                 lures.append(f"{where}: {_defang(_line_of(t, m.start()))}")
         if PREREQ_RE.search(t):
             for m in DOWNLOAD_FROM_RE.finditer(t):
+                _tick()
                 line = _line_of(t, m.start())
                 ev = f"{where}: {_defang(line)}"
                 (lures if re.search(r"\b(?:windows|mac\s?os|macos|osx|\.exe|\.dmg|installer)\b", line, re.I)
@@ -570,6 +630,7 @@ def text_findings(sk: Skill) -> list[Finding]:
                                 list(dict.fromkeys(lures))[:6]))
     quarantine = []
     for where, t in texts:
+        _tick()
         quarantine += _hits(QUARANTINE_RE, t, where, 2)
     if quarantine:
         findings.append(Finding("skill_installer_lure", MEDIUM if lures or soft_lures else LOW,
@@ -583,6 +644,7 @@ def text_findings(sk: Skill) -> list[Finding]:
     inj_desc = _hits(INJECTION_RE, sk.description, "description")
     inj_body = []
     for where, t in mds:
+        _tick()
         inj_body += _hits(INJECTION_RE, t, where, 3)
     if inj_desc:
         findings.append(Finding("skill_instruction_injection", HIGH,
@@ -599,6 +661,7 @@ def text_findings(sk: Skill) -> list[Finding]:
     # ---- hidden text
     hidden = []
     for where, t in texts:
+        _tick()
         tag = hidden_tag_text(t)
         if tag.strip():
             hidden.append(f"{where}: invisible tag text says: {_defang(tag, 120)}")
@@ -611,8 +674,9 @@ def text_findings(sk: Skill) -> list[Finding]:
             hidden.append(f"{where}: many private-use characters")
     comment_hits = []
     for where, t in mds:
-        for cm in _COMMENT_RE.finditer(t):
-            body = cm.group(1)
+        _tick()
+        for body in _comments(t):
+            _tick()
             if len(body) > 20 and _IMPERATIVE.search(body) and (INJECTION_RE.search(body) or FETCH_EXEC_RE.search(body)
                                                                   or _SECRET_PATHS.search(body) or _SEND.search(body)):
                 comment_hits.append(f"{where}: hidden comment: {_defang(body, 120)}")
@@ -627,9 +691,11 @@ def text_findings(sk: Skill) -> list[Finding]:
     # ---- secrets and sending data out
     secret_lines, strong = [], False
     for where, t in texts:
+        _tick()
         if where.lower().endswith((".json", ".csv")):
             continue
         for m in _SECRET_PATHS.finditer(t):
+            _tick()
             line = _line_of(t, m.start())
             if re.search(r"\b(?:never|don'?t|do not|avoid|must not)\b[^.\n]{0,60}(?:commit|share|paste|upload|log|"
                          r"print|expose|read)", line, re.I):
@@ -637,7 +703,7 @@ def text_findings(sk: Skill) -> list[Finding]:
             rest = re.match(r"[^\s\"'`)]*", t[m.end():m.end() + 200]).group(0)
             if (m.group(0) + rest).lower().endswith(".pub"):
                 continue    # a public key
-            pre = line[:max(0, m.start() - line_start(t, m.start()))]
+            pre = t[line_start(t, m.start()):m.start()]
             if not _SECRET_ACTION.search(pre[-80:]):
                 continue    # only mentioned (where a token is stored, setup docs), not acted on
             secret_lines.append(f"{where}: {_defang(line)}")
@@ -651,6 +717,7 @@ def text_findings(sk: Skill) -> list[Finding]:
             cred_bad.append(f"required_credential_files: {_defang(p)}")
     send = []
     for where, t in texts:
+        _tick()
         send += _hits(_SEND, t, where, 2) + _hits(_SEND_CMD, t, where, 2)
     if cred_bad:
         findings.append(Finding("skill_secret_request", HIGH,
@@ -672,7 +739,9 @@ def text_findings(sk: Skill) -> list[Finding]:
     # ---- the agent's own setup, persistence and other tools
     cfg = []
     for where, t in texts:
+        _tick()
         for m in _CONFIG_TARGETS.finditer(t):
+            _tick()
             line = _line_of(t, m.start())
             if _SWITCH.search(line) or _WRITE_ACTION.search(line):
                 cfg.append(f"{where}: {_defang(line)}")
@@ -684,6 +753,7 @@ def text_findings(sk: Skill) -> list[Finding]:
                                 list(dict.fromkeys(cfg))[:6]))
     nosafety = []
     for where, t in texts:
+        _tick()
         nosafety += _hits(re.compile(r"--dangerously-skip-permissions|--yolo\b|--dangerously-bypass-approvals", re.I),
                           t, where, 2)
     if nosafety:
@@ -691,6 +761,7 @@ def text_findings(sk: Skill) -> list[Finding]:
                                 list(dict.fromkeys(nosafety))[:4]))
     persist = []
     for where, t in texts:
+        _tick()
         persist += [h for h in _hits(_PERSIST, t, where, 6)
                     if not EXPORT_ONLY.match(h.split(": ", 1)[1] if ": " in h else h)][:3]
     if persist:
@@ -699,7 +770,9 @@ def text_findings(sk: Skill) -> list[Finding]:
                                 list(dict.fromkeys(persist))[:6]))
     tool_abuse = []
     for where, t in mds:
+        _tick()
         for m in _AGENT_TOOLS.finditer(t):
+            _tick()
             line = _line_of(t, m.start())
             if _TOOL_ABUSE_VERB.search(line) and (INJECTION_RE.search(line) or _SEND.search(line) or
                                                  _SECRET_PATHS.search(line) or "skill_manage" in line.lower()
@@ -711,6 +784,7 @@ def text_findings(sk: Skill) -> list[Finding]:
                                 list(dict.fromkeys(tool_abuse))[:6]))
     destructive, revshell = [], []
     for where, t in texts:
+        _tick()
         destructive += _hits(_DESTRUCTIVE, t, where, 2)
         revshell += _hits(_REVSHELL, t, where, 2)
     if revshell:
@@ -725,6 +799,7 @@ def text_findings(sk: Skill) -> list[Finding]:
     # ---- front matter features
     inline = []
     for where, t in mds:
+        _tick()
         inline += [f"{where}: !`{_defang(m.group(1), 100)}`" for m in _INLINE_SHELL_RE.finditer(t)][:4]
     if inline:
         risky = any(FETCH_EXEC_RE.search(x) or _SECRET_PATHS.search(x) or _SEND_CMD.search(x) for x in inline)

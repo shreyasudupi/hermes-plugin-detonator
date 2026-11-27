@@ -477,7 +477,7 @@ def _host_named(host: str, named) -> bool:
 def _network(raw: dict, out: dict, nets: list) -> list:
     """Declared vs observed: hosts the skill's own text names are expected; others are not."""
     findings = []
-    named = set(raw.get("mentioned_hosts") or [])
+    named = set(raw.get("mentioned_hosts") or []) | mcp.fake_hosts(raw.get("declared_env"))
     tcp = (out.get("sink") or {}).get("tcp") or []
     seen = {}
     for e in tcp:
@@ -531,9 +531,11 @@ def evaluate(raw: dict) -> dict:
                                     "Left a program running in the background after its command ended",
                                     [text._defang(x, 240) for x in stray][:8]))
         canary = str(out.get("canary") or raw.get("canary") or "")
-        declared = [mcp.fake_value(canary, i) for i in range(len(raw.get("declared_env") or []))] if canary else []
+        declared = mcp.fake_keys(canary, [str(n) for n in raw.get("declared_env") or []])
         stripped = dict(out)
-        own_hosts = set(raw.get("mentioned_hosts") or [])
+        # The hosts its text names, and the fake addresses given to its declared address variables
+        # (SIYUAN_URL): where the person's own settings would send it.
+        own_hosts = set(raw.get("mentioned_hosts") or []) | mcp.fake_hosts(raw.get("declared_env"))
         # A declared key sent to a host the skill names is how an API skill works; anywhere else it is a leak.
         stripped["sink"] = {**(out.get("sink") or {}), "tcp": [
             {**e, "data": mcp._strip(str(e.get("data") or ""), declared)
@@ -569,6 +571,9 @@ def evaluate(raw: dict) -> dict:
                       "Run /detonate check, fix what it reports, and try again.")
         elif cov["low"]:
             verdict = VERDICT_LOW_COVERAGE
+    blind = rules.fail_closed_on_blind_tracer({"verdict": verdict, "detail": detail}, raw, "a skill's scripts and commands",
+                                              (rules.VERDICT_NO_FINDINGS, rules.VERDICT_REVIEW, VERDICT_LOW_COVERAGE))
+    verdict, detail = blind["verdict"], blind["detail"]
     return {"verdict": verdict, "findings": [f.to_dict() for f in findings], "outside": summary,
             **({"detail": detail} if detail else {}), "coverage": cov, "layers": _layers(raw, cov),
             "skill": raw.get("skill") or {}}

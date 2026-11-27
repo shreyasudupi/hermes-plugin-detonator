@@ -172,9 +172,38 @@ def load_config_target(name: str, work: Path, config: Path | None = None) -> run
     return target
 
 
-def fake_value(canary: str, i: int) -> str:
-    """Same as sandbox/mcp_harness.py: the fake key for the i-th env name, sorted by name."""
+# A declared variable whose name says it holds an address (SIYUAN_URL, ES_HOST, API_BASE) gets a
+# fake address, not a fake key: a key used as the host name would look like a leaked key to the
+# fake internet. Same list in sandbox/mcp_harness.py and sandbox/skill_harness.py.
+ADDRESS_NAME_RE = re.compile(r"(?:^|_)(?:URL|URI|ENDPOINT|BASE|BASEURL|ORIGIN|HOST|HOSTNAME|SERVER|DOMAIN|ADDR|ADDRESS)$",
+                             re.IGNORECASE)
+_HOST_ONLY_RE = re.compile(r"(?:HOST|HOSTNAME|SERVER|DOMAIN|ADDR|ADDRESS)$", re.IGNORECASE)
+
+
+def fake_address(name: str) -> str:
+    """The fake address for a declared address variable: a host name made from its name under
+    example.com (with https:// for a URL-type name). It carries no fake key."""
+    host = (re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")[:40].strip("-") or "service") + ".example.com"
+    return host if _HOST_ONLY_RE.search(str(name)) else f"https://{host}"
+
+
+def fake_value(canary: str, i: int, name: str = "") -> str:
+    """Same as sandbox/mcp_harness.py: the fake value for the i-th env name, sorted by name."""
+    if name and ADDRESS_NAME_RE.search(str(name)):
+        return fake_address(name)
     return f"sk-det-{canary}-env{i}"
+
+
+def fake_keys(canary: str, names) -> list:
+    """The fake keys given to the declared names (sorted as given), leaving out fake addresses."""
+    if not canary:
+        return []
+    return [fake_value(canary, i, n) for i, n in enumerate(names or []) if not ADDRESS_NAME_RE.search(str(n))]
+
+
+def fake_hosts(names) -> set:
+    """The host names of the fake addresses given to declared address variables."""
+    return {fake_address(n).split("://", 1)[-1] for n in names or [] if ADDRESS_NAME_RE.search(str(n))}
 
 
 def identity(target: runner.Target) -> list:
@@ -389,6 +418,7 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
     per_phase: dict = {}
     reads: dict = {}
     read_paths: dict = {}    # category -> the plain paths read, for the own-login-file check
+    readers: dict = {}       # decoy path -> the programs that opened it ("" = not the server itself)
     writes, programs, nets, local, listen, probes, recon, environ = [], [], [], [], [], [], [], []
     shells: list = []
     net_procs = rules.connected_procs(events)
@@ -421,6 +451,10 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
             elif path in categories:
                 reads.setdefault(categories[path], []).append(f"{path} ({label})")
                 read_paths.setdefault(categories[path], set()).add(path)
+                proc = e.get("proc") or e.get("pid")
+                readers.setdefault(path, set()).add(
+                    exe_of.get(proc, "") if phase != "install" and (proc in server_pids or e.get("pid") in server_pids)
+                    else "")
                 hit = True
             elif rules._ENVIRON_PATH.match(path) and "/self/" not in path and "/thread-self/" not in path \
                     and (skill_mode or path.split("/")[2] not in
@@ -483,8 +517,14 @@ def _behaviour(result: dict, out: dict) -> tuple[list, dict]:
         if others and not skill_mode and not env_file and not reads.get("browser") and not reads.get("wallet") \
                 and not reads.get("memory") and not reads.get("history") and not environ:
             own = rules.own_tool_reads(sorted(read_paths.get("secret") or ()), home, _identity_words(result))
+        netrc = None
+        if others and not own and not skill_mode and not env_file and not reads.get("browser") \
+                and not reads.get("wallet") and not reads.get("memory") and not reads.get("history") and not environ:
+            netrc = rules.http_library_netrc(sorted(read_paths.get("secret") or ()), home, readers)
         if own:
             findings.append(rules.own_tool_finding(own, sorted(set(others))))
+        elif netrc:
+            findings.append(netrc(sorted(set(others))))
         elif others:
             findings.append(Finding("decoy_accessed", CRITICAL, "Opened decoy key and credential files",
                                     sorted(set(others))[:12]))
@@ -741,7 +781,9 @@ def evaluate(result: dict) -> dict:
     """Judge the run. When the later pass ran (the server restarted with its clock moved forward),
     anything it did only then is also reported as a time bomb. Last, a tool's own login file
     read in a run that also did something high-risk is turned back into key theft."""
-    return rules.settle_evaluation(_evaluate_with_clock(result or {}), result or {})
+    full = rules.settle_evaluation(_evaluate_with_clock(result or {}), result or {})
+    return rules.fail_closed_on_blind_tracer(full, result or {}, "an MCP server",
+                                             (rules.VERDICT_NO_FINDINGS, rules.VERDICT_REVIEW))
 
 
 def _evaluate_with_clock(result: dict) -> dict:
@@ -807,7 +849,7 @@ def _evaluate(result: dict) -> dict:
     out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
     canary = str(out.get("canary") or result.get("canary") or "")
     declared_names = [str(n) for n in result.get("declared_env") or []]
-    declared = [fake_value(canary, i) for i in range(len(declared_names))] if canary else []
+    declared = fake_keys(canary, declared_names)
     summary = rules.outside_summary(result)
     flood = rules.disk_flood_finding(result)
     # A package folder that grew too much, or a folder Detonator could not count: the run was cut short.

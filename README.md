@@ -121,7 +121,9 @@ From a terminal: `hermes detonate <catalog-name | owner/repo | update name> [sha
 `/detonate check` only tells you whether Docker is ready; it runs nothing. The terminal command needs no AI provider, so it works on a
 Hermes that has no model set up yet.
 
-Detonator always asks you before it runs anything. If no one can answer (a cron
+Detonator always asks you before it runs a test. Two things run without a question: `/detonate check`
+(it only runs `docker info` to see whether Docker is ready) and the developer command `python -m engine <path>`
+(you typed the path yourself). If no one can answer (a cron
 job, a hook, a non-interactive or unattended run), it refuses instead of running.
 There is no flag that skips the question. The `detonate_plugin` tool lets the
 agent suggest a run (by catalog name or repo), but it only returns the `/detonate` command for you to run.
@@ -197,7 +199,9 @@ After you approve, Detonator:
 
 1. **Reads the entry** through Hermes's own config reader (the active profile, values as written,
    so `${VAR}` references stay unexpanded). It keeps the env and header *names*; the values are
-   only checked for keys written straight into the file, then dropped. The server gets fake values.
+   only checked for keys written straight into the file, then dropped. The server gets fake values:
+   a fake key, or a fake address (`https://<name>.example.com`) for a name that ends in `URL`, `URI`,
+   `ENDPOINT`, `BASE`, `HOST`, `SERVER`, `DOMAIN` or `ADDRESS`, so an address is never mistaken for a leaked key.
 2. **Gets the code.** `npx -y <package>@<version>` and `uvx <package>==<version>` entries are
    downloaded in a separate container: network on, no decoys, npm install scripts off, PyPI wheels
    only (a source package would run code to build). Local `python`/`node` scripts are copied
@@ -259,7 +263,8 @@ You choose **Run full test** or **Read the text only**. The first full skill tes
 sandbox image (Debian with Python and Node.js, about 1.7 GB, built once) so the everyday tools a
 skill calls are really there. Reading the text only needs no image. Detonator:
 
-1. **Reads every file** on your computer without running anything: frontmatter, fenced shell
+1. **Reads every file** (up to 400 files, 1 MB each and 20 MB in all; the start and end of a longer
+   SKILL.md, and it says what it skipped) on your computer without running anything, within a 30-second time budget: frontmatter, fenced shell
    blocks, inline commands, links and hidden text (invisible Unicode tags, zero-width and
    right-to-left characters, HTML comments, files saved as UTF-16 or Latin-1). It looks for download-and-run commands, password-zip
    and fake-installer lures, prompt injection and "always use this skill" text, requests for keys,
@@ -267,7 +272,8 @@ skill calls are really there. Reading the text only needs no image. Detonator:
    scripts, binaries and links that point outside the folder.
 2. **Installs it in the sandbox** where Hermes keeps skills (`~/.hermes/skills/<name>`, with
    `HERMES_SKILL_DIR` set) next to the same decoy home a plugin run gets, plus a work folder with
-   harmless sample files. Keys the skill declares get fake values.
+   harmless sample files. Keys the skill declares get fake values (address variables such as
+   `SIYUAN_URL` get a fake `example.com` address, which counts as a host the skill names).
 3. **Runs each shell block and command from SKILL.md** on its own, as the agent would, with
    placeholders such as `<file>` filled with sample files, then **each script** with no arguments
    and with `--help`. Every step has a 20-second limit and fresh decoys. Small stand-ins for macOS
@@ -302,7 +308,8 @@ clean run is evidence, not proof.
 technique IDs, is in [docs/RULES.md](docs/RULES.md). A test fails if a rule is added without
 documenting it there.
 
-Verdicts: `DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS`, `ERROR`. The verdict comes
+Verdicts: `DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS`, `ERROR`, and for skills
+`NOT ENOUGH COVERAGE`. The verdict comes
 from deterministic rules only. No model decides anything.
 
 ### Outside monitor
@@ -332,13 +339,18 @@ Detonator then compares the two records. Three rules come from this:
 | Rule | Severity | Catches |
 |---|---|---|
 | `secret_sent_out` | critical | A fake key reaching the fake internet, plain or disguised (base64, base32, hex, URL escapes, rot13, reversed, compressed, or layers of these), or hidden in DNS names, even split across several lookups |
-| `monitor_blind_spot` | critical | The plugin's own process opening a decoy file, connecting out or starting a program that the inside monitor never recorded |
+| `monitor_blind_spot` | critical (high when no file was involved) | The plugin's own process opening a decoy file, connecting out or starting a program that the inside monitor never recorded |
 | `result_forged` | critical | Anything other than Detonator writing, removing or linking the result file (Detonator never reads it through a link) |
 
 It also adds evidence to `decoy_accessed` when a program the plugin started reads a decoy
 file (high when it is that program's own login file, such as pip reading `.netrc`), and to
 `monitor_tamper` for attempts to trace or read another process. If the plugin kills the
 sandbox, the outside evidence is still judged instead of reporting a bare error.
+
+For MCP servers and skills the tracer is the only thing that sees files and programs. If it left no
+status, reported an error or never attached, a result that would have been NO FINDINGS, REVIEW or NOT
+ENOUGH COVERAGE is ERROR instead, and the report says why. Plugins are also watched by the inside
+monitor, so this change does not apply to them.
 
 The outside monitor is on by default and adds a second or two to a run. Its image is built
 once, next to the sandbox image (it installs `strace` and `iptables` from Debian, so the first build needs
@@ -427,7 +439,7 @@ no Python code to run, and Detonator says so instead of guessing.
   second download from a live server, 4 act only through an AI model, 1 is macOS-only); the other 8
   are missed, half of them instructions that only a model following them would act on. The split was fixed before tuning, but these samples had been read while the rules were
   designed, so this is not a clean benchmark.
-- **The whole catalog** (measured on v0.2.1, Nov 2026, with 45 rules and before the outside monitor): Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
+- **The whole catalog** (measured on v0.2.1, Nov 2026, with 42 rules and before the outside monitor): Detonator ran all 1,043 Python plugins in the Hermes plugin catalog at
   their pinned commits: 859 no findings, 137 review, 44 suspicious, 1 dangerous, 2 errors. The
   first pass had 7 dangerous results; each was checked by hand, all were false alarms, and the
   rules were tuned. Only totals are published, never plugin names. "Suspicious" usually means risky but
@@ -459,7 +471,7 @@ Detonator does things a reviewer should know about:
   (links are never copied into the sandbox, so a repo cannot pull in real files from your machine).
   No code from the target runs on your machine outside the container.
 - **Shell commands.** Only `git` and `docker`, as above, and only after you approve
-  the run. The two monitor containers run only while a test runs and are removed after it;
+  the run (except `docker info` for `/detonate check`, and `python -m engine <path>`, which you start yourself). The two monitor containers run only while a test runs and are removed after it;
   nothing keeps running on your machine.
 - **Network.** Only for `git ls-remote`, `git fetch`, the one-time image builds and, for
   `/detonate-mcp`, downloading the server's npm or PyPI package (in its own container, see below). A catalog name
@@ -487,7 +499,7 @@ Detonator does things a reviewer should know about:
   what was free if it was already below that); a single large write can still go past that before the next check.
   If the space comes back as soon as the container is gone, that is reported as `disk_flood`; if not (the code may
   have written where Detonator could not look, or another program or another Detonator run on the same disk was
-  writing), the verdict is ERROR. So other disk activity of more than about 1.3 GB (1.9 GB for an MCP install run)
+  writing), the verdict is ERROR. So other disk activity of more than about 1.3 GB (1.8 GB for an MCP install run)
   while a test runs ends that test as ERROR. In an MCP install run, private folders an install script makes in the package folder are left out of
   its 512 MB count and covered by the free-space check instead. What it prints goes to
   capped files rather than into memory or Docker's own log store (`--log-driver none`), the run
@@ -578,7 +590,16 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   and also runs the tests on Python 3.13. A false alarm is fixed: an honest MCP server whose own telemetry happened
   to land in a different step after the clock moved forward (seen with Sentry's server) was called a time bomb;
   a network finding after the clock moves now counts as new only if the server also reaches an address it
-  did not reach before.
+  did not reach before. Four fixes from the pre-release audit: an MCP server written in Python
+  whose only key-file read is `~/.netrc` (Python's `requests` library opens it before every web
+  request) is now `own_tool_config_read` (medium, REVIEW) instead of DANGEROUS, and is theft again if
+  that fake password is sent out or anything else high-risk happens; declared address variables
+  (`SIYUAN_URL`, `ES_HOST`) get a fake address instead of a fake key, so a skill or server using one
+  as its host is no longer called a key thief; when the tracer left no status or never attached, an
+  MCP server or skill result that would have been NO FINDINGS, REVIEW or NOT ENOUGH COVERAGE is now
+  ERROR; and the skill text check no longer slows down with the square of the file size on files of
+  one repeated phrase, and stops after 30 seconds with `skill_not_fully_read` (high) instead of a
+  clean verdict.
 - **v0.5.1**: Fewer false alarms, with small changes only. An MCP tool description whose only
   invisible characters are the ones inside emoji (family, profession, head-shake and England,
   Scotland or Wales flag emoji) is no longer tool poisoning; an order to the model in a description
