@@ -270,7 +270,7 @@ skill calls are really there. Reading the text only needs no image. Detonator:
 
 1. **Reads every file** (up to 400 files, 1 MB each and 20 MB in all; only the start and end of longer
    files, and it says what it skipped) on your computer without running anything. It checks its clock
-   between steps and stops once 30 seconds have passed, with `skill_not_fully_read` (high): frontmatter, fenced shell
+   between steps and stops at the first check after 30 seconds, with `skill_not_fully_read` (high): frontmatter, fenced shell
    blocks, inline commands, links and hidden text (invisible Unicode tags, zero-width and
    right-to-left characters, HTML comments, files saved as UTF-16 or Latin-1). It looks for download-and-run commands, password-zip
    and fake-installer lures, prompt injection and "always use this skill" text, requests for keys,
@@ -296,7 +296,7 @@ script that needs a real account), the verdict is **NOT ENOUGH COVERAGE**, not a
 Rules: [docs/RULES.md](docs/RULES.md#skills).
 
 Limits of the text check: it checks its clock only between steps, so a file built to be slow can use up
-the 30 seconds before the later checks run (the verdict is then at least SUSPICIOUS, never clean); it looks at up to
+the 30 seconds before the later checks run (the verdict is then never clean: SUSPICIOUS or worse, or ERROR); it looks at up to
 1,000 characters either side of a match on the same line, so words further apart on one very long line are
 not connected. A declared address variable used with a fallback written in the command
 (`${NOTES_URL:-https://elsewhere}`) is judged by the fake address, not the fallback.
@@ -322,8 +322,9 @@ documenting it there.
 
 Verdicts: `DANGEROUS`, `SUSPICIOUS`, `REVIEW`, `NO_FINDINGS`, `ERROR`, and for skills
 NOT ENOUGH COVERAGE (`LOW_COVERAGE` in saved results). The verdict comes
-from deterministic rules only. No model decides anything. The one thing that depends on the computer is
-the skill text check's 30-second time budget, which only a file built to slow it down should reach.
+from deterministic rules only. No model decides anything. Timing can still depend on the computer: the skill text check's
+30-second budget (which only a file built to slow it down should reach), run time limits, the disk checks
+and how fast the tracer attaches.
 
 ### Outside monitor
 
@@ -612,8 +613,8 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   MCP server or skill result that would have been NO FINDINGS, REVIEW or NOT ENOUGH COVERAGE is now
   ERROR; a skill whose outside monitor did not run at all is ERROR rather than REVIEW too; and
   the skill text check no longer slows down with the square of the file size on files of `~/.ssh/`,
-  `<!-- ` or one long web address repeated, and checks its clock between steps, stopping once 30 seconds
-  have passed with `skill_not_fully_read` (high) instead of giving a clean verdict.
+  `<!-- ` or one long web address repeated, and checks its clock between steps, stopping at the first check after 30 seconds
+  with `skill_not_fully_read` (high) instead of giving a clean verdict.
 - **v0.5.1**: Fewer false alarms, with small changes only. An MCP tool description whose only
   invisible characters are the ones inside emoji (family, profession, head-shake and England,
   Scotland or Wales flag emoji) is no longer tool poisoning; an order to the model in a description

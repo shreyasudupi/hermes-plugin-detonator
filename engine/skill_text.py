@@ -71,7 +71,7 @@ def _lf(code: str) -> str:
     return code.replace("\r\n", "\n")
 _INLINE_SHELL_RE = re.compile(r"!`([^`\n]{1,500})`")
 _INLINE_CODE_RE = re.compile(r"(?<![!`])`([^`\n]{3,400})`(?!`)")
-_COMMENT_RE = re.compile(r"<!--(.*?)-->", re.S)
+_COMMENT_RE = re.compile(r"<!--(.*?)-->", re.S)   # reference for the parity test only: slow on repeated "<!--", use _comments()
 
 
 @dataclass
@@ -282,7 +282,7 @@ PASSWORD_ARCHIVE_RE = re.compile(
     r"\.(?:zip|7z|rar)\b|\.(?:zip|7z|rar)\b[^\n]{0,120}(?:password|passcode|archive pass)|"
     r"(?:extract|unzip|open)[^\n]{0,60}(?:with|using)\s+(?:the\s+)?(?:password|pass(?:word)?)\b|"
     r"\.(?:zip|7z|rar)\b[^\n]{0,80}\(\s*(?:extract|unzip|unpack)\s+(?:using|with)\s*:?\s*[`\"']?[\w@#$!.-]{3,40}", re.I)
-# Web addresses are capped at 500 characters in these two: without a cap, a file of one address
+# Web addresses are capped at 500 characters here and in RELEASE_EXEC_RE and INSTALLER_RE below: without a cap, a file of one address
 # repeated with no space made each match scan to the end of the file (time grew with its square).
 ARCHIVE_URL_RE = re.compile(r"https?://[^\s)\]'\"<>`]{1,500}?\.(?:zip|7z|rar|tar\.gz|tgz)\b", re.I)
 # "Run this command in Terminal" pointing at a page, not at a command written in the skill.
@@ -296,7 +296,7 @@ PREREQ_RE = re.compile(r"\b(?:must|needs? to|have to|required to|requires?)\b[^\
                        r"download\w*|run(?:ning)?)\b[^\n]{0,40}\b(?:before|first|prior)\b|\bprerequisites?\b", re.I)
 DOWNLOAD_FROM_RE = re.compile(r"\b(?:download|install|get|grab)\w*\b[^\n]{0,80}(?:from|at|here|:)?[^\n]{0,40}"
                               r"https?://" + _FREE_HOSTS, re.I)
-RELEASE_EXEC_RE = re.compile(r"github\.com/[\w.-]+/[\w.-]+/releases/download/[^\s)\]]+\.(?:zip|7z|rar|exe|dmg|pkg)\b"
+RELEASE_EXEC_RE = re.compile(r"github\.com/[\w.-]{1,100}/[\w.-]{1,100}/releases/download/[^\s)\]]{1,500}?\.(?:zip|7z|rar|exe|dmg|pkg)\b"
                              r"[^\n]{0,200}\b(?:run|launch|execute|open|double-click)\b[^\n]{0,40}"
                              r"\b(?:executable|exe|installer|app|binary|it)\b", re.I)
 INSTALLER_RE = re.compile(r"https?://[^\s)'\"<>`]{1,500}?\.(?:exe|msi|dmg|pkg|scr|apk|jar|app\.zip)\b|"
