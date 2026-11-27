@@ -481,11 +481,13 @@ Detonator does things a reviewer should know about:
   writer can get further before the stop: up to about 1.3 GB in tests; a subfolder of the output folder Detonator cannot
   look into, because it was made unreadable, swapped for a link or nested over 48 deep, also stops the run; a folder
   removed mid-count is skipped; a folder it still cannot count after five tries, most likely because this computer ran
-  out of open-file handles, stops the run with an ERROR verdict). The free space on your disk is watched too, so files
-  the tested code deleted but keeps open (they show in no folder) cannot fill it unseen: a run is stopped when free
-  space falls by more than the limits allow plus 1 GB, or gets within 512 MB of full. If the space comes back once
-  the container is gone, that is reported as `disk_flood`; if not (another program may have been writing), the verdict
-  is ERROR. In an MCP install run, private folders an install script makes in the package folder are left out of
+  out of open-file handles, stops the run with an ERROR verdict). The free space on your disk is checked once a
+  second too, so files the tested code deleted but keeps open (they show in no folder) do not go unnoticed: a run
+  is stopped when free space falls by more than the limits allow plus 1 GB, or gets under 512 MB (under half of
+  what was free if it was already below that); a single large write can still go past that before the next check.
+  If the space comes back as soon as the container is gone, that is reported as `disk_flood`; if not (the code may
+  have written where Detonator could not look, or another program or another Detonator run on the same disk was
+  writing), the verdict is ERROR. In an MCP install run, private folders an install script makes in the package folder are left out of
   its 512 MB count and covered by the free-space check instead. What it prints goes to
   capped files rather than into memory or Docker's own log store (`--log-driver none`), the run
   folder is removed afterwards (folders the tested code locked are removed from a throwaway

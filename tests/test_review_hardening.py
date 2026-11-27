@@ -532,3 +532,23 @@ def test_free_space_without_a_cause_is_an_error_everywhere():
 
 def test_disk_flood_has_no_atlas_request_flood_tag():
     assert rules.RULES["disk_flood"].atlas == ()
+
+
+def test_free_space_coming_back_is_not_tied_to_a_run_when_another_run_is_going(tmp_path, monkeypatch):
+    gb = 1_000_000_000
+    _fake_free(monkeypatch, [10 * gb, 6 * gb, 6 * gb, 10 * gb])
+    runner._raise_handle_limit()   # stands in for a second watched run in this process
+    try:
+        _, over = runner._run_watched([sys.executable, "-c", "import time; time.sleep(10)"], 30, lambda: None,
+                                      [(tmp_path, 10**12)], free_watch=(tmp_path, gb))
+    finally:
+        runner._restore_handle_limit()
+    assert over is not None and over[2] == "freespace"
+
+
+def test_a_nearly_full_disk_still_has_a_floor(tmp_path, monkeypatch):
+    mb = 1024 * 1024
+    _fake_free(monkeypatch, [400 * mb, 150 * mb])   # under half of what was free at the start
+    _, over = runner._run_watched([sys.executable, "-c", "import time; time.sleep(10)"], 30, lambda: None,
+                                  [(tmp_path, 10**12)], free_watch=(tmp_path, 10**12))
+    assert over is not None and over[2] in ("freespace", "deleted")

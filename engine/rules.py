@@ -643,7 +643,8 @@ def evaluate(result: dict) -> dict:
         if verdict == VERDICT_NO_FINDINGS:
             return full
         if verdict == VERDICT_REVIEW and (result or {}).get("disk_flood") in ("uncountable", "freespace"):
-            # Cut short because Detonator could not count the folder: a review-level finding alone
+            # Cut short because Detonator could not count the folder, or free space fell for a reason
+            # it could not tie to the run: a review-level finding alone
             # does not stand in for a finished run.
             return full
         full["summary"] = ("The sandbox harness did not finish, so the in-process record is missing, "
@@ -1514,7 +1515,8 @@ def disk_flood_finding(result: dict):
         title = ("Made a folder in the sandbox's output folder that Detonator could not look into "
                  "(locked, a link, or nested too deep), so Detonator stopped the run")
     elif why == "deleted":
-        title = ("Tried to fill your disk with files it deleted but kept open, until Detonator stopped the run")
+        title = ("Filled your disk out of sight (most likely files it deleted but kept open: the space came back "
+                 "when its sandbox was removed), until Detonator stopped the run")
     else:
         title = ("Tried to fill your disk: wrote hundreds of MB to the sandbox's output folder until "
                  "Detonator stopped the run")

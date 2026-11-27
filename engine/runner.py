@@ -487,7 +487,10 @@ def _run_watched(cmd, timeout: float, stop, limits: list, streams: Path | None =
         now = _free_bytes(free_watch[0])
         if now is None:
             return None
-        if free_start - now > free_watch[1] or (now < FREE_FLOOR_BYTES <= free_start // 2):
+        # Past the allowed drop; or close to full (under 512 MB free, or under half of what was
+        # free at the start when the disk was already that full).
+        floor = FREE_FLOOR_BYTES if free_start > FREE_FLOOR_BYTES else free_start // 2
+        if free_start - now > free_watch[1] or now < floor:
             return now
         return None
 
@@ -495,12 +498,15 @@ def _run_watched(cmd, timeout: float, stop, limits: list, streams: Path | None =
         tick = 0
         misses = [0] * len(limits)
         free_low = None
+        free_next = time.monotonic() + 1
         while not done.wait(DISK_POLL_S):
             tick += 1
             hit = None
             if files and printed() > STREAMS_MAX_BYTES:
                 hit = (streams, STREAMS_MAX_BYTES, "full")
-            if not hit and free_watch and tick % max(1, round(1 / DISK_POLL_S)) == 0:
+            if not hit and free_watch and time.monotonic() >= free_next:
+                # Once a second by the clock, however long the folder counts take.
+                free_next = time.monotonic() + 1
                 free_low = free_hit()
                 if free_low is not None:
                     hit = (free_watch[0], free_watch[1], "freespace")
@@ -525,20 +531,25 @@ def _run_watched(cmd, timeout: float, stop, limits: list, streams: Path | None =
                 if used > limit:
                     hit = (folder, limit, "hidden" if hidden else "full")
             if hit:
+                over.append(hit)   # recorded first, so a slow stop cannot lose it
+                before_stop = _free_bytes(free_watch[0]) if hit[2] == "freespace" else None
+                alone = _limit_users <= 1   # no other watched run in this process shares the disk
                 try:
                     stop()
                 except (OSError, subprocess.SubprocessError):
                     pass
-                if hit[2] == "freespace":
+                if hit[2] == "freespace" and alone and before_stop is not None:
                     # Removing the container closes every file it held open. If most of the lost
-                    # space comes back, the run was holding it (a deleted file kept open).
+                    # space comes back right after that, the run was very likely holding it (files
+                    # deleted but kept open). With other runs going at the same time it is not
+                    # tied to this one.
+                    lost = free_start - min(free_low, before_stop)
                     for _ in range(10):
                         back = _free_bytes(free_watch[0])
-                        if back is not None and back - free_low >= 0.75 * (free_start - free_low):
-                            hit = (hit[0], hit[1], "deleted")
+                        if back is not None and lost > 0 and back - min(free_low, before_stop) >= 0.75 * lost:
+                            over[0] = (hit[0], hit[1], "deleted")
                             break
                         time.sleep(0.5)
-                over.append(hit)
                 return
 
     watcher = None
@@ -559,7 +570,7 @@ def _run_watched(cmd, timeout: float, stop, limits: list, streams: Path | None =
     finally:
         done.set()
         if watcher is not None:
-            watcher.join(timeout=35)
+            watcher.join(timeout=45)
         for f in files:
             f.close()
         _restore_handle_limit()
@@ -1096,14 +1107,16 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
             folder, limit, why = overflow
             if why == "freespace":
                 return {"fatal": f"sandbox stopped: the free space on your disk fell by more than "
-                                 f"{limit // (1024 * 1024)} MB during the run (or close to full), and Detonator "
-                                 "could not tie it to the run (another program on this computer may have been "
-                                 "writing), so the run was ended early", "outside": seen_outside,
-                        "disk_flood": "freespace"}
+                                 f"{limit // (1024 * 1024)} MB during the run (or got close to full) and did not "
+                                 "come back when the sandbox was removed. Either the tested code wrote it into "
+                                 "folders Detonator could not look into, or another program (or another "
+                                 "Detonator run) was writing at the same time, so the run was ended early",
+                        "outside": seen_outside, "disk_flood": "freespace"}
             if why == "deleted":
-                return {"fatal": f"sandbox stopped: the tested code used more than {limit // (1024 * 1024)} MB "
-                                 "of your disk through files it deleted but kept open (they show in no folder), "
-                                 "so the run was ended early", "outside": seen_outside,
+                return {"fatal": f"sandbox stopped: the free space on your disk fell by more than "
+                                 f"{limit // (1024 * 1024)} MB during the run without showing in any folder, and "
+                                 "came back as soon as the sandbox was removed: most likely the tested code kept "
+                                 "deleted files open, so the run was ended early", "outside": seen_outside,
                         "disk_flood": "out", "disk_flood_why": "deleted"}
             kind = "package" if folder == plugin_copy else "streams" if folder == tmp / "streams" else "out"
             grew = (limit - package_start) // (1024 * 1024) if kind == "package" else limit // (1024 * 1024)
