@@ -778,11 +778,14 @@ _NETWORK_RULES = ("undeclared_network", "tool_network")
 
 def _network_by_pass(result: dict) -> tuple[set, set]:
     """The addresses (ip:port) the server reached in the first pass and in the later pass. The fake
-    internet gives each host name the same address for the whole run, so the two can be compared."""
+    internet gives each host name the same address for the whole run, so the two can be compared.
+    The stand-in for Hermes and the package install are left out: only the server itself counts."""
     trace = (result.get("outside") or {}).get("trace") or {}
     first, late = set(), set()
     for phase, e in _phases(trace.get("events") or [], trace.get("start_index")):
         if e.get("call") not in ("connect", "sendto") or not e.get("ip") or e.get("ok") is None:
+            continue
+        if e.get("in_harness") or phase == "install":
             continue
         ip = str(e.get("ip"))
         if ip.startswith("127.") or ip == "::1":

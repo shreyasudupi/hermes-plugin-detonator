@@ -687,6 +687,16 @@ def test_telemetry_to_the_same_host_in_another_step_after_the_clock_moved_is_not
     assert "undeclared_network" in found and "only after the clock" not in found["undeclared_network"]["title"]
 
 
+def test_only_the_server_own_network_counts_as_reached_before_the_clock_moved():
+    # The stand-in for Hermes and the package install do not count as the server having reached a host.
+    mark = lambda name: {"in_harness": True, "path": rules._PHASE_PREFIX + name}
+    net = lambda ip, **kw: {"call": "connect", "ip": ip, "port": 443, "ok": True, **kw}
+    events = [{"path": "start"}, mark("mcp-install"), net("198.18.0.4"), mark("mcp-call-0"),
+              net("198.18.0.5", in_harness=True), net("198.18.0.3"), mark("mcp-late-resource-0"), net("198.18.0.5")]
+    first, late = mcp._network_by_pass({"outside": {"trace": {"events": events, "start_index": 0}}})
+    assert first == {"198.18.0.3:443"} and late == {"198.18.0.5:443"}
+
+
 def test_a_new_host_only_after_the_clock_moved_is_still_a_time_bomb():
     found = rules_of(_late_network("198.18.0.3", "198.18.0.9"))
     assert found["time_triggered"]["severity"] == "high"

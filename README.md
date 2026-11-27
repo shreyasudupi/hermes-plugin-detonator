@@ -577,7 +577,8 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
   the tested folder. CI gives the private fixtures token to one step only, pins the fixtures commit,
   and also runs the tests on Python 3.13. A false alarm is fixed: an honest MCP server whose own telemetry happened
   to land in a different step after the clock moved forward (seen with Sentry's server) was called a time bomb;
-  network use now counts as new only when the server reaches an address it did not reach before.
+  a network finding after the clock moves now counts as new only if the server also reaches an address it
+  did not reach before.
 - **v0.5.1**: Fewer false alarms, with small changes only. An MCP tool description whose only
   invisible characters are the ones inside emoji (family, profession, head-shake and England,
   Scotland or Wales flag emoji) is no longer tool poisoning; an order to the model in a description

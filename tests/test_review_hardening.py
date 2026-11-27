@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -23,7 +24,7 @@ def _write_gitconfig(home, marker):
     home.mkdir(exist_ok=True)
     (home / ".gitconfig").write_text(
         '[filter "lfs"]\n'
-        f"\tsmudge = {sys.executable} -c \"open(r'{marker}', 'w')\"\n"
+        f"\tsmudge = {Path(sys.executable).as_posix()} -c \"open('{Path(marker).as_posix()}', 'w')\"\n"
         "\trequired = true\n"
         "[http]\n\tproxy = http://proxy.example:3128\n"
         "[http \"https://git.example.com/\"]\n\tsslCAInfo = /etc/example-ca.pem\n"
@@ -383,7 +384,7 @@ def test_git_settings_stay_out_of_the_process_list_and_follow_includes(tmp_path,
     home = tmp_path / "home"
     home.mkdir()
     (home / "extra.inc").write_text("[http]\n\tproxy = http://user:secret@proxy.example:3128\n", encoding="utf-8")
-    (home / ".gitconfig").write_text(f"[include]\n\tpath = {home / 'extra.inc'}\n", encoding="utf-8")
+    (home / ".gitconfig").write_text(f"[include]\n\tpath = {(home / 'extra.inc').as_posix()}\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "credential.helper")
