@@ -117,7 +117,12 @@ def load_folder_entry(path: str) -> runner.Target:
     cfg = data.get("_detonator_config") if isinstance(data, dict) else None
     if cfg:    # a config.yaml plus a server name: check that entry only, run nothing
         name = str(data.get("_detonator_server") or "")
-        raw = sources.read_servers(p / str(cfg)).get(name)
+        # A test switch: the config file must sit inside the tested folder itself (links resolved),
+        # so a tested folder can never make Detonator read some other file on this computer.
+        cfg_path = (p / str(cfg)).resolve()
+        if not cfg_path.is_relative_to(p) or cfg_path == p:
+            raise McpError("_detonator_config must name a file inside the tested folder")
+        raw = sources.read_servers(cfg_path).get(name)
         if raw is None:
             raise McpError(f"no server named '{name}' in {cfg}")
         try:
@@ -749,9 +754,14 @@ def _evaluate_with_clock(result: dict) -> dict:
     if not late.get("listing") or full["verdict"] == rules.VERDICT_ERROR:
         return full
     seen = {(f["rule"], f["title"]) for f in _evaluate(_before_late(result))["findings"]}
+    first_hosts, late_hosts = _network_by_pass(result)
     new = []
     for f in full["findings"]:
         if (f["rule"], f["title"]) in seen or f["severity"] not in (CRITICAL, HIGH, MEDIUM):
+            continue
+        if f["rule"] in _NETWORK_RULES and late_hosts and late_hosts <= first_hosts:
+            # Only places it already reached before the clock moved (a telemetry or API call that
+            # happened to land in another step of the second pass): not new behaviour.
             continue
         new.append(f"+{days} days: {f['title']}")
         f["title"] += f" (only after the clock moved {days} days forward)"
@@ -763,17 +773,58 @@ def _evaluate_with_clock(result: dict) -> dict:
     return full
 
 
+_NETWORK_RULES = ("undeclared_network", "tool_network")
+
+
+def _network_by_pass(result: dict) -> tuple[set, set]:
+    """The addresses (ip:port) the server reached in the first pass and in the later pass. The fake
+    internet gives each host name the same address for the whole run, so the two can be compared.
+    The stand-in for Hermes and the package install are left out: only the server itself counts."""
+    trace = (result.get("outside") or {}).get("trace") or {}
+    first, late = set(), set()
+    for phase, e in _phases(trace.get("events") or [], trace.get("start_index")):
+        if e.get("call") not in ("connect", "sendto") or not e.get("ip") or e.get("ok") is None:
+            continue
+        if e.get("in_harness") or phase == "install":
+            continue
+        ip = str(e.get("ip"))
+        if ip.startswith("127.") or ip == "::1":
+            continue
+        (late if phase.startswith("late-") else first).add(f"{ip}:{e.get('port')}")
+    return first, late
+
+
+def _package_flood_verdict(findings: list) -> str:
+    """Its install grew past the limit and was stopped, so the run is incomplete and the result
+    was cut short. Only a critical finding (something it was seen doing) still decides the
+    verdict; anything else is listed but the run is an error, not a clean or review result."""
+    if any(f.severity == CRITICAL for f in findings):
+        return rules._verdict([f for f in findings if f.severity == CRITICAL])
+    return rules.VERDICT_ERROR
+
+
 def _evaluate(result: dict) -> dict:
     out = result.get("outside") if isinstance(result.get("outside"), dict) else {}
     canary = str(out.get("canary") or result.get("canary") or "")
     declared_names = [str(n) for n in result.get("declared_env") or []]
     declared = [fake_value(canary, i) for i in range(len(declared_names))] if canary else []
     summary = rules.outside_summary(result)
-    if result.get("fatal") and not out.get("ran"):
+    flood = rules.disk_flood_finding(result)
+    # A package folder that grew too much, or a folder Detonator could not count: the run was cut short.
+    package_flood = result.get("disk_flood") in ("package", "uncountable", "freespace")
+    if result.get("fatal") and not out.get("ran") and not flood and not package_flood:
         return {"verdict": rules.VERDICT_ERROR, "findings": [], "detail": str(result["fatal"])[:2000],
                 "outside": summary}
     findings: list[Finding] = [Finding(rule, sev, title, list(ev))
                                for rule, sev, title, ev in (result.get("config_checks") or [])]
+    if (flood or package_flood) and not out.get("ran"):
+        findings = sorted(findings + ([flood] if flood else []),
+                          key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
+        verdict = rules._verdict(findings)
+        if package_flood:
+            verdict = _package_flood_verdict(findings)
+        return {"verdict": verdict, "findings": [f.to_dict() for f in findings],
+                "detail": str(result.get("fatal") or "")[:2000], "outside": summary}
     if result.get("remote") or result.get("config_only"):
         findings.sort(key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
         extra = {"remote": True} if result.get("remote") else {"config_only": True}
@@ -825,7 +876,7 @@ def _evaluate(result: dict) -> dict:
                      if f.rule == "secret_sent_out"]
         # A forged result file, or the server tracing or killing Detonator's own process.
         findings += [f for f in rules._outside_findings({**result, "events": []})
-                     if f.rule in ("result_forged", "monitor_tamper", "log_flood")]
+                     if f.rule in ("result_forged", "monitor_tamper", "log_flood", "disk_flood")]
         extra = _extra_recipients(result, out)
         if extra:
             findings.append(Finding("mcp_extra_recipient", HIGH,
@@ -900,6 +951,9 @@ def _evaluate(result: dict) -> dict:
         detail = ("The outside monitor did not run (" + str(out.get("reason") or "unknown reason")[:300] +
                   "), so what the server did was not watched. Only what it told the model was checked. "
                   "Run /detonate check, fix what it reports, and try again.")
+    if package_flood:
+        verdict = _package_flood_verdict(findings)
+        detail = str(result.get("fatal") or "")[:2000]
     return {"verdict": verdict, "findings": [f.to_dict() for f in findings], "outside": summary,
             **({"detail": detail} if detail else {}),
             "tools": [{"name": rules._safe_name(t.get("name"), 80),

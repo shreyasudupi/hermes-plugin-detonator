@@ -211,7 +211,7 @@ MCP_HELP = ("inside the sandbox, watched by the outside monitor (a tracer and a 
 def mcp_approval_question(spec: str) -> str:
     return (
         f"Detonate the MCP server '{spec}'? Detonator will read the entry (from a local folder's "
-        "mcp-server.yaml, or by that name from your ~/.hermes/config.yaml), download its package in a "
+        "mcp-server.yaml, or by that name from your Hermes config.yaml), download its package in a "
         "locked-down container with install scripts off, then start the server inside a disposable Docker "
         "container with fake secrets and no real network, acting as Hermes: it lists the tools, calls each "
         "one with test input, and watches what the server does. Your real keys are never given to it."
@@ -256,7 +256,8 @@ def make_mcp_slash_handler(ctx):
         if spec.lower().split(" ", 1)[0] in ("", "help"):
             return ("Usage: /detonate-mcp <folder> | <server-name>\n"
                     "  <folder>: a directory with the server's code and an mcp-server.yaml entry\n"
-                    "  <server-name>: a server listed under mcp_servers in your ~/.hermes/config.yaml")
+                    "  <server-name>: a server listed under mcp_servers in your Hermes config.yaml\n"
+                    "    (~/.hermes/config.yaml; on Windows %LOCALAPPDATA%\\hermes\\config.yaml)")
         if spec.lower().startswith("config "):
             spec = spec[len("config "):].strip()
         choice = ctx.ask_choice(
@@ -285,7 +286,7 @@ def make_mcp_slash_handler(ctx):
 
 def setup_mcp_cli(subparser):
     subparser.add_argument("server", metavar="folder-or-name",
-                           help="a folder with mcp-server.yaml, or a server name from ~/.hermes/config.yaml")
+                           help="a folder with mcp-server.yaml, or a server name from your Hermes config.yaml")
 
 
 def mcp_cli_handler(args) -> int:

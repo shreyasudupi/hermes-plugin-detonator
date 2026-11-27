@@ -660,3 +660,43 @@ def test_settle_is_idempotent_and_leaves_quiet_runs_alone():
     once = rules.settle_own_config(loud)
     assert [f["rule"] for f in once] == ["decoy_accessed", "listener"]
     assert rules.settle_own_config(once) == once
+
+
+def _connect(ip):
+    return f'connect(4, {{sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("{ip}")}}, 16) = 0'
+
+
+def _late_network(first_ip, late_ip):
+    """First pass: the server reaches first_ip inside a tool call. Later pass: it reaches late_ip
+    while a resource is read (a step the first pass's network did not land in)."""
+    raw = _late()
+    head = _trace(_connect(first_ip)) + LATE_MARK + \
+        '7 13:00:01.000001 vfork() = 30\n' \
+        '30 13:00:01.000002 execve("/usr/local/bin/python", ["python", "server.py"], 0x1 /* 5 vars */) = 0\n' \
+        '7 13:00:01.000003 openat(AT_FDCWD</>, "/detonator-phase/mcp-late-resource-0", O_RDONLY) = -1 ENOENT\n' \
+        f'30 13:00:01.000010 {_connect(late_ip)}\n'
+    raw["outside"]["trace"] = outside.parse_strace(head, 7)
+    return raw
+
+
+def test_telemetry_to_the_same_host_in_another_step_after_the_clock_moved_is_not_a_time_bomb():
+    # Sentry's own MCP server sends telemetry; in the later pass it can land while a resource is
+    # read, which reads as "on its own". Same address as before the clock moved: not new.
+    found = rules_of(_late_network("198.18.0.3", "198.18.0.3"))
+    assert "time_triggered" not in found
+    assert "undeclared_network" in found and "only after the clock" not in found["undeclared_network"]["title"]
+
+
+def test_only_the_server_own_network_counts_as_reached_before_the_clock_moved():
+    # The stand-in for Hermes and the package install do not count as the server having reached a host.
+    mark = lambda name: {"in_harness": True, "path": rules._PHASE_PREFIX + name}
+    net = lambda ip, **kw: {"call": "connect", "ip": ip, "port": 443, "ok": True, **kw}
+    events = [{"path": "start"}, mark("mcp-install"), net("198.18.0.4"), mark("mcp-call-0"),
+              net("198.18.0.5", in_harness=True), net("198.18.0.3"), mark("mcp-late-resource-0"), net("198.18.0.5")]
+    first, late = mcp._network_by_pass({"outside": {"trace": {"events": events, "start_index": 0}}})
+    assert first == {"198.18.0.3:443"} and late == {"198.18.0.5:443"}
+
+
+def test_a_new_host_only_after_the_clock_moved_is_still_a_time_bomb():
+    found = rules_of(_late_network("198.18.0.3", "198.18.0.9"))
+    assert found["time_triggered"]["severity"] == "high"

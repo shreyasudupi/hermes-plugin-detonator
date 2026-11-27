@@ -9,6 +9,8 @@ user's real Hermes home, .env or auth.json: the sandbox gets its own fake home.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -122,11 +124,462 @@ def docker_bin() -> str | None:
     return shutil.which("docker", path=_env()["PATH"])
 
 
-def _run(cmd, timeout=600, **kwargs):
+# git settings kept from your own git config when Detonator fetches code: only how to reach the
+# network (proxy) and which certificates to trust. Everything else in your global and system git
+# config is left out, so a filter or helper you installed for your own work (Git LFS, for
+# example) never runs on a repository Detonator downloads.
+_GIT_KEEP_RE = re.compile(r"^http\.(?:.+\.)?(?:proxy|proxyauthmethod|proxysslcainfo|proxysslcert|proxysslkey|"
+                          r"sslcainfo|sslcapath|sslbackend|sslverify|sslcert|sslkey|sslcertpasswordprotected|sslcerttype|"
+                          r"sslkeytype|sslversion|sslcipherlist|"
+                          r"schannel[a-z]*)$|^core\.longpaths$", re.IGNORECASE)
+_GIT_BOOL_RE = re.compile(r"(?i)(sslverify|passwordprotected|longpaths|schannelcheckrevoke|schannelusesslcainfo)$")
+_git_keep_cache: list[tuple[str, str]] | None = None
+_git_env_ok: bool | None = None
+
+
+def _git_kept_pairs() -> list[tuple[str, str]]:
+    """(key, value) for the allow-listed settings in your git config (read once). Credential
+    helpers and URL rewrites are left out on purpose: Detonator fetches public repositories only,
+    and a helper is a program."""
+    global _git_keep_cache
+    if _git_keep_cache is None:
+        keep: list[tuple[str, str]] = []
+        try:
+            # Reads config files only (your own, so not through the cleaned config); runs nothing
+            # from any repository. System first, then yours, so yours wins; never a repository's
+            # own config. --includes follows [include] files, as git itself would.
+            for scope in ("--system", "--global"):
+                proc = _run(["git", "config", scope, "--includes", "--null", "--get-regexp",
+                             r"^(http\.|core\.longpaths)"],
+                            timeout=20, cwd=tempfile.gettempdir(), own_git_config=True)
+                for item in (proc.stdout or "").split("\0"):
+                    key, has_value, value = item.partition("\n")
+                    if key and _GIT_KEEP_RE.match(key):
+                        if has_value:
+                            keep.append((key, value))
+                        elif _GIT_BOOL_RE.search(key):
+                            keep.append((key, "true"))   # a bare boolean key means true
+                        # any other bare key has no value to pass on, and git would refuse it
+        except (OSError, subprocess.SubprocessError):
+            pass
+        _git_keep_cache = keep
+    return list(_git_keep_cache)
+
+
+def _git_kept_settings() -> list[str]:
+    """The kept settings as key=value (for messages and tests)."""
+    return [f"{k}={v}" for k, v in _git_kept_pairs()]
+
+
+def _git_takes_env_config() -> bool:
+    """git 2.31 and later read settings from GIT_CONFIG_COUNT/KEY/VALUE, which keeps a proxy
+    password out of the process list and allows keys holding "="."""
+    global _git_env_ok
+    if _git_env_ok is None:
+        _git_env_ok = False
+        try:
+            out = _run(["git", "--version"], timeout=20, own_git_config=True).stdout or ""
+            m = re.search(r"(\d+)\.(\d+)", out)
+            _git_env_ok = bool(m) and (int(m.group(1)), int(m.group(2))) >= (2, 31)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return _git_env_ok
+
+
+def _git_with_settings(cmd: list, env: dict) -> tuple[list, dict]:
+    pairs = _git_kept_pairs()
+    env = _git_env(env)
+    if not pairs:
+        return cmd, env
+    if _git_takes_env_config():
+        env["GIT_CONFIG_COUNT"] = str(len(pairs))
+        for i, (k, v) in enumerate(pairs):
+            env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = k, v
+        return cmd, env
+    # Older git: on the command line. A key holding "=" (a URL with a query) cannot go there.
+    extra = [a for k, v in pairs if "=" not in k for a in ("-c", f"{k}={v}")]
+    return ["git", *extra, *cmd[1:]], env
+
+
+# A home folder that does not exist, for git only: git before 2.32 ignores GIT_CONFIG_GLOBAL and
+# would still read ~/.gitconfig and ~/.config/git/config from the real one.
+_NO_GIT_HOME = os.path.join(tempfile.gettempdir(), "detonator-no-git-home-" + secrets.token_hex(8))
+
+
+def _git_env(env: dict) -> dict:
+    # Settings passed in through the environment (GIT_CONFIG_COUNT/KEY_n/VALUE_n, or -c from a
+    # parent git) are dropped too; only the allow-listed ones are passed back.
+    env = {k: v for k, v in env.items()
+           if not (k == "GIT_CONFIG_PARAMETERS" or k.startswith(("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_",
+                                                                  "GIT_CONFIG_VALUE_")))}
+    return {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": _NO_GIT_HOME, "XDG_CONFIG_HOME": _NO_GIT_HOME}
+
+
+def _run(cmd, timeout=600, own_git_config=False, capture=True, **kwargs):
     env = _env()
     if cmd and cmd[0] == "docker":
         cmd = [docker_bin() or "docker", *cmd[1:]]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, **kwargs)
+    elif cmd and cmd[0] == "git" and not own_git_config:
+        cmd, env = _git_with_settings(list(cmd), env)
+    if capture:
+        kwargs = {"capture_output": True, "text": True, **kwargs}
+    return subprocess.run(cmd, timeout=timeout, env=env, **kwargs)
+
+
+# What tested code can put on your disk or in your memory during a run: files in the output folder
+# (always), files in its own throwaway package copy (MCP install runs) and what it prints. All of it
+# is deleted afterwards, but a run lasts minutes, so a run that goes past these limits is stopped.
+# The result file is capped at RESULT_MAX_BYTES, so an honest run stays far below the output limit.
+# (Downloads for MCP servers have their own limit, mcp_sources.FETCH_MAX_BYTES.)
+OUT_DIR_MAX_BYTES = 256 * 1024 * 1024
+PACKAGE_GROWTH_MAX_BYTES = 512 * 1024 * 1024
+STREAMS_MAX_BYTES = 64 * 1024 * 1024     # what the run prints, kept in files instead of memory
+FREE_DROP_MARGIN_BYTES = 1024 * 1024 * 1024   # room for the rest of this computer during a run
+DISK_POLL_S = 0.2   # the first watched folder is checked this often, the others every second
+MAX_WATCH_DEPTH = 48   # npm's flattened trees stay far below this
+_ENTRY_MIN = 4096   # every entry costs at least one block, so a flood of empty files counts
+
+
+def _entry_bytes(st) -> int:
+    # Blocks really used, so a sparse file with a huge size does not count as full.
+    used = st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size
+    return max(used, _ENTRY_MIN)
+
+
+def _fd_walk_supported() -> bool:
+    return os.scandir in os.supports_fd and os.open in os.supports_dir_fd and hasattr(os, "O_DIRECTORY")
+
+
+class _Uncountable(Exception):
+    """The folder could not be counted this time (out of file handles): try again next tick."""
+
+
+def folder_bytes(root: Path, stop_at: int | None = None) -> int | None:
+    """Disk used under `root`, never following links. Stops counting once past `stop_at`, so a
+    folder full of tiny files cannot make the check itself slow.
+
+    With a limit (a folder the tested code can write to), anything that cannot be counted is
+    treated as over it: a subfolder made unreadable to you, one swapped for a link, or one nested
+    deeper than MAX_WATCH_DEPTH. Otherwise the code could fill the disk where it is not seen.
+    At most one folder handle per level is open at a time. Returns None when this process is out
+    of file handles (not the tested code's doing; the caller tries again later)."""
+    return folder_usage(root, stop_at)[0]
+
+
+def folder_usage(root: Path, stop_at: int | None = None, strict: bool = True) -> tuple[int | None, bool]:
+    """(folder_bytes, hidden): hidden is True when the count is over only because part of the
+    folder could not be looked into (unreadable, a link, or too deep). With strict=False such
+    parts are left out of the count instead (the free-space check covers what they hold)."""
+    over = (stop_at + 1) if stop_at is not None and strict else None
+    walk = _fd_walk if _fd_walk_supported() else _path_walk   # Windows: no folder handles
+    try:
+        return walk(root, stop_at, over), False
+    except _Uncountable:
+        return None, False
+    except _Hidden:
+        return over, True
+    except RecursionError:
+        return over, over is not None
+
+
+
+class _Hidden(Exception):
+    """Part of a watched folder cannot be looked into."""
+
+
+class _Done(Exception):
+    def __init__(self, total):
+        self.total = total
+
+
+def _out_of_handles(exc: OSError) -> bool:
+    import errno
+    return exc.errno in (errno.EMFILE, errno.ENFILE)
+
+
+def _fd_walk(root: Path, stop_at: int | None, over: int | None) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    total = [0]
+
+    def visit(fd: int, depth: int) -> None:
+        subdirs = []
+        try:
+            with os.scandir(fd) as it:
+                for e in it:
+                    try:
+                        st = e.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    total[0] += _entry_bytes(st)
+                    if stop_at is not None and total[0] > stop_at:
+                        raise _Done(total[0])
+                    if stat.S_ISDIR(st.st_mode):
+                        subdirs.append(e.name)
+        except OSError as exc:
+            if _out_of_handles(exc):
+                raise _Uncountable()
+            if over is not None:
+                raise _Hidden()
+            return
+        if subdirs and depth + 1 > MAX_WATCH_DEPTH:
+            if over is not None:
+                raise _Hidden()
+            return   # without a limit, just stop counting deeper
+        for name in subdirs:
+            try:
+                # Opened by name inside its parent's handle and never through a link, so a folder
+                # swapped for a link in the meantime is refused, not followed.
+                child = os.open(name, flags, dir_fd=fd)
+            except OSError as exc:
+                if _out_of_handles(exc):
+                    raise _Uncountable()
+                if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                    continue   # removed or replaced by a file since it was listed: nothing to count
+                if over is not None:
+                    raise _Hidden()
+                continue
+            try:
+                visit(child, depth + 1)
+            finally:
+                os.close(child)
+
+    try:
+        top = os.open(str(root), flags)
+    except OSError as exc:
+        if _out_of_handles(exc):
+            raise _Uncountable()
+        if over is not None:
+            raise _Hidden()
+        return 0
+    try:
+        visit(top, 0)
+    except _Done as done:
+        return done.total
+    finally:
+        os.close(top)
+    return total[0]
+
+
+def _path_walk(root: Path, stop_at: int | None, over: int | None) -> int:
+    total = 0
+    stack = [(str(root), 0)]
+    while stack:
+        path, depth = stack.pop()
+        try:
+            with os.scandir(path) as it:
+                for e in it:
+                    try:
+                        # A full stat, not the listing's copy: on Windows the listing does not show
+                        # a file growing while it is still open for writing.
+                        st = os.stat(e.path, follow_symlinks=False)
+                    except OSError:
+                        continue
+                    total += _entry_bytes(st)
+                    if stop_at is not None and total > stop_at:
+                        return total
+                    if stat.S_ISDIR(st.st_mode) and not e.is_symlink():
+                        if depth + 1 > MAX_WATCH_DEPTH:
+                            if over is not None:
+                                raise _Hidden()
+                            continue
+                        stack.append((e.path, depth + 1))
+        except OSError as exc:
+            if _out_of_handles(exc):
+                raise _Uncountable()
+            if over is not None:
+                raise _Hidden()
+    return total
+
+
+_limit_lock = __import__("threading").Lock()
+_limit_users = 0
+_limit_saved = None
+
+
+def _raise_handle_limit() -> None:
+    """Let this process use more file handles while a watched run is going (macOS starts at 256),
+    so the disk check has room for one handle per folder level. Put back by _restore_handle_limit
+    once the last watched run ends (runs can overlap)."""
+    global _limit_users, _limit_saved
+    with _limit_lock:
+        _limit_users += 1
+        if _limit_users > 1:
+            return
+        try:
+            import resource
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            want = min(hard, 4096) if hard != resource.RLIM_INFINITY else 4096
+            if soft != resource.RLIM_INFINITY and soft < want:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+                _limit_saved = (soft, hard)
+        except (ImportError, OSError, ValueError):
+            pass
+
+
+def _restore_handle_limit() -> None:
+    global _limit_users, _limit_saved
+    with _limit_lock:
+        _limit_users = max(0, _limit_users - 1)
+        if _limit_users or _limit_saved is None:
+            return
+        try:
+            import resource
+            resource.setrlimit(resource.RLIMIT_NOFILE, _limit_saved)
+        except (ImportError, OSError, ValueError):
+            pass
+        _limit_saved = None
+
+
+def _tail(path: Path, n: int = 64 * 1024) -> str:
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, os.fstat(f.fileno()).st_size - n))
+            return f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+FREE_FLOOR_BYTES = 512 * 1024 * 1024   # a run is also stopped if your disk gets this close to full
+
+
+def _free_bytes(path) -> int | None:
+    try:
+        return shutil.disk_usage(str(path)).free
+    except OSError:
+        return None
+
+
+def _run_watched(cmd, timeout: float, stop, limits: list, streams: Path | None = None,
+                 free_watch: tuple[Path, int] | None = None):
+    """`_run` for a `docker run` whose tested code can write to the given folders on your disk:
+    `stop()` (which removes the container) is called as soon as one grows past its limit. With
+    `streams`, what the run prints goes to files in that folder (watched too, so a flood of output
+    cannot fill your memory or disk) and the result carries the last 64 KB of each.
+    Each limit is (folder, bytes) or (folder, bytes, strict); with strict False, parts of the
+    folder that cannot be looked into are left out instead of counting as full.
+    With `free_watch` (path, bytes), the free space of the disk holding that path is watched too:
+    a file the code deleted but keeps open still uses the disk without showing in any folder.
+    Returns (process result, None or (folder, limit, why)), why being "full", "hidden" (part of
+    the folder could not be looked into), "uncountable" (the check kept failing), "deleted" (free
+    space fell past the limit and came back once the container was removed: the run held it) or
+    "freespace" (free space fell and did not come back, so it may not be the run's doing);
+    raises TimeoutExpired like `_run` when the run timed out."""
+    import threading
+    import time
+    over: list = []
+    done = threading.Event()
+    files: list = []
+    _raise_handle_limit()
+
+    def printed() -> int:
+        # Sizes from the open files themselves, so this works where a folder listing lags behind.
+        try:
+            return sum(os.fstat(f.fileno()).st_size for f in files)
+        except (OSError, ValueError):
+            return 0
+
+    free_start = _free_bytes(free_watch[0]) if free_watch else None
+
+    def free_hit():
+        if free_start is None:
+            return None
+        now = _free_bytes(free_watch[0])
+        if now is None:
+            return None
+        # Past the allowed drop; or close to full (under 512 MB free, or under half of what was
+        # free at the start when the disk was already that full).
+        floor = FREE_FLOOR_BYTES if free_start > FREE_FLOOR_BYTES else free_start // 2
+        if free_start - now > free_watch[1] or now < floor:
+            return now
+        return None
+
+    def watch():
+        tick = 0
+        misses = [0] * len(limits)
+        free_low = None
+        free_next = time.monotonic() + 1
+        while not done.wait(DISK_POLL_S):
+            tick += 1
+            hit = None
+            if files and printed() > STREAMS_MAX_BYTES:
+                hit = (streams, STREAMS_MAX_BYTES, "full")
+            if not hit and free_watch and time.monotonic() >= free_next:
+                # Once a second by the clock, however long the folder counts take.
+                free_next = time.monotonic() + 1
+                free_low = free_hit()
+                if free_low is not None:
+                    hit = (free_watch[0], free_watch[1], "freespace")
+            for i, entry in enumerate(limits):
+                folder, limit = entry[0], entry[1]
+                strict = entry[2] if len(entry) > 2 else True
+                if hit:
+                    break
+                # Later folders (a package folder can hold tens of thousands of files) are
+                # counted once a second.
+                if i and tick % max(1, round(1 / DISK_POLL_S)):
+                    continue
+                used, hidden = folder_usage(folder, limit, strict)
+                if used is None:
+                    # Out of file handles: try again, but not forever, or a run could keep the
+                    # check from ever finishing and write as much as it likes meanwhile.
+                    misses[i] += 1
+                    if misses[i] >= 5:
+                        hit = (folder, limit, "uncountable")
+                    continue
+                misses[i] = 0
+                if used > limit:
+                    hit = (folder, limit, "hidden" if hidden else "full")
+            if hit:
+                over.append(hit)   # recorded first, so a slow stop cannot lose it
+                before_stop = _free_bytes(free_watch[0]) if hit[2] == "freespace" else None
+                alone = _limit_users <= 1   # no other watched run in this process shares the disk
+                try:
+                    stop()
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                if hit[2] == "freespace" and alone and before_stop is not None:
+                    # Removing the container closes every file it held open. If most of the lost
+                    # space comes back right after that, the run was very likely holding it (files
+                    # deleted but kept open). With other runs going at the same time it is not
+                    # tied to this one.
+                    lost = free_start - min(free_low, before_stop)
+                    for _ in range(10):
+                        back = _free_bytes(free_watch[0])
+                        if back is not None and lost > 0 and back - min(free_low, before_stop) >= 0.75 * lost:
+                            over[0] = (hit[0], hit[1], "deleted")
+                            break
+                        time.sleep(0.5)
+                return
+
+    watcher = None
+    started = time.monotonic()
+    try:
+        if streams is not None:
+            streams.mkdir(exist_ok=True)
+            files.append(open(streams / "stdout", "wb"))
+            files.append(open(streams / "stderr", "wb"))
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        if files:
+            proc = _run(cmd, timeout=timeout, capture=False, stdout=files[0], stderr=files[1])
+        else:
+            proc = _run(cmd, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc = None
+    finally:
+        done.set()
+        if watcher is not None:
+            watcher.join(timeout=45)
+        for f in files:
+            f.close()
+        _restore_handle_limit()
+    if proc is None and not over:
+        raise subprocess.TimeoutExpired(cmd, time.monotonic() - started)
+    if proc is not None and streams is not None:
+        proc = subprocess.CompletedProcess(proc.args, proc.returncode, _tail(streams / "stdout"),
+                                           _tail(streams / "stderr"))
+    return proc, (over[0] if over else None)
 
 
 def docker_available() -> bool:
@@ -458,6 +911,9 @@ def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, worl
     return [
         "docker", "run", "--rm",
         *network,
+        # What the run prints reaches Detonator only through `docker run` itself (kept in capped
+        # files), never in Docker's own log store on your disk.
+        "--log-driver", "none",
         "--read-only",
         "--tmpfs", "/tmp:rw,size=64m,mode=1777",
         # Skills download tools into the home folder and run them, as on a real computer, so their
@@ -480,6 +936,51 @@ def docker_run_cmd(tag: str, plugin_dir: Path, in_dir: Path, out_dir: Path, worl
         *accounts,
         tag,
     ]
+
+
+def _remove_tree(path: Path) -> None:
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:   # a very deep tree can exhaust Python's recursion on older versions
+        pass
+
+
+@contextlib.contextmanager
+def _run_folder(tag: str):
+    """The run's private temporary folder, removed afterwards even when the tested code (another
+    user id) left subfolders there that you are not allowed to empty, or a tree too deep to remove
+    from Python. A removal problem never replaces the run's result."""
+    tmp = Path(tempfile.mkdtemp(prefix="detonator-"))
+    try:
+        yield tmp
+    finally:
+        _remove_tree(tmp)
+        if tmp.exists():
+            # What the sandbox user made, only the sandbox user can remove: do that in a throwaway
+            # container (no network, no capabilities; chmod -R and find never follow links), then
+            # remove the rest.
+            mounts = [a for sub in ("out", "plugin") if (tmp / sub).is_dir()
+                      for a in ("-v", f"{tmp / sub}:/w/{sub}:rw")]
+            if mounts:
+                name = f"detonator-clean-{os.getpid()}-{secrets.token_hex(4)}"
+                try:
+                    _run(["docker", "run", "--rm", f"--name={name}", "--network", "none", "--read-only",
+                          "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001",
+                          "--log-driver", "none", *mounts, "--entrypoint", "sh", tag, "-c",
+                          # First let the owner into folders it locked (mode 0300 and the like).
+                          "chmod -R u+rwX,go+rwX /w 2>/dev/null; find /w -mindepth 2 -user 10001 -delete"],
+                         timeout=120)
+                except subprocess.TimeoutExpired:
+                    try:
+                        _run(["docker", "rm", "-f", name], timeout=30)
+                    except (OSError, subprocess.SubprocessError):
+                        pass
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            _remove_tree(tmp)
+            if tmp.exists():
+                print(f"Detonator: could not fully remove the run folder {tmp}; you can delete it "
+                      "(it held only the tested copy and its output).", file=sys.stderr)
 
 
 def _skip_links(src: str, names: list[str]) -> set[str]:
@@ -519,8 +1020,7 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
         raise DetonatorError(problem)
     tag = ensure_image(mcp=mcp_entry is not None, skill=skill_plan is not None)
     use_outside = outside_enabled() if outside is None else outside
-    with tempfile.TemporaryDirectory(prefix="detonator-") as tmp:
-        tmp = Path(tmp)
+    with _run_folder(tag) as tmp:
         plugin_copy = tmp / "plugin"
         shutil.copytree(target.path, plugin_copy, ignore=_skip_links)
         _make_world_readable(tmp)
@@ -579,10 +1079,23 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
                 for n in filenames:
                     os.chmod(os.path.join(dirpath, n), 0o666 | (os.stat(os.path.join(dirpath, n)).st_mode & 0o111))
         cmd.insert(3, f"--name={name}")
+        limits = [(out_dir, OUT_DIR_MAX_BYTES)]
+        package_start = 0
+        if mcp_entry is not None and mcp_entry.get("install"):
+            package_start = folder_bytes(plugin_copy) or 0
+            # Not strict: install scripts make private folders (mkdtemp, mode 0700) that you may not
+            # be able to look into; what they hold is still caught by the free-space check.
+            limits.append((plugin_copy, package_start + PACKAGE_GROWTH_MAX_BYTES, False))
+        # Free space may fall by what the limits allow plus room for the rest of this computer.
+        free_drop = sum(OUT_DIR_MAX_BYTES if i == 0 else PACKAGE_GROWTH_MAX_BYTES for i in range(len(limits))) \
+            + STREAMS_MAX_BYTES + FREE_DROP_MARGIN_BYTES
+        overflow = None
         try:
             try:
-                proc = _run(cmd, timeout=MCP_RUN_TIMEOUT_S if mcp_entry is not None else
-                            SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S)
+                proc, overflow = _run_watched(cmd, MCP_RUN_TIMEOUT_S if mcp_entry is not None else
+                                              SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S,
+                                              lambda: _run(["docker", "rm", "-f", name], timeout=30), limits,
+                                              streams=tmp / "streams", free_watch=(tmp, free_drop))
             except subprocess.TimeoutExpired:
                 _run(["docker", "rm", "-f", name], timeout=30)
                 proc = None
@@ -590,6 +1103,41 @@ def detonate(target: Target, outside: bool | None = None, mcp_entry: dict | None
         finally:
             if monitor:
                 monitor.cleanup()
+        if overflow is not None:
+            folder, limit, why = overflow
+            if why == "freespace":
+                return {"fatal": f"sandbox stopped: the free space on your disk fell by more than "
+                                 f"{limit // (1024 * 1024)} MB during the run (or got close to full) and did not "
+                                 "come back when the sandbox was removed. Either the tested code wrote it into "
+                                 "folders Detonator could not look into, or another program (or another "
+                                 "Detonator run) was writing at the same time, so the run was ended early",
+                        "outside": seen_outside, "disk_flood": "freespace"}
+            if why == "deleted":
+                return {"fatal": f"sandbox stopped: the free space on your disk fell by more than "
+                                 f"{limit // (1024 * 1024)} MB during the run without showing in any folder, and "
+                                 "came back as soon as the sandbox was removed: most likely the tested code kept "
+                                 "deleted files open, so the run was ended early", "outside": seen_outside,
+                        "disk_flood": "out", "disk_flood_why": "deleted"}
+            kind = "package" if folder == plugin_copy else "streams" if folder == tmp / "streams" else "out"
+            grew = (limit - package_start) // (1024 * 1024) if kind == "package" else limit // (1024 * 1024)
+            where = {"package": "its own package folder", "out": "the sandbox's output folder",
+                     "streams": "its output"}[kind]
+            if why == "hidden":
+                what = f"made a folder in {where} that Detonator could not look into (locked, a link, or nested too deep)"
+            elif why == "uncountable":
+                what = None
+            else:
+                what = {"package": f"grew its own package folder by more than {grew} MB",
+                        "streams": f"printed more than {grew} MB of output",
+                        "out": f"wrote more than {grew} MB (or tens of thousands of files) to the sandbox's "
+                               "output folder"}[kind]
+            if why == "uncountable":
+                # Most likely this computer ran short of file handles: an error, not a finding.
+                return {"fatal": f"sandbox stopped: Detonator could not count what was written to {where} "
+                                 "(most likely this computer ran short of open-file handles), so the run "
+                                 "was ended early", "outside": seen_outside, "disk_flood": "uncountable"}
+            return {"fatal": f"sandbox stopped: the tested code {what} on your disk, so the run was "
+                             "ended early", "outside": seen_outside, "disk_flood": kind, "disk_flood_why": why}
         if proc is None:
             limit = MCP_RUN_TIMEOUT_S if mcp_entry is not None else \
                 SKILL_RUN_TIMEOUT_S if skill_plan is not None else RUN_TIMEOUT_S

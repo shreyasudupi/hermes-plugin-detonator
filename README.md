@@ -6,7 +6,7 @@
 
 **Hermes Security reviews code you wrote. Detonator tests code you didn't.**
 
-**Current version: v0.5.1** ([what's new](#versions))
+**Current version: v0.5.2** ([what's new](#versions))
 
 [![Watch the 82-second Detonator demo](docs/demo-thumbnail.png)](https://x.com/shreyasudupi/status/2120289870908465286)
 
@@ -293,7 +293,7 @@ clean run is evidence, not proof.
 | Severity → verdict | Examples |
 |---|---|
 | critical → DANGEROUS | Reads decoy SSH or cloud keys, browser passwords or wallets; reads API keys and also reaches for the network; leaks a decoy secret, even base64, hex, compressed or split across requests; quietly sends a tool call somewhere else (a new message recipient, web address or chained command); points model requests at another server; plants autostart, cron, LaunchAgent, `.bashrc` or `.pth` persistence |
-| high → SUSPICIOUS | Reads Hermes's `.env` or API keys it does not declare; reads every key at once through `/proc`; did something only after the clock was moved forward (time bomb); network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools; changes Hermes's config or files outside its folder; opens a listening port; an MCP tool that sends a hidden copy of a message to an address it was not given; a plugin name with `../` in it; floods the activity log to hide something; sends your chat text out; changes tool arguments from a hook; rewrites the model's messages or model; skips a real tool and makes up its result; tool names disguised as built-ins (`rеad_file` with a Cyrillic е, `termina1`); adds huge text to every prompt; a description that promises the opposite of what it does ("works offline" but connects out) |
+| high → SUSPICIOUS | Reads Hermes's `.env` or API keys it does not declare; reads every key at once through `/proc`; did something only after the clock was moved forward (time bomb); network while loading or from a background hook; shell commands; downloads or installs code; rewrites itself; poisoned tool descriptions or prompt-injection text; shadows a built-in tool name; monkeypatches Python or Hermes; redirects proxies/PATH/API keys; tampers with monitoring; hidden hooks or tools; changes Hermes's config or files outside its folder; opens a listening port; an MCP tool that sends a hidden copy of a message to an address it was not given; a plugin name with `../` in it; floods the activity log to hide something; tries to fill your disk; sends your chat text out; changes tool arguments from a hook; rewrites the model's messages or model; skips a real tool and makes up its result; tool names disguised as built-ins (`rеad_file` with a Cyrillic е, `termina1`); adds huge text to every prompt; a description that promises the opposite of what it does ("works offline" but connects out) |
 | medium → REVIEW | Secret-file paths or start-up locations in code that never ran (possible time bomb); a declared prompt hook's added text; tools calling a host or localhost; reading memory or chat history; copying the whole environment; listing your home or key folders; reading system account files; calling other agent tools on its own; declared middleware that rewrites tool arguments; a tool result over 100,000 characters; tool names one letter from a built-in; own state outside `plugin-data/`; exec of strings; sandbox checks; native code; crashing while loading |
 | low / info | Registers middleware; shell, string-built code or network calls in code that never ran; coverage notes (stand-in modules), temp files, background threads, library behaviour |
 
@@ -368,7 +368,9 @@ plugins get a REVIEW verdict from this check alone (28 of them also check the da
 time (a keyword, a specific user) and code paths the synthetic inputs don't reach can still
 evade it. The outside monitor sees what the kernel does, not what the plugin meant: it reads
 inside HTTPS only when the program trusts the run's test authority (code that ships its own
-certificate list does not), and a plugin can notice it is being traced. A clean report does not mean a plugin is safe.
+certificate list does not), and a plugin can notice it is being traced. Work done through io_uring
+(a shared ring the kernel reads, not separate calls) is not traced; current Docker blocks io_uring
+by default, the tracer checks this on every run, and the report warns if your Docker allows it. A clean report does not mean a plugin is safe.
 
 **On Linux the sandbox shares your computer's kernel.** Docker containers are not virtual
 machines: Detonator drops every capability, runs read-only and as an unprivileged user, but a
@@ -385,25 +387,25 @@ no Python code to run, and Detonator says so instead of guessing.
 
 ## How it was tested
 
-- **Every change** runs over 340 tests in CI, including real Docker sandbox runs, plus Hermes's own
+- **Every change** runs over 450 tests in CI (on Python 3.11 and 3.13), including real Docker sandbox runs, plus Hermes's own
   `hermes plugins validate` (the same check the catalog runs).
-- **Detection** is checked against 36 harmless test plugins (fake keys, reserved TEST-NET
+- **Detection** is checked against 37 harmless test plugins (fake keys, reserved TEST-NET
   addresses, `true` as the only command): stealers of keys, browser logins and memory, persistence,
   prompt injection, tool poisoning, a rug pull, a backdoor port, a config hijack, a log flood, a
   trojan update, a date-triggered time bomb, a sleeper thread, a plugin that reads keys through C
   code to dodge the inside monitor and one that forges a clean result (both caught only from
   outside), one that swaps the result file for a link, an encoded key leak, an argument swapper, a model-request redirector, look-alike tool
-  names, an output flood, a chat snooper, a plugin whose description lies and a Kubernetes helper that
+  names, an output flood, a plugin that tries to fill your disk, a chat snooper, a plugin whose description lies and a Kubernetes helper that
   shows its login file's key to the model, plus honest and grey-area plugins (one a Docker helper that reads
-  only Docker's own login file) that must not be flagged as dangerous. All 36 get their expected verdict,
+  only Docker's own login file) that must not be flagged as dangerous. All 37 get their expected verdict,
   together they set off every one of the plugin rules, and CI re-checks them on every change. They live in a separate private
   repository so this one stays clean for the catalog scanner, and are available to reviewers on
   request.
-- **MCP servers** are checked against 30 more harmless test servers (Python and Node: poisoned and
+- **MCP servers** are checked against 31 more harmless test servers (Python and Node: poisoned and
   cross-tool descriptions, a rug pull and one that waits for a few uses, a "read-only" tool that
   writes, key stealers, a sampling abuser, a credential phisher, an npm postinstall dropper, a risky
   config, a time bomb that waits 200 days after install, an email tool that adds a hidden Bcc over
-  HTTPS, orders hidden in a tool result, an open port and a look-alike tool name, plus six modelled on
+  HTTPS, orders hidden in a tool result, an open port, a look-alike tool name and a disk filler, plus six modelled on
   real npm malware: a reverse shell, a key sent to an odd port, a `wallet.dat` hunter, a hidden Bcc
   that only fires without optional fields, obfuscated code and an ngrok beacon, and five around a
   tool's own login file: an honest Kubernetes helper that reads only `~/.kube/config` (review), one that
@@ -415,9 +417,9 @@ no Python code to run, and Detonator says so instead of guessing.
   Context7, Firecrawl, Exa, Tavily, Brave Search, DuckDuckGo, AWS Documentation, Atlassian, SQLite,
   git), which must come out clean or review: 8 no findings and 14 review across all 22, none worse. Stress tests cover servers that hang, flood output, list
   5,000 tools, start hundreds of programs, kill the stand-in for Hermes, or hang in an install script.
-- **Skills** are checked against 20 harmless test skills (fake "prerequisite" installers, base64
+- **Skills** are checked against 22 harmless test skills (fake "prerequisite" installers, base64
   piped to the shell, instructions in invisible Unicode, a key stealer, persistence, a reverse shell,
-  a time bomb, a daemon left running, a padded SKILL.md, plus honest skills that must stay clean), on
+  a time bomb, a daemon left running, a padded SKILL.md, a disk filler, plus honest skills that must stay clean), on
   250 honest skills from Anthropic, OpenAI and Nous (all no findings on the text checks), and in the
   cloud sandbox only on [Datadog's malicious skills](https://github.com/DataDog/malicious-software-packages-dataset).
   On the 49 real malicious skills held back while the rules were written, 28 come out suspicious
@@ -448,7 +450,12 @@ Detonator does things a reviewer should know about:
   `docker wait`, `docker stop` and `docker rm` to clean them up.
 - **Clones code.** For a GitHub target it runs `git init` / `git fetch` / `git checkout`
   of one exact 40-character commit: the one you give, the one the Hermes catalog pins, or the
-  newest one, found with `git ls-remote` (reads the repo's branch list only) after you approve, with git hooks disabled, no submodules, and symlinks checked out as plain files
+  newest one, found with `git ls-remote` (reads the repo's branch list only) after you approve, with git hooks disabled, no submodules, and symlinks checked out as plain files.
+  Your own global and system git settings are left out (only network settings are kept: proxy,
+  TLS certificates and verification, client certificates, and `core.longpaths` on Windows;
+  credential helpers and URL rewrites are not used, since only public repositories are fetched; on git 2.31
+  and later the kept settings are passed through the environment, so a proxy password never shows in `ps`), so a filter or helper you installed for your own work, such as Git LFS, never runs on a
+  downloaded repository
   (links are never copied into the sandbox, so a repo cannot pull in real files from your machine).
   No code from the target runs on your machine outside the container.
 - **Shell commands.** Only `git` and `docker`, as above, and only after you approve
@@ -468,7 +475,24 @@ Detonator does things a reviewer should know about:
   locale, Docker and proxy settings), never the API keys Hermes has loaded.
 - **Sandbox settings.** `--read-only --cap-drop ALL
   --security-opt no-new-privileges --user 10001:10001 --pids-limit 128 --memory 512m --cpus 1`,
-  a 64 MB `/tmp`, a 180-second timeout, and an activity log capped at 5,000 events (a flood is
+  a 64 MB `/tmp`, a 180-second timeout, a run that writes more than 256 MB (or tens of thousands of
+  files) to its output folder on your disk, or prints more than 64 MB, is stopped and reported as
+  `disk_flood` (the folder and the printed output are checked five times a second, so a very fast
+  writer can get further before the stop: 1.3 to 1.8 GB in tests, and a writer of deleted files about 3.5 GB; a subfolder of the output folder Detonator cannot
+  look into, because it was made unreadable, swapped for a link or nested over 48 deep, also stops the run; a folder
+  removed mid-count is skipped; a folder it still cannot count after five tries, most likely because this computer ran
+  out of open-file handles, stops the run with an ERROR verdict). The free space on your disk is checked once a
+  second too, so files the tested code deleted but keeps open (they show in no folder) do not go unnoticed: a run
+  is stopped when free space falls by more than the limits allow plus 1 GB, or gets under 512 MB (under half of
+  what was free if it was already below that); a single large write can still go past that before the next check.
+  If the space comes back as soon as the container is gone, that is reported as `disk_flood`; if not (the code may
+  have written where Detonator could not look, or another program or another Detonator run on the same disk was
+  writing), the verdict is ERROR. So other disk activity of more than about 1.3 GB (1.9 GB for an MCP install run)
+  while a test runs ends that test as ERROR. In an MCP install run, private folders an install script makes in the package folder are left out of
+  its 512 MB count and covered by the free-space check instead. What it prints goes to
+  capped files rather than into memory or Docker's own log store (`--log-driver none`), the run
+  folder is removed afterwards (folders the tested code locked are removed from a throwaway
+  container; if that fails, Detonator prints the folder's path), and an activity log capped at 5,000 events (a flood is
   reported, and the most repeated actions are thinned first so rare ones such as a key read are kept).
   With the outside monitor the plugin's container uses the fake internet's network and the tracer's
   process namespace; without it, `--network none`.
@@ -489,16 +513,19 @@ Detonator does things a reviewer should know about:
 - **MCP servers (`/detonate-mcp`).** Reads the named entry under `mcp_servers:` through Hermes's
   own config reader (`hermes_cli.config`), never your `.env` or `auth.json`; env and header values
   are only checked for written-in keys, never stored, sent or shown beyond their first 4 characters.
-  Downloads run `npm install --ignore-scripts` or `pip install --only-binary=:all:` in a container
+  Downloads run `npm install --ignore-scripts --allow-git=none --allow-remote=none` (registry
+  packages only: no dependency from a git repo or a web address) or `pip install --only-binary=:all:` in a container
   from `sandbox/Dockerfile.mcp` (digest-pinned `node` and `python` images) with your proxy settings,
   as your own user (never root), `--read-only --cap-drop ALL --security-opt no-new-privileges
-  --pids-limit 256 --memory 1g`, and only an empty work folder mounted. It never uses host
+  --pids-limit 256 --memory 1g`, and only an empty work folder mounted; a download that grows past
+  1 GB is stopped. It never uses host
   networking: if your proxy runs on this computer (localhost), Docker Desktop reaches it through
   `host.docker.internal`, and on Linux Detonator opens a relay for the length of the download that
   forwards only to your proxy's port, so the container cannot reach your other local services.
   Proxy values go through a private env file, so a proxy password never shows in `ps`. Nothing downloaded runs
   there or on your machine: the server and its install scripts run only in the sandbox, which uses
-  the same image settings as above with a 240-second limit.
+  the same image settings as above with a 240-second limit. When install scripts run there, the
+  package's own folder is writable, and a run that grows it by more than 512 MB is stopped.
 - **Skills (`/detonate-skill`).** For an installed name it reads only `SKILL.md` files under your
   Hermes `skills/` folder (and its `.hub/quarantine`) and the current project's `.hermes/skills` and
   `.agents/skills`, to find the folder; the skill is copied into the run folder (links are not
@@ -533,6 +560,25 @@ repository stays clean for the catalog scanner. CI runs every one of them on eac
 
 The version in `plugin.yaml` is the one listed here first; a test fails if they differ.
 
+- **v0.5.2**: Hardening from a full project review. A run that writes more than 256 MB into the
+  sandbox's output folder (a real folder on your disk; checked five times a second, so a very fast writer can
+  reach 1.3 to 1.8 GB first), fills the disk through files it deleted but kept open (Detonator also watches your
+  free disk space), or prints more than 64 MB, is stopped
+  and reported as `disk_flood` (high), with or without
+  the outside monitor; an MCP install run whose package folder grows by more than 512 MB
+  is stopped and the verdict is ERROR unless a critical finding was already seen before the stop. `git` no longer uses your personal git settings when it fetches code
+  (only network settings such as proxy and TLS certificates are kept), so a global Git LFS-style filter cannot run on a
+  downloaded repository. MCP package downloads refuse dependencies from git repos and web addresses,
+  and stop past 1 GB. Printed output no longer collects in memory, and a run folder the tested code
+  filled with locked or very deep subfolders no longer crashes the clean-up and loses the result
+  (before, that was possible when Detonator runs as a normal user on Linux).
+  The tracer checks whether your Docker allows io_uring (which it cannot see) and the report warns if
+  it does. The test-only `_detonator_config` switch in `mcp-server.yaml` can only name a file inside
+  the tested folder. CI gives the private fixtures token to one step only, pins the fixtures commit,
+  and also runs the tests on Python 3.13. A false alarm is fixed: an honest MCP server whose own telemetry happened
+  to land in a different step after the clock moved forward (seen with Sentry's server) was called a time bomb;
+  a network finding after the clock moves now counts as new only if the server also reaches an address it
+  did not reach before.
 - **v0.5.1**: Fewer false alarms, with small changes only. An MCP tool description whose only
   invisible characters are the ones inside emoji (family, profession, head-shake and England,
   Scotland or Wales flag emoji) is no longer tool poisoning; an order to the model in a description

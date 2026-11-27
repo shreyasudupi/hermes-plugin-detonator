@@ -508,9 +508,13 @@ def evaluate(raw: dict) -> dict:
     out = raw.get("outside") if isinstance(raw.get("outside"), dict) else {}
     summary = rules.outside_summary(raw) if out.get("ran") else out
     cov = coverage(raw)
+    flood = rules.disk_flood_finding(raw)
+    if flood and not out.get("ran"):
+        findings.append(flood)
     if raw.get("fatal") and not out.get("ran"):
         findings.sort(key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
-        return {"verdict": rules.VERDICT_ERROR, "findings": [f.to_dict() for f in findings],
+        return {"verdict": rules._verdict(findings) if flood else rules.VERDICT_ERROR,
+                "findings": [f.to_dict() for f in findings],
                 "detail": str(raw["fatal"])[:2000], "outside": summary, "coverage": cov, "layers": _layers(raw, cov)}
     if out.get("ran"):
         out, own = _tool_own_config(raw, out)
@@ -540,7 +544,7 @@ def evaluate(raw: dict) -> dict:
         findings += [f for f in rules._outside_findings({**raw, "events": [], "outside": stripped})
                      if f.rule == "secret_sent_out"]
         findings += [f for f in rules._outside_findings({**raw, "events": []})
-                     if f.rule in ("result_forged", "monitor_tamper", "log_flood")]
+                     if f.rule in ("result_forged", "monitor_tamper", "log_flood", "disk_flood")]
         collectors = rules.collection_hosts(out)
         if collectors:
             findings.append(Finding("collection_service", HIGH,
@@ -550,7 +554,9 @@ def evaluate(raw: dict) -> dict:
     findings.sort(key=lambda f: rules.SEVERITY_ORDER.index(f.severity))
     verdict = rules._verdict(findings)
     detail = None
-    if verdict in (rules.VERDICT_NO_FINDINGS, VERDICT_LOW_COVERAGE) and raw.get("fatal") and out.get("ran"):
+    cut_short = raw.get("disk_flood") in ("uncountable", "freespace")
+    if raw.get("fatal") and out.get("ran") and (verdict in (rules.VERDICT_NO_FINDINGS, VERDICT_LOW_COVERAGE)
+                                                or (cut_short and verdict == rules.VERDICT_REVIEW)):
         verdict = rules.VERDICT_ERROR
         detail = ("The sandbox stopped before the run finished (" + str(raw["fatal"])[:300] + "), so its result "
                   "is incomplete. A skill that floods memory or kills the sandbox ends up here; what the "

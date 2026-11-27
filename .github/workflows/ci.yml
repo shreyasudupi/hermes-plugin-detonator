@@ -21,6 +21,20 @@ jobs:
       - name: Run tests (Docker is preinstalled on GitHub runners)
         run: python -m pytest -q -rs
 
+  tests-newer-python:
+    # Hermes supports Python 3.11 to 3.13, and users run newer ones than the oldest.
+    name: Unit + Docker sandbox tests (Python 3.13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest -q -rs
+
   windows:
     name: Windows host checks (no Linux sandbox on GitHub's Windows machines)
     runs-on: windows-latest
@@ -59,35 +73,41 @@ jobs:
       # Read-only token for the private fixtures repo. GitHub never gives secrets to
       # pull requests from forks, so only those may skip; everywhere else a missing
       # token fails the job, so a green tick always means the fixtures ran.
-      FIXTURES_TOKEN: ${{ secrets.FIXTURES_TOKEN }}
+      # Only whether the token exists is shared with the job; the token itself goes to the
+      # one checkout step below, never to pip or to the code under test.
+      HAS_TOKEN: ${{ secrets.FIXTURES_TOKEN != '' }}
       FROM_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      # The fixtures commit these checks were written for (bump it with each fixtures PR), so a
+      # fixtures change can never turn main red by itself and an old tag can be re-checked.
+      FIXTURES_REF: bbfbb145f63ad21756532bfc1b31c5f5bf0c8962
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Skip on fork pull requests (no secrets there)
-        if: env.FIXTURES_TOKEN == '' && env.FROM_FORK == 'true'
+        if: env.HAS_TOKEN != 'true' && env.FROM_FORK == 'true'
         run: echo "::warning::Pull request from a fork has no FIXTURES_TOKEN, so the fixtures were NOT checked. A maintainer must run them before merging."
       - name: Fail when the fixtures token is missing
-        if: env.FIXTURES_TOKEN == '' && env.FROM_FORK != 'true'
+        if: env.HAS_TOKEN != 'true' && env.FROM_FORK != 'true'
         run: |
           echo "::error::FIXTURES_TOKEN is not set, so the fixtures could not run. Add the secret (Settings > Secrets and variables > Actions)."
           exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-        if: env.FIXTURES_TOKEN != ''
+        if: env.HAS_TOKEN == 'true'
         with:
           repository: shreyasudupi/detonator-test-fixtures
+          ref: ${{ env.FIXTURES_REF }}
           token: ${{ secrets.FIXTURES_TOKEN }}
           path: fixtures
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
-        if: env.FIXTURES_TOKEN != ''
+        if: env.HAS_TOKEN == 'true'
         with:
           python-version: "3.11"
       - run: python -m pip install -r requirements-dev.txt
-        if: env.FIXTURES_TOKEN != ''
+        if: env.HAS_TOKEN == 'true'
       - name: Check out the trojan's clean first version
-        if: env.FIXTURES_TOKEN != ''
+        if: env.HAS_TOKEN == 'true'
         run: git -C fixtures worktree add -q ../fixtures-v1 cc4d572136cb8b8fad0787023dd78c91ce852823
       - name: Run every fixture inside the Docker sandbox
-        if: env.FIXTURES_TOKEN != ''
+        if: env.HAS_TOKEN == 'true'
         run: python ci/check_fixtures.py fixtures fixtures-v1

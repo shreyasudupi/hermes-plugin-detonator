@@ -53,9 +53,9 @@ KEEP_BYTES = 4096
 KEEP_BYTES_LATER = 512   # after the first FULL_DETAIL entries, keep less of each payload
 FULL_DETAIL = 2000
 MAX_ENTRIES = 20000
-FAKE_NET = ipaddress.ip_network("198.18.0.0/15")
+FAKE_NET = ipaddress.ip_network("198.18.0.0/15")  # RFC 2544 benchmarking range: never a real host
 # Ends by itself after this long, so it never outlives a run even if Detonator is killed.
-MAX_LIFETIME_S = 300  # RFC 2544 benchmarking range: never a real host
+MAX_LIFETIME_S = 300
 
 _lock = threading.Lock()
 _entries = 0

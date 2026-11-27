@@ -84,8 +84,29 @@ def find_harness():
     return None
 
 
+def io_uring_state():
+    """Whether this Docker lets containers use io_uring. Its file and network work goes through a
+    shared ring, not through the calls strace sees, so a run where it is allowed has a blind spot.
+    Current Docker blocks it in its default seccomp profile; the tested container gets the same
+    profile as this one. "blocked", "allowed" or "unknown"."""
+    import ctypes
+    import errno
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        params = ctypes.create_string_buffer(120)  # struct io_uring_params
+        fd = libc.syscall(425, 1, params)  # io_uring_setup: 425 on x86_64 and arm64
+        if fd >= 0:
+            os.close(fd)
+            return "allowed"
+        err = ctypes.get_errno()
+        # EPERM: seccomp or the kernel switch says no. ENOSYS: the kernel has no io_uring.
+        return "blocked" if err in (errno.EPERM, errno.ENOSYS, errno.EACCES) else "unknown"
+    except Exception:
+        return "unknown"
+
+
 def main():
-    status = {"tracer_version": 1}
+    status = {"tracer_version": 1, "io_uring": io_uring_state()}
     pid = find_harness()
     status["harness_pid"] = pid
     if pid is None:
