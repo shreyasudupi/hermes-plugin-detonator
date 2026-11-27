@@ -478,7 +478,7 @@ Detonator does things a reviewer should know about:
   a 64 MB `/tmp`, a 180-second timeout, a run that writes more than 256 MB (or tens of thousands of
   files) to its output folder on your disk, or prints more than 64 MB, is stopped and reported as
   `disk_flood` (the folder and the printed output are checked five times a second, so a very fast
-  writer can get further before the stop: up to about 1.3 GB in tests; a subfolder of the output folder Detonator cannot
+  writer can get further before the stop: 1.3 to 1.8 GB in tests, and a writer of deleted files about 3.5 GB; a subfolder of the output folder Detonator cannot
   look into, because it was made unreadable, swapped for a link or nested over 48 deep, also stops the run; a folder
   removed mid-count is skipped; a folder it still cannot count after five tries, most likely because this computer ran
   out of open-file handles, stops the run with an ERROR verdict). The free space on your disk is checked once a
@@ -487,7 +487,8 @@ Detonator does things a reviewer should know about:
   what was free if it was already below that); a single large write can still go past that before the next check.
   If the space comes back as soon as the container is gone, that is reported as `disk_flood`; if not (the code may
   have written where Detonator could not look, or another program or another Detonator run on the same disk was
-  writing), the verdict is ERROR. In an MCP install run, private folders an install script makes in the package folder are left out of
+  writing), the verdict is ERROR. So other disk activity of more than about 1.3 GB (1.9 GB for an MCP install run)
+  while a test runs ends that test as ERROR. In an MCP install run, private folders an install script makes in the package folder are left out of
   its 512 MB count and covered by the free-space check instead. What it prints goes to
   capped files rather than into memory or Docker's own log store (`--log-driver none`), the run
   folder is removed afterwards (folders the tested code locked are removed from a throwaway
@@ -561,7 +562,7 @@ The version in `plugin.yaml` is the one listed here first; a test fails if they 
 
 - **v0.5.2**: Hardening from a full project review. A run that writes more than 256 MB into the
   sandbox's output folder (a real folder on your disk; checked five times a second, so a very fast writer can
-  reach about 1.3 GB first), fills the disk through files it deleted but kept open (Detonator also watches your
+  reach 1.3 to 1.8 GB first), fills the disk through files it deleted but kept open (Detonator also watches your
   free disk space), or prints more than 64 MB, is stopped
   and reported as `disk_flood` (high), with or without
   the outside monitor; an MCP install run whose package folder grows by more than 512 MB
